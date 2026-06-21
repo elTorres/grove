@@ -124,7 +124,7 @@ pub fn run(sources: &Path, out: &Path, only: &[String]) -> Result<()> {
     println!("\n{ok} ingested, {} failed{}", failed.len(),
         if failed.is_empty() { String::new() } else { format!(": {}", failed.join(", ")) });
 
-    let catalog = registry::build_index(out)?;
+    let catalog = registry::build_index(out, None)?;
     std::fs::write(
         out.join("index.json"),
         format!("{}\n", serde_json::to_string_pretty(&catalog)?),

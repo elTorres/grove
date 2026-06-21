@@ -13,13 +13,19 @@ use sha2::{Digest, Sha256};
 
 use crate::registry;
 
-/// Default host: the grove-registry repo. raw.githubusercontent serves it
-/// reliably and immediately; for higher volume, point `GROVE_REGISTRY_URL` at a
-/// jsDelivr/CDN mirror or a self-hosted copy.
+/// Default host for the catalog + per-language text files (tags.scm, manifest).
+/// raw.githubusercontent serves these reliably (jsDelivr's per-file cold-fetch
+/// 502s intermittently). The heavy wasm binaries are GitHub Release assets (see
+/// `release_base` in the catalog), so this stays light. Override with
+/// `GROVE_REGISTRY_URL` to self-host or mirror.
 const DEFAULT_HOST: &str = "https://raw.githubusercontent.com/Entelligentsia/grove-registry/v1";
 
 #[derive(Deserialize)]
 struct Catalog {
+    /// Base URL for release-asset files (GitHub Releases); needed if any file
+    /// entry has an `asset`.
+    #[serde(default)]
+    release_base: Option<String>,
     #[serde(default)]
     grammars: Vec<CatEntry>,
 }
@@ -28,9 +34,18 @@ struct Catalog {
 struct CatEntry {
     name: String,
     version: String,
-    /// filename → sha256, for every file grove serves for this grammar.
+    /// filename → where/what to fetch + its hash.
     #[serde(default)]
-    files: std::collections::HashMap<String, String>,
+    files: std::collections::HashMap<String, FileRef>,
+}
+
+#[derive(Deserialize)]
+struct FileRef {
+    sha256: String,
+    /// If set, the file is a release asset of this name under `release_base`;
+    /// otherwise it sits in the repo at `<host>/<lang>/<filename>`.
+    #[serde(default)]
+    asset: Option<String>,
 }
 
 fn host() -> String {
@@ -91,18 +106,26 @@ pub fn run(langs: &[String], force: bool) -> Result<()> {
         if e.files.is_empty() {
             bail!("catalog entry for `{}` lists no files", e.name);
         }
-        let base = format!("{host}/{}", e.name);
-
         // Download every file and verify its hash *before* writing any (atomic).
         let mut names: Vec<&String> = e.files.keys().collect();
         names.sort();
         let mut blobs = Vec::new();
         for fname in names {
-            let want = &e.files[fname];
-            let bytes = get_bytes(&format!("{base}/{fname}"))?;
+            let fref = &e.files[fname];
+            let url = match &fref.asset {
+                Some(asset) => {
+                    let base = catalog
+                        .release_base
+                        .as_deref()
+                        .context("catalog has release assets but no release_base")?;
+                    format!("{base}/{asset}")
+                }
+                None => format!("{host}/{}/{fname}", e.name),
+            };
+            let bytes = get_bytes(&url)?;
             let got = sha256(&bytes);
-            if &got != want {
-                bail!("{}/{fname}: hash mismatch — catalog {want}, downloaded {got}", e.name);
+            if got != fref.sha256 {
+                bail!("{}/{fname}: hash mismatch — catalog {}, downloaded {got}", e.name, fref.sha256);
             }
             blobs.push((fname.clone(), bytes));
         }

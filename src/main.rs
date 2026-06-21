@@ -114,6 +114,9 @@ enum Cmd {
         /// Output path (default: <dir>/index.json).
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Serve grammar.wasm as release assets from this base URL (GitHub Releases).
+        #[arg(long)]
+        release_base: Option<String>,
     },
     /// Show the resolved registry location and search order.
     Registry,
@@ -213,10 +216,10 @@ fn main() -> Result<()> {
         Cmd::Init { path, dry_run } => init::run(&path, dry_run)?,
         Cmd::Fetch { langs, force } => fetch::run(&langs, force)?,
         Cmd::Ingest { only, sources, out } => ingest::run(&sources, &out, &only)?,
-        Cmd::Index { dir, output } => {
+        Cmd::Index { dir, output, release_base } => {
             let dir = dir.unwrap_or_else(|| registry::root().to_path_buf());
             let out = output.unwrap_or_else(|| dir.join("index.json"));
-            let catalog = registry::build_index(&dir)?;
+            let catalog = registry::build_index(&dir, release_base.as_deref())?;
             std::fs::write(&out, format!("{}\n", serde_json::to_string_pretty(&catalog)?))?;
             let n = catalog["grammars"].as_array().map_or(0, |a| a.len());
             println!("wrote {} ({n} grammars)", out.display());

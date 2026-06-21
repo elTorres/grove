@@ -258,7 +258,12 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// Build the hosted catalog (`index.json`) for a registry directory: per
 /// language, its version, provenance, and a content hash of every served file.
 /// This is what registry CI runs to publish; `grove fetch` consumes it.
-pub fn build_index(root: &Path) -> Result<serde_json::Value> {
+///
+/// When `release_base` is set, `grammar.wasm` is recorded as a release **asset**
+/// (`<lang>.wasm`) served from that base, so the heavy binaries live in GitHub
+/// Releases and the repo stays small. `tags.scm`/`manifest.json` are always
+/// served from the repo alongside the catalog.
+pub fn build_index(root: &Path, release_base: Option<&str>) -> Result<serde_json::Value> {
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(root)
         .with_context(|| format!("reading registry {}", root.display()))?
         .flatten()
@@ -279,7 +284,11 @@ pub fn build_index(root: &Path) -> Result<serde_json::Value> {
         for fname in ["grammar.wasm", "tags.scm", "manifest.json"] {
             let bytes = std::fs::read(dir.join(fname))
                 .with_context(|| format!("hashing {}/{fname}", m.name))?;
-            files.insert(fname.into(), sha256_hex(&bytes).into());
+            let mut fref = serde_json::json!({ "sha256": sha256_hex(&bytes) });
+            if fname == "grammar.wasm" && release_base.is_some() {
+                fref["asset"] = serde_json::json!(format!("{}.wasm", m.name));
+            }
+            files.insert(fname.into(), fref);
         }
         let mut entry = serde_json::json!({
             "name": m.name,
@@ -291,7 +300,11 @@ pub fn build_index(root: &Path) -> Result<serde_json::Value> {
         }
         grammars.push(entry);
     }
-    Ok(serde_json::json!({ "schema": 1, "grammars": grammars }))
+    let mut catalog = serde_json::json!({ "schema": 2, "grammars": grammars });
+    if let Some(base) = release_base {
+        catalog["release_base"] = serde_json::json!(base);
+    }
+    Ok(catalog)
 }
 
 /// Write a lockfile pinning every registry grammar's version + wasm hash.

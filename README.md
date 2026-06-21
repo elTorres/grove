@@ -102,13 +102,15 @@ else built from source), normalizes it into the shape grove needs — `grammar.w
 (`source.repo` / `source.rev`) for auditability. This guarantees the three travel
 as one co-versioned unit and that `grove.lock` always resolves.
 
-The host is a **`grove-registry` GitHub repo served via jsDelivr's GitHub CDN**
-(`cdn.jsdelivr.net/gh/<owner>/grove-registry@<tag>`) — CDN-backed, immutable by
-tag, no rate limits. Layout: `<host>/index.json` (the catalog) and
-`<host>/<lang>/{grammar.wasm, tags.scm, manifest.json}`. **Every** file's sha256
-is verified against the catalog before it's written (download-verify-then-write,
-atomically), so a corrupted or tampered artifact is rejected. Override the host
-with `GROVE_REGISTRY_URL` (self-host, fork, or a local mirror).
+The host is the **[Entelligentsia/grove-registry](https://github.com/Entelligentsia/grove-registry)**
+repo, split for efficiency: the small text files (`index.json`, per-language
+`tags.scm` + `manifest.json`) live in the repo (served via
+`raw.githubusercontent.com`), and the heavy `grammar.wasm` binaries are **GitHub
+Release assets** (GitHub's CDN). The catalog's `release_base` + per-file `asset`
+fields tell `fetch` where each file lives. **Every** file's sha256 is verified
+against the catalog before it's written (download-verify-then-write, atomically),
+so a corrupted or tampered artifact is rejected. Override the host with
+`GROVE_REGISTRY_URL` (self-host, fork, or a local mirror).
 
 ### Building the registry (maintainer)
 
