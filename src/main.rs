@@ -1,0 +1,215 @@
+//! grove — Phase 1: one engine, two faces.
+//!
+//! The same operations are exposed as a human CLI (`grove outline …`) and as an
+//! MCP server (`grove serve`). Both call `ops`; neither owns engine logic.
+
+mod engine;
+mod init;
+mod mcp;
+mod ops;
+mod registry;
+
+use std::path::PathBuf;
+
+use anyhow::Result;
+use clap::{Parser, Subcommand};
+
+#[derive(Parser)]
+#[command(name = "grove", version, about = "Structural sight for coding agents (Phase 1)")]
+struct Cli {
+    /// Emit JSON instead of the human table.
+    #[arg(long, global = true)]
+    json: bool,
+    #[command(subcommand)]
+    cmd: Cmd,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// List the definitions in one file (kind · name · parent · signature · id).
+    Outline {
+        file: PathBuf,
+        /// Only this kind (e.g. class, function, method).
+        #[arg(long)]
+        kind: Option<String>,
+        /// JSON detail: 0 terse · 1 default (no byte offsets) · 2 full.
+        #[arg(long, default_value_t = 1)]
+        detail: u8,
+    },
+    /// Find symbols across a directory, optionally filtered.
+    Symbols {
+        dir: PathBuf,
+        /// Only this kind (e.g. function, struct, method).
+        #[arg(long)]
+        kind: Option<String>,
+        /// Only names containing this substring (case-insensitive).
+        #[arg(long)]
+        name: Option<String>,
+        /// Include references, not just definitions.
+        #[arg(long)]
+        refs: bool,
+    },
+    /// Print the full source of a symbol, by id or by file + name.
+    Source {
+        /// A symbol id from outline/symbols, e.g. rust:src/lib.rs#parse@41
+        id_or_file: String,
+        /// If the first arg is a file, the symbol name to find in it.
+        name: Option<String>,
+    },
+    /// Report ERROR / MISSING nodes — a post-edit syntax check.
+    Check { file: PathBuf },
+    /// Find call sites of a symbol across a directory.
+    Callers {
+        /// The function/method name to find calls to.
+        name: String,
+        /// Directory to search.
+        #[arg(short, long, default_value = ".")]
+        dir: PathBuf,
+    },
+    /// Find where a symbol is defined (go-to-def), by name or by position.
+    Definition {
+        /// The symbol name to resolve (omit when using --at).
+        name: Option<String>,
+        /// Directory to search.
+        #[arg(short, long, default_value = ".")]
+        dir: PathBuf,
+        /// Resolve the identifier at a usage site instead: file:row:col (0-based).
+        #[arg(long)]
+        at: Option<String>,
+    },
+    /// Set up grove in a project: detect languages, write .mcp.json + CLAUDE.md + grove.lock.
+    Init {
+        /// Project directory (default: current).
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Show what would be detected/written without writing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Show the resolved registry location and search order.
+    Registry,
+    /// List the languages available in the registry.
+    Languages,
+    /// Write grove.lock pinning each registry grammar's version + content hash.
+    Lock,
+    /// Run as an MCP server over stdio (the agent-facing face).
+    Serve,
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    match cli.cmd {
+        Cmd::Outline { file, kind, detail } => {
+            let syms = ops::outline(&file, kind.as_deref())?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&ops::project(&syms, detail))?);
+            } else {
+                for s in &syms {
+                    let owner = s.parent.clone().unwrap_or_default();
+                    println!("{:<10} {:<26} {:<18} {}:{:<4} {}", s.kind, s.name, owner, s.row, s.col, s.signature);
+                }
+                eprintln!("\n{} definitions · {}", syms.len(), ops::rel(&file));
+            }
+        }
+        Cmd::Symbols { dir, kind, name, refs } => {
+            let syms = ops::symbols(&dir, kind.as_deref(), name.as_deref(), refs)?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&syms)?);
+            } else {
+                for s in &syms {
+                    let mark = if s.is_definition { "def" } else { "ref" };
+                    println!("{:<3} {:<10} {:<28} {}", mark, s.kind, s.name, s.id);
+                }
+                eprintln!("\n{} symbols", syms.len());
+            }
+        }
+        Cmd::Source { id_or_file, name } => {
+            let res = ops::source(&id_or_file, name.as_deref())?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&res)?);
+            } else {
+                if !res.other_candidates.is_empty() {
+                    eprintln!("(also matched: {})", res.other_candidates.join(", "));
+                }
+                println!("{}", res.source);
+            }
+        }
+        Cmd::Check { file } => {
+            let defects = ops::check(&file)?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&defects)?);
+            } else if defects.is_empty() {
+                println!("ok · no syntax errors · {}", ops::rel(&file));
+            } else {
+                for d in &defects {
+                    println!("{:<8} {}:{:<4} `{}`", d.kind, d.row, d.col, d.text);
+                }
+                eprintln!("\n{} defect(s) · {}", defects.len(), ops::rel(&file));
+                std::process::exit(1);
+            }
+        }
+        Cmd::Callers { name, dir } => {
+            let sites = ops::callers(&dir, &name)?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&sites)?);
+            } else {
+                for s in &sites {
+                    let inf = s.in_function.as_deref().unwrap_or("<top-level>");
+                    println!("{}:{:<4} {:<32} {}", s.row, s.col, inf, s.line);
+                }
+                eprintln!("\n{} call site(s) of `{}`", sites.len(), name);
+            }
+        }
+        Cmd::Definition { name, dir, at } => {
+            let (resolved, defs) = match at {
+                Some(pos) => {
+                    let (file, row, col) = ops::parse_pos(&pos)?;
+                    ops::definition_at(&file, row, col, &dir)?
+                }
+                None => {
+                    let name = name.ok_or_else(|| anyhow::anyhow!("provide a name or --at"))?;
+                    (name.clone(), ops::definition(&dir, &name)?)
+                }
+            };
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&defs)?);
+            } else {
+                for s in &defs {
+                    let owner = s.parent.clone().unwrap_or_default();
+                    println!("{:<10} {:<26} {:<18} {}:{:<4} {}", s.kind, s.name, owner, s.row, s.col, s.signature);
+                }
+                eprintln!("\n{} definition(s) of `{}`", defs.len(), resolved);
+            }
+        }
+        Cmd::Init { path, dry_run } => init::run(&path, dry_run)?,
+        Cmd::Registry => {
+            println!("registry root: {}\n", registry::root().display());
+            println!("search order (first existing wins):");
+            for c in registry::search_path() {
+                let mark = if c.exists { "✓" } else { "·" };
+                println!("  {mark} {:<26} {}", c.source, c.path.display());
+            }
+        }
+        Cmd::Languages => {
+            let manifests = registry::manifests();
+            if cli.json {
+                let v: Vec<_> = manifests
+                    .iter()
+                    .map(|m| serde_json::json!({"name": m.name, "version": m.version, "extensions": m.extensions}))
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else {
+                for m in &manifests {
+                    println!("{:<12} {:<10} .{}", m.name, m.version, m.extensions.join(" ."));
+                }
+                eprintln!("\n{} language(s) in registry", manifests.len());
+            }
+        }
+        Cmd::Lock => {
+            let lock = registry::write_lock(std::path::Path::new("grove.lock"))?;
+            println!("wrote grove.lock ({} grammars)", lock);
+        }
+        Cmd::Serve => mcp::serve()?,
+    }
+    Ok(())
+}

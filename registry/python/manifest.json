@@ -1,0 +1,10 @@
+{
+  "name": "python",
+  "version": "0.23.0",
+  "extensions": ["py", "pyi"],
+  "profile": {
+    "function_kinds": ["function_definition"],
+    "containers": [["class_definition", "name"]],
+    "identifier_kinds": ["identifier"]
+  }
+}

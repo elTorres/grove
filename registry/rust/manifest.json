@@ -1,0 +1,10 @@
+{
+  "name": "rust",
+  "version": "0.24.0",
+  "extensions": ["rs"],
+  "profile": {
+    "function_kinds": ["function_item", "function_signature_item"],
+    "containers": [["impl_item", "type"], ["trait_item", "name"], ["mod_item", "name"]],
+    "identifier_kinds": ["identifier", "type_identifier", "field_identifier", "shorthand_field_identifier"]
+  }
+}

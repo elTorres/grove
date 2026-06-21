@@ -1,0 +1,244 @@
+//! The operations, as a library — the single engine both faces call.
+//!
+//! `main.rs` (CLI) formats these into human tables; `mcp.rs` (MCP server)
+//! serializes them to JSON. Grammars come from the registry, so these work for
+//! any registered language, not just one compiled in.
+
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use serde::Serialize;
+
+use crate::engine::{self, Defect, Symbol};
+use crate::registry::{self, Grammar};
+use ignore::WalkBuilder;
+
+/// Read a file's bytes with a contextual error.
+pub fn read(path: &Path) -> Result<Vec<u8>> {
+    std::fs::read(path).with_context(|| format!("reading {}", path.display()))
+}
+
+/// Best-effort repo-relative path, for stable symbol ids.
+pub fn rel(path: &Path) -> String {
+    std::env::current_dir()
+        .ok()
+        .and_then(|cwd| path.canonicalize().ok().map(|p| (cwd, p)))
+        .and_then(|(cwd, p)| p.strip_prefix(&cwd).ok().map(|r| r.display().to_string()))
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+/// Walk every registered-source file under `dir`, yielding `(grammar, relpath, source)`.
+fn for_each_source(dir: &Path, mut f: impl FnMut(&Grammar, &str, &[u8]) -> Result<()>) -> Result<()> {
+    for entry in WalkBuilder::new(dir).build() {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        if !path.is_file() || !registry::is_source(path) {
+            continue;
+        }
+        let grammar = registry::for_path(path)?;
+        let src = read(path)?;
+        f(&grammar, &rel(path), &src)?;
+    }
+    Ok(())
+}
+
+/// `outline` — the definitions in one file, optionally filtered by kind.
+pub fn outline(file: &Path, kind: Option<&str>) -> Result<Vec<Symbol>> {
+    let grammar = registry::for_path(file)?;
+    let src = read(file)?;
+    let mut syms = engine::extract(&grammar, &rel(file), &src)?;
+    syms.retain(|s| s.is_definition && kind.is_none_or(|k| s.kind == k));
+    Ok(syms)
+}
+
+/// Project symbols to a JSON array at a detail level, to keep payloads bounded:
+/// 0 = terse (kind/name/parent/row), 1 = default (adds id/col/signature, drops
+/// byte offsets — the agent addresses symbols by id, not offset), 2 = full.
+pub fn project(syms: &[Symbol], detail: u8) -> serde_json::Value {
+    use serde_json::{Map, Value};
+    if detail >= 2 {
+        return serde_json::to_value(syms).unwrap_or(Value::Null);
+    }
+    let arr = syms
+        .iter()
+        .map(|s| {
+            let mut m = Map::new();
+            if detail >= 1 {
+                m.insert("id".into(), s.id.clone().into());
+            }
+            m.insert("kind".into(), s.kind.clone().into());
+            m.insert("name".into(), s.name.clone().into());
+            if let Some(p) = &s.parent {
+                m.insert("parent".into(), p.clone().into());
+            }
+            m.insert("row".into(), s.row.into());
+            if detail >= 1 {
+                m.insert("col".into(), s.col.into());
+                m.insert("signature".into(), s.signature.clone().into());
+            }
+            Value::Object(m)
+        })
+        .collect();
+    Value::Array(arr)
+}
+
+/// `symbols` — find across a directory, gitignore-aware.
+pub fn symbols(
+    dir: &Path,
+    kind: Option<&str>,
+    name: Option<&str>,
+    refs: bool,
+) -> Result<Vec<Symbol>> {
+    let name_lc = name.map(str::to_lowercase);
+    let mut all = Vec::new();
+    for_each_source(dir, |grammar, relpath, src| {
+        for s in engine::extract(grammar, relpath, src)? {
+            if !refs && !s.is_definition {
+                continue;
+            }
+            if kind.is_some_and(|k| s.kind != k) {
+                continue;
+            }
+            if name_lc
+                .as_ref()
+                .is_some_and(|n| !s.name.to_lowercase().contains(n))
+            {
+                continue;
+            }
+            all.push(s);
+        }
+        Ok(())
+    })?;
+    Ok(all)
+}
+
+/// The result of `source`: the chosen symbol's code, plus any other
+/// definitions that shared the name (so the agent can disambiguate).
+#[derive(Debug, Serialize)]
+pub struct SourceResult {
+    pub id: String,
+    pub source: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub other_candidates: Vec<String>,
+}
+
+/// `source` — full code of a symbol, by id (`<lang>:<path>#<name>@<row>`) or
+/// by file + name.
+pub fn source(id_or_file: &str, name: Option<&str>) -> Result<SourceResult> {
+    let (file, want): (PathBuf, String) = match name {
+        Some(n) => (PathBuf::from(id_or_file), n.to_string()),
+        None => {
+            let rest = id_or_file.split_once(':').map_or(id_or_file, |(_, r)| r);
+            let (path, after) = rest
+                .split_once('#')
+                .context("symbol id must look like <lang>:<path>#<name>@<row>")?;
+            let name = after.split('@').next().unwrap_or(after).to_string();
+            (PathBuf::from(path), name)
+        }
+    };
+
+    let grammar = registry::for_path(&file)?;
+    let src = read(&file)?;
+    let syms = engine::extract(&grammar, &rel(&file), &src)?;
+    let matches: Vec<&Symbol> = syms
+        .iter()
+        .filter(|s| s.is_definition && s.name == want)
+        .collect();
+
+    let chosen = match matches.first() {
+        None => anyhow::bail!("no definition named `{want}` in {}", file.display()),
+        Some(c) => *c,
+    };
+    Ok(SourceResult {
+        id: chosen.id.clone(),
+        source: engine::slice(&src, chosen).to_string(),
+        other_candidates: matches.iter().skip(1).map(|s| s.id.clone()).collect(),
+    })
+}
+
+/// `check` — ERROR / MISSING nodes in one file.
+pub fn check(file: &Path) -> Result<Vec<Defect>> {
+    let grammar = registry::for_path(file)?;
+    let src = read(file)?;
+    engine::check(&grammar, &src)
+}
+
+/// A site where a symbol is called.
+#[derive(Debug, Serialize)]
+pub struct CallSite {
+    pub file: String,
+    pub row: usize,
+    pub col: usize,
+    /// The function/method that contains this call (`Type::method` when known).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub in_function: Option<String>,
+    /// The trimmed source line of the call.
+    pub line: String,
+}
+
+/// `callers` — every call site of `name` across `dir`, with enclosing function.
+///
+/// Name-based: matches calls to *any* function/method with this name (the slice
+/// does not resolve receiver types). Honest over-match, documented for the agent.
+pub fn callers(dir: &Path, name: &str) -> Result<Vec<CallSite>> {
+    let mut out = Vec::new();
+    for_each_source(dir, |grammar, relpath, src| {
+        let syms = engine::extract(grammar, relpath, src)?;
+        let calls: Vec<&Symbol> = syms
+            .iter()
+            .filter(|s| !s.is_definition && s.kind == "call" && s.name == name)
+            .collect();
+        if calls.is_empty() {
+            return Ok(());
+        }
+        engine::with_tree(grammar, src, |root, profile| {
+            for s in &calls {
+                out.push(CallSite {
+                    in_function: engine::enclosing_function_at(root, s.start_byte, src, profile),
+                    file: s.file.clone(),
+                    row: s.row,
+                    col: s.col,
+                    line: s.signature.clone(),
+                });
+            }
+        })?;
+        Ok(())
+    })?;
+    Ok(out)
+}
+
+/// Parse a `file:row:col` position string (row/col 0-based).
+pub fn parse_pos(s: &str) -> Result<(PathBuf, usize, usize)> {
+    let parts: Vec<&str> = s.rsplitn(3, ':').collect();
+    match parts.as_slice() {
+        [col, row, file] => Ok((
+            PathBuf::from(file),
+            row.parse().map_err(|_| anyhow::anyhow!("bad row in `{s}`"))?,
+            col.parse().map_err(|_| anyhow::anyhow!("bad col in `{s}`"))?,
+        )),
+        _ => anyhow::bail!("expected file:row:col, got `{s}`"),
+    }
+}
+
+/// `definition` — exact-name definitions of `name` across `dir` (go-to-def).
+pub fn definition(dir: &Path, name: &str) -> Result<Vec<Symbol>> {
+    let mut defs = symbols(dir, None, Some(name), false)?;
+    defs.retain(|s| s.name == name);
+    Ok(defs)
+}
+
+/// `definition --at` — resolve the identifier at `file:row:col`, then find its
+/// definition(s). Returns the resolved name alongside the matches.
+pub fn definition_at(file: &Path, row: usize, col: usize, dir: &Path) -> Result<(String, Vec<Symbol>)> {
+    let grammar = registry::for_path(file)?;
+    let src = read(file)?;
+    let name = engine::with_tree(&grammar, &src, |root, profile| {
+        engine::identifier_at(root, row, col, &src, profile)
+    })?
+    .with_context(|| format!("no identifier at {}:{row}:{col}", file.display()))?;
+    let defs = definition(dir, &name)?;
+    Ok((name, defs))
+}
