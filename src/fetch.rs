@@ -26,7 +26,9 @@ struct Catalog {
 struct CatEntry {
     name: String,
     version: String,
-    wasm_sha256: String,
+    /// filename → sha256, for every file grove serves for this grammar.
+    #[serde(default)]
+    files: std::collections::HashMap<String, String>,
 }
 
 fn host() -> String {
@@ -84,25 +86,34 @@ pub fn run(langs: &[String], force: bool) -> Result<()> {
             println!("  {:<12} {} · cached", e.name, e.version);
             continue;
         }
-        let base = format!("{host}/{}", e.name);
-        let wasm = get_bytes(&format!("{base}/grammar.wasm"))?;
-        let got = sha256(&wasm);
-        if got != e.wasm_sha256 {
-            bail!(
-                "{}: wasm hash mismatch — catalog {}, downloaded {}",
-                e.name,
-                e.wasm_sha256,
-                got
-            );
+        if e.files.is_empty() {
+            bail!("catalog entry for `{}` lists no files", e.name);
         }
-        let tags = get_bytes(&format!("{base}/tags.scm"))?;
-        let manifest = get_bytes(&format!("{base}/manifest.json"))?;
+        let base = format!("{host}/{}", e.name);
+
+        // Download every file and verify its hash *before* writing any (atomic).
+        let mut names: Vec<&String> = e.files.keys().collect();
+        names.sort();
+        let mut blobs = Vec::new();
+        for fname in names {
+            let want = &e.files[fname];
+            let bytes = get_bytes(&format!("{base}/{fname}"))?;
+            let got = sha256(&bytes);
+            if &got != want {
+                bail!("{}/{fname}: hash mismatch — catalog {want}, downloaded {got}", e.name);
+            }
+            blobs.push((fname.clone(), bytes));
+        }
 
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-        std::fs::write(dir.join("grammar.wasm"), &wasm)?;
-        std::fs::write(dir.join("tags.scm"), &tags)?;
-        std::fs::write(dir.join("manifest.json"), &manifest)?;
-        println!("  {:<12} {} ✓ {} KB", e.name, e.version, wasm.len() / 1024);
+        for (fname, bytes) in &blobs {
+            std::fs::write(dir.join(fname), bytes)?;
+        }
+        let kb = blobs
+            .iter()
+            .find(|(n, _)| n == "grammar.wasm")
+            .map_or(0, |(_, b)| b.len() / 1024);
+        println!("  {:<12} {} ✓ {} files, {} KB", e.name, e.version, blobs.len(), kb);
         fetched += 1;
     }
     println!("\n{fetched} fetched · cache: {}", cache.display());

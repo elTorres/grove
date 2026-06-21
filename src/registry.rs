@@ -30,11 +30,22 @@ pub struct Profile {
     pub identifier_kinds: Vec<String>,
 }
 
+/// Where a hosted artifact was ingested from — recorded for auditability.
+/// grove serves the bytes; this attributes the source.
+#[derive(Deserialize, Clone)]
+pub struct Source {
+    pub repo: String,
+    #[serde(default)]
+    pub rev: String,
+}
+
 #[derive(Deserialize, Clone)]
 pub struct Manifest {
     pub name: String,
     pub version: String,
     pub extensions: Vec<String>,
+    #[serde(default)]
+    pub source: Option<Source>,
     #[serde(default)]
     pub profile: Profile,
 }
@@ -236,6 +247,51 @@ pub fn manifests() -> Vec<Manifest> {
     let mut v: Vec<Manifest> = index().by_name.values().cloned().collect();
     v.sort_by(|a, b| a.name.cmp(&b.name));
     v
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut h = Sha256::new();
+    h.update(bytes);
+    format!("sha256:{:x}", h.finalize())
+}
+
+/// Build the hosted catalog (`index.json`) for a registry directory: per
+/// language, its version, provenance, and a content hash of every served file.
+/// This is what registry CI runs to publish; `grove fetch` consumes it.
+pub fn build_index(root: &Path) -> Result<serde_json::Value> {
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(root)
+        .with_context(|| format!("reading registry {}", root.display()))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+
+    let mut grammars = Vec::new();
+    for dir in dirs {
+        let mpath = dir.join("manifest.json");
+        if !mpath.exists() {
+            continue;
+        }
+        let m: Manifest = serde_json::from_str(&std::fs::read_to_string(&mpath)?)
+            .with_context(|| format!("parsing {}", mpath.display()))?;
+        let mut files = serde_json::Map::new();
+        for fname in ["grammar.wasm", "tags.scm", "manifest.json"] {
+            let bytes = std::fs::read(dir.join(fname))
+                .with_context(|| format!("hashing {}/{fname}", m.name))?;
+            files.insert(fname.into(), sha256_hex(&bytes).into());
+        }
+        let mut entry = serde_json::json!({
+            "name": m.name,
+            "version": m.version,
+            "files": files,
+        });
+        if let Some(src) = &m.source {
+            entry["source"] = serde_json::json!({ "repo": src.repo, "rev": src.rev });
+        }
+        grammars.push(entry);
+    }
+    Ok(serde_json::json!({ "schema": 1, "grammars": grammars }))
 }
 
 /// Write a lockfile pinning every registry grammar's version + wasm hash.

@@ -91,13 +91,25 @@ grove fetch python rust     # just these
 grove fetch python --force  # re-download
 ```
 
+**grove owns the artifacts it serves.** Rather than redirecting to upstream URLs
+at fetch time, grove ingests each grammar (official release wasm where it exists,
+else built from source), normalizes it into the shape grove needs — `grammar.wasm`
+(native `dylink.0`) + `tags.scm` + a `manifest.json` carrying the node-kind
+`profile` — and hosts those bytes content-addressed, recording provenance
+(`source.repo` / `source.rev`) for auditability. This guarantees the three travel
+as one co-versioned unit and that `grove.lock` always resolves.
+
 The host is a **`grove-registry` GitHub repo served via jsDelivr's GitHub CDN**
 (`cdn.jsdelivr.net/gh/<owner>/grove-registry@<tag>`) — CDN-backed, immutable by
-tag, no rate limits, no infra to run. Layout: `<host>/index.json` (catalog of
-name → version → wasm sha256) and `<host>/<lang>/{grammar.wasm, tags.scm,
-manifest.json}`. Each wasm's sha256 is verified against the catalog before it's
-written, so a corrupted or tampered grammar is rejected. Override the host with
-`GROVE_REGISTRY_URL` (self-host, fork, or a local mirror).
+tag, no rate limits. Layout: `<host>/index.json` (the catalog) and
+`<host>/<lang>/{grammar.wasm, tags.scm, manifest.json}`. **Every** file's sha256
+is verified against the catalog before it's written (download-verify-then-write,
+atomically), so a corrupted or tampered artifact is rejected. Override the host
+with `GROVE_REGISTRY_URL` (self-host, fork, or a local mirror).
+
+`grove index <dir>` builds the `index.json` catalog (per language: version,
+provenance, and a content hash of every served file) — this is what the registry
+repo's CI runs to publish.
 
 ## Tools (the agent loop, in miniature)
 

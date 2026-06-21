@@ -2,6 +2,7 @@
   "name": "javascript",
   "version": "0.23.0",
   "extensions": ["js", "mjs", "cjs"],
+  "source": { "repo": "tree-sitter/tree-sitter-javascript", "rev": "v0.23.1" },
   "profile": {
     "function_kinds": ["function_declaration", "method_definition"],
     "containers": [["class_declaration", "name"]],

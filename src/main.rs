@@ -95,6 +95,14 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
+    /// Build the hosted catalog (index.json) for a registry directory.
+    Index {
+        /// Registry directory to index (default: the resolved registry root).
+        dir: Option<PathBuf>,
+        /// Output path (default: <dir>/index.json).
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
     /// Show the resolved registry location and search order.
     Registry,
     /// List the languages available in the registry.
@@ -192,6 +200,14 @@ fn main() -> Result<()> {
         }
         Cmd::Init { path, dry_run } => init::run(&path, dry_run)?,
         Cmd::Fetch { langs, force } => fetch::run(&langs, force)?,
+        Cmd::Index { dir, output } => {
+            let dir = dir.unwrap_or_else(|| registry::root().to_path_buf());
+            let out = output.unwrap_or_else(|| dir.join("index.json"));
+            let catalog = registry::build_index(&dir)?;
+            std::fs::write(&out, format!("{}\n", serde_json::to_string_pretty(&catalog)?))?;
+            let n = catalog["grammars"].as_array().map_or(0, |a| a.len());
+            println!("wrote {} ({n} grammars)", out.display());
+        }
         Cmd::Registry => {
             println!("registry root: {}\n", registry::root().display());
             println!("search order (first existing wins):");
