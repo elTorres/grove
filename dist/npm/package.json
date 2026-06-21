@@ -1,0 +1,26 @@
+{
+  "name": "@entelligentsia/grove",
+  "version": "0.1.0",
+  "description": "Structural, byte-precise, token-cheap access to a codebase for coding agents — tree-sitter over a CLI and an MCP server.",
+  "homepage": "https://github.com/Entelligentsia/grove",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Entelligentsia/grove.git"
+  },
+  "license": "MIT",
+  "bin": {
+    "grove": "bin/grove.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "bin/grove.js",
+    "install.js"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "os": ["darwin", "linux", "win32"],
+  "cpu": ["x64", "arm64"]
+}

@@ -1,9 +1,14 @@
 [package]
 name = "grove"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
-description = "Structural sight for coding agents — Phase 0 vertical slice (Rust only)"
+description = "Structural, byte-precise, token-cheap access to a codebase for coding agents — tree-sitter over a CLI and an MCP server."
 license = "MIT"
+repository = "https://github.com/Entelligentsia/grove"
+homepage = "https://github.com/Entelligentsia/grove"
+readme = "README.md"
+keywords = ["tree-sitter", "mcp", "code-intelligence", "agents", "cli"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "grove"
@@ -32,3 +37,8 @@ dirs = "5"
 
 # HTTP client for `grove fetch` (blocking, rustls)
 ureq = "2"
+
+# Slim, self-contained release binaries for distribution.
+[profile.release]
+lto = "thin"
+strip = true

@@ -6,6 +6,25 @@ exposed through **two faces** that share one engine (a human CLI and an MCP
 server), with grammars loaded **at runtime from a WASM registry** — so new
 languages are added with no recompile and no toolchain on the consumer.
 
+## Install
+
+Prebuilt binaries are attached to each [GitHub Release](https://github.com/Entelligentsia/grove/releases)
+for Linux and macOS (x86_64 + aarch64) and Windows (x86_64).
+
+```bash
+# curl | sh — detects your platform, verifies the sha256, installs to ~/.local/bin
+curl -fsSL https://raw.githubusercontent.com/Entelligentsia/grove/main/install.sh | sh
+
+# Homebrew (macOS / Linux)
+brew install Entelligentsia/grove/grove
+
+# npm (provides the `grove` binary via a downloaded prebuilt)
+npm install -g @entelligentsia/grove
+
+# from source (no published crate — install straight from git)
+cargo install --git https://github.com/Entelligentsia/grove
+```
+
 ## Build
 
 ```bash

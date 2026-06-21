@@ -1,2 +1,4 @@
 /target
 grove.lock
+dist/npm/vendor/
+dist/npm/node_modules/
