@@ -29,3 +29,6 @@ sha2 = "0.10"
 
 # OS-native cache/config directories
 dirs = "5"
+
+# HTTP client for `grove fetch` (blocking, rustls)
+ureq = "2"

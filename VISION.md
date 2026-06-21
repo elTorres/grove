@@ -356,8 +356,11 @@ Tool → API mapping:
 > `grove languages`/`grove lock`. **`grove init` is built** — detects languages and
 > writes `.mcp.json` (availability) + `CLAUDE.md` steering directive (adoption) +
 > `grove.lock`, idempotently and non-destructively (the Claude Code config writer).
-> Remaining: hosted+signed registry, more agent-config writers (Codex/Cursor/…), and
-> the `map`/`grep`/`ast` tools.
+> `grove fetch` downloads grammars from a hosted registry into the OS-native cache,
+> verifying each wasm's sha256 against the catalog (host model: a `grove-registry`
+> GitHub repo via jsDelivr's CDN, overridable with `GROVE_REGISTRY_URL`).
+> Remaining: publish the actual hosted registry repo, artifact signing, more
+> agent-config writers (Codex/Cursor/…), and the `map`/`grep`/`ast` tools.
 
 The registry is the spine — sequence the work so nothing blocks on hosting:
 

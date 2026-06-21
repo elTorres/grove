@@ -4,6 +4,7 @@
 //! MCP server (`grove serve`). Both call `ops`; neither owns engine logic.
 
 mod engine;
+mod fetch;
 mod init;
 mod mcp;
 mod ops;
@@ -85,6 +86,14 @@ enum Cmd {
         /// Show what would be detected/written without writing.
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Download grammars from the hosted registry into the OS cache.
+    Fetch {
+        /// Languages to fetch (default: all in the catalog).
+        langs: Vec<String>,
+        /// Re-download even if already cached.
+        #[arg(long)]
+        force: bool,
     },
     /// Show the resolved registry location and search order.
     Registry,
@@ -182,6 +191,7 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Init { path, dry_run } => init::run(&path, dry_run)?,
+        Cmd::Fetch { langs, force } => fetch::run(&langs, force)?,
         Cmd::Registry => {
             println!("registry root: {}\n", registry::root().display());
             println!("search order (first existing wins):");

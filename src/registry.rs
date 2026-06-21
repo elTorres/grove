@@ -63,7 +63,7 @@ impl Grammar {
 /// `~/.cache/grove/grammars` (Linux), `~/Library/Caches/grove/grammars` (macOS),
 /// `%LOCALAPPDATA%\grove\grammars` (Windows). Grammars are a cache — reconstructible
 /// from the hosted registry and content-addressed by `grove.lock`.
-fn cache_root() -> Option<PathBuf> {
+pub fn cache_root() -> Option<PathBuf> {
     dirs::cache_dir().map(|c| c.join("grove").join("grammars"))
 }
 

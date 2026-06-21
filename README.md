@@ -81,6 +81,24 @@ location. grove resolves the registry root by precedence (first existing wins);
 
 Layout under the root is `<lang>/{grammar.wasm, tags.scm, manifest.json}`.
 
+### Fetching grammars
+
+`grove fetch` pulls grammars from the hosted registry into the OS cache:
+
+```bash
+grove fetch                 # all languages in the catalog
+grove fetch python rust     # just these
+grove fetch python --force  # re-download
+```
+
+The host is a **`grove-registry` GitHub repo served via jsDelivr's GitHub CDN**
+(`cdn.jsdelivr.net/gh/<owner>/grove-registry@<tag>`) — CDN-backed, immutable by
+tag, no rate limits, no infra to run. Layout: `<host>/index.json` (catalog of
+name → version → wasm sha256) and `<host>/<lang>/{grammar.wasm, tags.scm,
+manifest.json}`. Each wasm's sha256 is verified against the catalog before it's
+written, so a corrupted or tampered grammar is rejected. Override the host with
+`GROVE_REGISTRY_URL` (self-host, fork, or a local mirror).
+
 ## Tools (the agent loop, in miniature)
 
 | Phase | Command | What it does |
@@ -137,6 +155,7 @@ Tool results are JSON inside an MCP text block; tool-level failures come back as
 registry/<lang>/   grammar.wasm + tags.scm + manifest.json (the registry stub)
 src/main.rs        CLI dispatch (clap) — six verbs + init/languages/lock/serve
 src/init.rs        `grove init` — detect languages, write .mcp.json + CLAUDE.md + lock
+src/fetch.rs       `grove fetch` — download grammars from the hosted registry (GitHub/CDN)
 src/registry.rs    grammar resolver, extension map, lockfile — the registry spine
 src/ops.rs         the operations as a library — the shared engine both faces call
 src/mcp.rs         MCP server — newline-delimited JSON-RPC over stdio
