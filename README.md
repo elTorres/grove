@@ -44,7 +44,10 @@ grove languages      # what's available
 grove lock           # write grove.lock pinning version + wasm sha256
 ```
 
-Currently registered: **rust**, **python**, **javascript**. Adding a language is
+The hosted registry ([Entelligentsia/grove-registry](https://github.com/Entelligentsia/grove-registry))
+carries **all 27 official tree-sitter grammars** (c, cpp, c#, go, java, js, ts, tsx,
+python, ruby, rust, php, scala, ocaml, ql, and more); `grove fetch` installs them.
+The grove repo itself ships a small 3-language dev stub. Adding a language is
 dropping a `registry/<lang>/` directory in — the binary doesn't change, and that
 includes the *full* surface: the `manifest.json` carries a `profile` (container /
 function / identifier node kinds) that drives `parent` grouping, `callers`'

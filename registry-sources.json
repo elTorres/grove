@@ -1,40 +1,589 @@
 {
   "grammars": [
     {
-      "name": "rust",
-      "repo": "tree-sitter/tree-sitter-rust",
-      "rev": "v0.24.0",
-      "wasm_asset": "tree-sitter-rust.wasm",
-      "extensions": ["rs"],
+      "name": "agda",
+      "repo": "tree-sitter/tree-sitter-agda",
+      "rev": "v1.3.3",
+      "wasm_asset": "tree-sitter-agda.wasm",
+      "extensions": [
+        "agda"
+      ],
+      "profile": {}
+    },
+    {
+      "name": "bash",
+      "repo": "tree-sitter/tree-sitter-bash",
+      "rev": "v0.25.1",
+      "wasm_asset": "tree-sitter-bash.wasm",
+      "extensions": [
+        "sh",
+        "bash"
+      ],
       "profile": {
-        "function_kinds": ["function_item", "function_signature_item"],
-        "containers": [["impl_item", "type"], ["trait_item", "name"], ["mod_item", "name"]],
-        "identifier_kinds": ["identifier", "type_identifier", "field_identifier", "shorthand_field_identifier"]
+        "function_kinds": [
+          "function_definition"
+        ],
+        "containers": [],
+        "identifier_kinds": [
+          "variable_name",
+          "word"
+        ]
       }
     },
     {
-      "name": "python",
-      "repo": "tree-sitter/tree-sitter-python",
-      "rev": "v0.23.6",
-      "wasm_asset": "tree-sitter-python.wasm",
-      "extensions": ["py", "pyi"],
+      "name": "c",
+      "repo": "tree-sitter/tree-sitter-c",
+      "rev": "v0.24.2",
+      "wasm_asset": "tree-sitter-c.wasm",
+      "extensions": [
+        "c",
+        "h"
+      ],
       "profile": {
-        "function_kinds": ["function_definition"],
-        "containers": [["class_definition", "name"]],
-        "identifier_kinds": ["identifier"]
+        "function_kinds": [
+          "function_definition"
+        ],
+        "containers": [],
+        "identifier_kinds": [
+          "identifier",
+          "field_identifier",
+          "type_identifier"
+        ]
+      }
+    },
+    {
+      "name": "cpp",
+      "repo": "tree-sitter/tree-sitter-cpp",
+      "rev": "v0.23.4",
+      "wasm_asset": "tree-sitter-cpp.wasm",
+      "extensions": [
+        "cpp",
+        "cc",
+        "cxx",
+        "hpp",
+        "hh"
+      ],
+      "profile": {
+        "function_kinds": [
+          "function_definition"
+        ],
+        "containers": [
+          [
+            "class_specifier",
+            "name"
+          ],
+          [
+            "struct_specifier",
+            "name"
+          ],
+          [
+            "namespace_definition",
+            "name"
+          ]
+        ],
+        "identifier_kinds": [
+          "identifier",
+          "field_identifier",
+          "type_identifier",
+          "namespace_identifier"
+        ]
+      }
+    },
+    {
+      "name": "c_sharp",
+      "repo": "tree-sitter/tree-sitter-c-sharp",
+      "rev": "v0.23.5",
+      "wasm_asset": "tree-sitter-c_sharp.wasm",
+      "extensions": [
+        "cs"
+      ],
+      "profile": {
+        "function_kinds": [
+          "method_declaration",
+          "constructor_declaration",
+          "local_function_statement"
+        ],
+        "containers": [
+          [
+            "class_declaration",
+            "name"
+          ],
+          [
+            "struct_declaration",
+            "name"
+          ],
+          [
+            "interface_declaration",
+            "name"
+          ],
+          [
+            "namespace_declaration",
+            "name"
+          ],
+          [
+            "record_declaration",
+            "name"
+          ]
+        ],
+        "identifier_kinds": [
+          "identifier"
+        ]
+      }
+    },
+    {
+      "name": "css",
+      "repo": "tree-sitter/tree-sitter-css",
+      "rev": "v0.25.0",
+      "wasm_asset": "tree-sitter-css.wasm",
+      "extensions": [
+        "css"
+      ],
+      "profile": {}
+    },
+    {
+      "name": "embedded_template",
+      "repo": "tree-sitter/tree-sitter-embedded-template",
+      "rev": "v0.25.0",
+      "wasm_asset": "tree-sitter-embedded_template.wasm",
+      "extensions": [
+        "erb",
+        "ejs"
+      ],
+      "profile": {}
+    },
+    {
+      "name": "go",
+      "repo": "tree-sitter/tree-sitter-go",
+      "rev": "v0.25.0",
+      "wasm_asset": "tree-sitter-go.wasm",
+      "extensions": [
+        "go"
+      ],
+      "profile": {
+        "function_kinds": [
+          "function_declaration",
+          "method_declaration"
+        ],
+        "containers": [],
+        "identifier_kinds": [
+          "identifier",
+          "field_identifier",
+          "type_identifier",
+          "package_identifier"
+        ]
+      }
+    },
+    {
+      "name": "haskell",
+      "repo": "tree-sitter/tree-sitter-haskell",
+      "rev": "v0.23.1",
+      "wasm_asset": "tree-sitter-haskell.wasm",
+      "extensions": [
+        "hs"
+      ],
+      "profile": {}
+    },
+    {
+      "name": "html",
+      "repo": "tree-sitter/tree-sitter-html",
+      "rev": "v0.23.2",
+      "wasm_asset": "tree-sitter-html.wasm",
+      "extensions": [
+        "html",
+        "htm"
+      ],
+      "profile": {}
+    },
+    {
+      "name": "java",
+      "repo": "tree-sitter/tree-sitter-java",
+      "rev": "v0.23.5",
+      "wasm_asset": "tree-sitter-java.wasm",
+      "extensions": [
+        "java"
+      ],
+      "profile": {
+        "function_kinds": [
+          "method_declaration",
+          "constructor_declaration"
+        ],
+        "containers": [
+          [
+            "class_declaration",
+            "name"
+          ],
+          [
+            "interface_declaration",
+            "name"
+          ],
+          [
+            "enum_declaration",
+            "name"
+          ],
+          [
+            "record_declaration",
+            "name"
+          ]
+        ],
+        "identifier_kinds": [
+          "identifier",
+          "type_identifier"
+        ]
       }
     },
     {
       "name": "javascript",
       "repo": "tree-sitter/tree-sitter-javascript",
-      "rev": "v0.23.1",
+      "rev": "v0.25.0",
       "wasm_asset": "tree-sitter-javascript.wasm",
-      "extensions": ["js", "mjs", "cjs"],
+      "extensions": [
+        "js",
+        "mjs",
+        "cjs"
+      ],
       "profile": {
-        "function_kinds": ["function_declaration", "method_definition"],
-        "containers": [["class_declaration", "name"]],
-        "identifier_kinds": ["identifier", "property_identifier"]
+        "function_kinds": [
+          "function_declaration",
+          "method_definition"
+        ],
+        "containers": [
+          [
+            "class_declaration",
+            "name"
+          ]
+        ],
+        "identifier_kinds": [
+          "identifier",
+          "property_identifier"
+        ]
       }
+    },
+    {
+      "name": "jsdoc",
+      "repo": "tree-sitter/tree-sitter-jsdoc",
+      "rev": "v0.25.0",
+      "wasm_asset": "tree-sitter-jsdoc.wasm",
+      "extensions": [],
+      "profile": {}
+    },
+    {
+      "name": "json",
+      "repo": "tree-sitter/tree-sitter-json",
+      "rev": "v0.24.8",
+      "wasm_asset": "tree-sitter-json.wasm",
+      "extensions": [
+        "json"
+      ],
+      "profile": {}
+    },
+    {
+      "name": "julia",
+      "repo": "tree-sitter/tree-sitter-julia",
+      "rev": "v0.25.0",
+      "wasm_asset": "tree-sitter-julia.wasm",
+      "extensions": [
+        "jl"
+      ],
+      "profile": {
+        "function_kinds": [
+          "function_definition",
+          "macro_definition"
+        ],
+        "containers": [
+          [
+            "module_definition",
+            "name"
+          ],
+          [
+            "struct_definition",
+            "name"
+          ]
+        ],
+        "identifier_kinds": [
+          "identifier"
+        ]
+      }
+    },
+    {
+      "name": "ocaml",
+      "repo": "tree-sitter/tree-sitter-ocaml",
+      "rev": "v0.25.0",
+      "wasm_asset": "tree-sitter-ocaml.wasm",
+      "extensions": [
+        "ml"
+      ],
+      "profile": {}
+    },
+    {
+      "name": "ocaml_interface",
+      "repo": "tree-sitter/tree-sitter-ocaml",
+      "rev": "v0.25.0",
+      "wasm_asset": "tree-sitter-ocaml_interface.wasm",
+      "extensions": [
+        "mli"
+      ],
+      "profile": {}
+    },
+    {
+      "name": "php",
+      "repo": "tree-sitter/tree-sitter-php",
+      "rev": "v0.24.2",
+      "wasm_asset": "tree-sitter-php.wasm",
+      "extensions": [
+        "php"
+      ],
+      "profile": {
+        "function_kinds": [
+          "function_definition",
+          "method_declaration"
+        ],
+        "containers": [
+          [
+            "class_declaration",
+            "name"
+          ],
+          [
+            "interface_declaration",
+            "name"
+          ],
+          [
+            "trait_declaration",
+            "name"
+          ],
+          [
+            "enum_declaration",
+            "name"
+          ]
+        ],
+        "identifier_kinds": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "python",
+      "repo": "tree-sitter/tree-sitter-python",
+      "rev": "v0.25.0",
+      "wasm_asset": "tree-sitter-python.wasm",
+      "extensions": [
+        "py",
+        "pyi"
+      ],
+      "profile": {
+        "function_kinds": [
+          "function_definition"
+        ],
+        "containers": [
+          [
+            "class_definition",
+            "name"
+          ]
+        ],
+        "identifier_kinds": [
+          "identifier"
+        ]
+      }
+    },
+    {
+      "name": "ql",
+      "repo": "tree-sitter/tree-sitter-ql",
+      "rev": "v0.23.1",
+      "wasm_asset": "tree-sitter-ql.wasm",
+      "extensions": [
+        "ql"
+      ],
+      "profile": {}
+    },
+    {
+      "name": "regex",
+      "repo": "tree-sitter/tree-sitter-regex",
+      "rev": "v0.25.0",
+      "wasm_asset": "tree-sitter-regex.wasm",
+      "extensions": [],
+      "profile": {}
+    },
+    {
+      "name": "ruby",
+      "repo": "tree-sitter/tree-sitter-ruby",
+      "rev": "v0.23.1",
+      "wasm_asset": "tree-sitter-ruby.wasm",
+      "extensions": [
+        "rb"
+      ],
+      "profile": {
+        "function_kinds": [
+          "method",
+          "singleton_method"
+        ],
+        "containers": [
+          [
+            "class",
+            "name"
+          ],
+          [
+            "module",
+            "name"
+          ]
+        ],
+        "identifier_kinds": [
+          "identifier",
+          "constant"
+        ]
+      }
+    },
+    {
+      "name": "rust",
+      "repo": "tree-sitter/tree-sitter-rust",
+      "rev": "v0.24.2",
+      "wasm_asset": "tree-sitter-rust.wasm",
+      "extensions": [
+        "rs"
+      ],
+      "profile": {
+        "function_kinds": [
+          "function_item",
+          "function_signature_item"
+        ],
+        "containers": [
+          [
+            "impl_item",
+            "type"
+          ],
+          [
+            "trait_item",
+            "name"
+          ],
+          [
+            "mod_item",
+            "name"
+          ]
+        ],
+        "identifier_kinds": [
+          "identifier",
+          "type_identifier",
+          "field_identifier",
+          "shorthand_field_identifier"
+        ]
+      }
+    },
+    {
+      "name": "scala",
+      "repo": "tree-sitter/tree-sitter-scala",
+      "rev": "v0.26.0",
+      "wasm_asset": "tree-sitter-scala.wasm",
+      "extensions": [
+        "scala",
+        "sbt"
+      ],
+      "profile": {
+        "function_kinds": [
+          "function_definition"
+        ],
+        "containers": [
+          [
+            "class_definition",
+            "name"
+          ],
+          [
+            "object_definition",
+            "name"
+          ],
+          [
+            "trait_definition",
+            "name"
+          ]
+        ],
+        "identifier_kinds": [
+          "identifier"
+        ]
+      }
+    },
+    {
+      "name": "typescript",
+      "repo": "tree-sitter/tree-sitter-typescript",
+      "rev": "v0.23.2",
+      "wasm_asset": "tree-sitter-typescript.wasm",
+      "extensions": [
+        "ts",
+        "mts",
+        "cts"
+      ],
+      "profile": {
+        "function_kinds": [
+          "function_declaration",
+          "method_definition",
+          "method_signature",
+          "function_signature",
+          "abstract_method_signature"
+        ],
+        "containers": [
+          [
+            "class_declaration",
+            "name"
+          ],
+          [
+            "interface_declaration",
+            "name"
+          ],
+          [
+            "internal_module",
+            "name"
+          ]
+        ],
+        "identifier_kinds": [
+          "identifier",
+          "property_identifier",
+          "type_identifier"
+        ]
+      }
+    },
+    {
+      "name": "tsx",
+      "repo": "tree-sitter/tree-sitter-typescript",
+      "rev": "v0.23.2",
+      "wasm_asset": "tree-sitter-tsx.wasm",
+      "extensions": [
+        "tsx"
+      ],
+      "profile": {
+        "function_kinds": [
+          "function_declaration",
+          "method_definition",
+          "method_signature",
+          "function_signature",
+          "abstract_method_signature"
+        ],
+        "containers": [
+          [
+            "class_declaration",
+            "name"
+          ],
+          [
+            "interface_declaration",
+            "name"
+          ],
+          [
+            "internal_module",
+            "name"
+          ]
+        ],
+        "identifier_kinds": [
+          "identifier",
+          "property_identifier",
+          "type_identifier"
+        ]
+      }
+    },
+    {
+      "name": "verilog",
+      "repo": "tree-sitter/tree-sitter-verilog",
+      "rev": "v1.0.3",
+      "wasm_asset": "tree-sitter-verilog.wasm",
+      "extensions": [
+        "v",
+        "sv"
+      ],
+      "profile": {}
     }
   ]
 }

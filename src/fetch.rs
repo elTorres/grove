@@ -13,8 +13,10 @@ use sha2::{Digest, Sha256};
 
 use crate::registry;
 
-/// Default host: the grove registry repo via jsDelivr's GitHub CDN.
-const DEFAULT_HOST: &str = "https://cdn.jsdelivr.net/gh/grove-lang/registry@main";
+/// Default host: the grove-registry repo. raw.githubusercontent serves it
+/// reliably and immediately; for higher volume, point `GROVE_REGISTRY_URL` at a
+/// jsDelivr/CDN mirror or a self-hosted copy.
+const DEFAULT_HOST: &str = "https://raw.githubusercontent.com/Entelligentsia/grove-registry/v1";
 
 #[derive(Deserialize)]
 struct Catalog {

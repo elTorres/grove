@@ -40,6 +40,50 @@ fn default_tags() -> String {
     "queries/tags.scm".to_string()
 }
 
+/// Ingest one grammar; returns (wasm KB, has_tags). Errors are per-language.
+fn ingest_one(s: &Spec, out: &Path) -> Result<(usize, bool)> {
+    let version = s.rev.trim_start_matches('v').to_string();
+
+    let wasm_url = format!(
+        "https://github.com/{}/releases/download/{}/{}",
+        s.repo, s.rev, s.wasm_asset
+    );
+    let wasm = fetch::get_bytes(&wasm_url).with_context(|| format!("wasm {wasm_url}"))?;
+    if !wasm.windows(8).any(|w| w == b"dylink.0") {
+        bail!("{} is not a native (dylink.0) module", s.wasm_asset);
+    }
+
+    // tags.scm is optional: not every grammar ships one (css/html/json have no
+    // definitions to extract). Without it the grammar still parses and `check`s;
+    // the symbol tools are graceful no-ops.
+    let tags_url = format!(
+        "https://raw.githubusercontent.com/{}/{}/{}",
+        s.repo, s.rev, s.tags_path
+    );
+    let (tags, has_tags) = match fetch::get_bytes(&tags_url) {
+        Ok(t) => (t, true),
+        Err(_) => (b"; no upstream tags query for this grammar\n".to_vec(), false),
+    };
+
+    let manifest = serde_json::json!({
+        "name": s.name,
+        "version": version,
+        "extensions": s.extensions,
+        "source": { "repo": s.repo, "rev": s.rev },
+        "profile": s.profile,
+    });
+
+    let dir = out.join(&s.name);
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    std::fs::write(dir.join("grammar.wasm"), &wasm)?;
+    std::fs::write(dir.join("tags.scm"), &tags)?;
+    std::fs::write(
+        dir.join("manifest.json"),
+        format!("{}\n", serde_json::to_string_pretty(&manifest)?),
+    )?;
+    Ok((wasm.len() / 1024, has_tags))
+}
+
 pub fn run(sources: &Path, out: &Path, only: &[String]) -> Result<()> {
     let specs: Sources = serde_json::from_str(
         &std::fs::read_to_string(sources)
@@ -61,52 +105,24 @@ pub fn run(sources: &Path, out: &Path, only: &[String]) -> Result<()> {
             .collect::<Result<_>>()?
     };
 
+    // Continue past a failing language; report a summary at the end.
+    let mut ok = 0;
+    let mut failed = Vec::new();
     for s in targets {
-        let version = s.rev.trim_start_matches('v').to_string();
-        println!("  {} {} ← {}@{}", s.name, version, s.repo, s.rev);
-
-        // Official release wasm (native dylink.0 module).
-        let wasm_url = format!(
-            "https://github.com/{}/releases/download/{}/{}",
-            s.repo, s.rev, s.wasm_asset
-        );
-        let wasm = fetch::get_bytes(&wasm_url)
-            .with_context(|| format!("downloading {} release wasm", s.name))?;
-        if !wasm.windows(8).any(|w| w == b"dylink.0") {
-            bail!(
-                "{}: {} is not a native (dylink.0) module — won't load in grove",
-                s.name,
-                s.wasm_asset
-            );
+        match ingest_one(s, out) {
+            Ok((kb, has_tags)) => {
+                let tags = if has_tags { "" } else { "  (no tags query)" };
+                println!("  ✓ {:<16} {}  ({kb} KB){tags}", s.name, s.rev);
+                ok += 1;
+            }
+            Err(e) => {
+                eprintln!("  ✗ {:<16} {:#}", s.name, e);
+                failed.push(s.name.clone());
+            }
         }
-
-        // tags.scm from the repo at the pinned rev.
-        let tags_url = format!(
-            "https://raw.githubusercontent.com/{}/{}/{}",
-            s.repo, s.rev, s.tags_path
-        );
-        let tags = fetch::get_bytes(&tags_url)
-            .with_context(|| format!("downloading {} tags.scm", s.name))?;
-
-        // manifest = identity + provenance + grove's curated profile/extensions.
-        let manifest = serde_json::json!({
-            "name": s.name,
-            "version": version,
-            "extensions": s.extensions,
-            "source": { "repo": s.repo, "rev": s.rev },
-            "profile": s.profile,
-        });
-
-        let dir = out.join(&s.name);
-        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-        std::fs::write(dir.join("grammar.wasm"), &wasm)?;
-        std::fs::write(dir.join("tags.scm"), &tags)?;
-        std::fs::write(
-            dir.join("manifest.json"),
-            format!("{}\n", serde_json::to_string_pretty(&manifest)?),
-        )?;
-        println!("    ✓ {} KB wasm + {}-byte tags", wasm.len() / 1024, tags.len());
     }
+    println!("\n{ok} ingested, {} failed{}", failed.len(),
+        if failed.is_empty() { String::new() } else { format!(": {}", failed.join(", ")) });
 
     let catalog = registry::build_index(out)?;
     std::fs::write(
