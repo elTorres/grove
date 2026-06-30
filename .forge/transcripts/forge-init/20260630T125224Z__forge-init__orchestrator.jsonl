@@ -1,0 +1,46 @@
+{"kind":"pipeline-start","ts":"2026-06-30T12:52:24.501Z","entityKind":"task","entityId":"forge-init"}
+{"kind":"notify","ts":"2026-06-30T12:52:24.501Z","level":"info","message":"→ init: phase collect (1/4)"}
+{"kind":"phase-start","ts":"2026-06-30T12:52:24.501Z","phase":"collect","phaseIndex":0,"phaseCount":4,"attempt":1,"workflowFile":"init-collect","persona":"engineer"}
+{"kind":"notify","ts":"2026-06-30T12:52:24.502Z","level":"info","message":"  init dispatch: sequential 5-agent fan-out for \"collect:discovery\" (meta uses parallel; this port is sequential — slower but simpler)"}
+{"kind":"notify","ts":"2026-06-30T12:52:24.502Z","level":"info","message":"  init dispatch: discovery:stack · role=discovery · tier=sonnet · persona=engineer · model=ollama-cloud:glm-5.1 [L1]"}
+{"kind":"notify","ts":"2026-06-30T12:53:47.594Z","level":"info","message":"  init dispatch: discovery:routing · role=discovery · tier=sonnet · persona=engineer · model=ollama-cloud:glm-5.1 [L1]"}
+{"kind":"notify","ts":"2026-06-30T12:55:01.431Z","level":"info","message":"  init dispatch: discovery:processes · role=discovery · tier=sonnet · persona=engineer · model=ollama-cloud:glm-5.1 [L1]"}
+{"kind":"notify","ts":"2026-06-30T12:56:40.461Z","level":"info","message":"  init dispatch: discovery:database · role=discovery · tier=sonnet · persona=engineer · model=ollama-cloud:glm-5.1 [L1]"}
+{"kind":"notify","ts":"2026-06-30T12:59:08.831Z","level":"info","message":"  init dispatch: discovery:testing · role=discovery · tier=sonnet · persona=engineer · model=ollama-cloud:glm-5.1 [L1]"}
+{"kind":"notify","ts":"2026-06-30T13:00:55.636Z","level":"info","message":"  init dispatch: config-writer · role=config · tier=sonnet · persona=engineer · model=ollama-cloud:glm-5.1 [L1]"}
+{"kind":"notify","ts":"2026-06-30T13:02:52.420Z","level":"warning","message":"⚠ forge:init — sprintId not provided; skipping phase event emit for collect"}
+{"kind":"phase-end","ts":"2026-06-30T13:02:52.420Z","phase":"collect","phaseIndex":0,"attempt":1,"verdict":"n/a","elapsedMs":627919}
+{"kind":"notify","ts":"2026-06-30T13:02:52.420Z","level":"info","message":"✓ init: collect complete (627s)"}
+{"kind":"notify","ts":"2026-06-30T13:02:52.420Z","level":"info","message":"→ init: phase discover (2/4)"}
+{"kind":"phase-start","ts":"2026-06-30T13:02:52.420Z","phase":"discover","phaseIndex":1,"phaseCount":4,"attempt":1,"workflowFile":"init-discover","persona":"engineer"}
+{"kind":"notify","ts":"2026-06-30T13:02:52.420Z","level":"info","message":"  init dispatch: gate · role=gate · tier=haiku · persona=engineer · model=ollama-cloud:glm-5.1 [L1]"}
+{"kind":"notify","ts":"2026-06-30T13:07:11.882Z","level":"info","message":"  init dispatch: sequential 7-agent fan-out for \"discover:kb-docs\" (meta uses parallel; this port is sequential — slower but simpler)"}
+{"kind":"notify","ts":"2026-06-30T13:07:11.882Z","level":"info","message":"  init dispatch: kb-doc:architecture/stack · role=kb-doc · tier=sonnet · persona=engineer · model=ollama-cloud:glm-5.1 [L1]"}
+{"kind":"notify","ts":"2026-06-30T13:10:55.434Z","level":"info","message":"  init dispatch: kb-doc:architecture/processes · role=kb-doc · tier=sonnet · persona=engineer · model=ollama-cloud:glm-5.1 [L1]"}
+{"kind":"notify","ts":"2026-06-30T13:14:24.292Z","level":"info","message":"  init dispatch: kb-doc:architecture/routing · role=kb-doc · tier=sonnet · persona=engineer · model=ollama-cloud:glm-5.1 [L1]"}
+{"kind":"notify","ts":"2026-06-30T13:16:12.112Z","level":"info","message":"  init dispatch: kb-doc:architecture/database · role=kb-doc · tier=sonnet · persona=engineer · model=ollama-cloud:glm-5.1 [L1]"}
+{"kind":"notify","ts":"2026-06-30T13:20:29.157Z","level":"info","message":"  init dispatch: kb-doc:architecture/testing · role=kb-doc · tier=sonnet · persona=engineer · model=ollama-cloud:glm-5.1 [L1]"}
+{"kind":"notify","ts":"2026-06-30T13:24:50.299Z","level":"info","message":"  init dispatch: kb-doc:business-domain/domain-model · role=kb-doc · tier=sonnet · persona=engineer · model=ollama-cloud:glm-5.1 [L1]"}
+{"kind":"notify","ts":"2026-06-30T13:28:54.979Z","level":"info","message":"  init dispatch: kb-doc:business-domain/domain-concepts · role=kb-doc · tier=sonnet · persona=engineer · model=ollama-cloud:glm-5.1 [L1]"}
+{"kind":"notify","ts":"2026-06-30T13:32:35.896Z","level":"info","message":"  init dispatch: index · role=index · tier=sonnet · persona=engineer · model=ollama-cloud:glm-5.1 [L1]"}
+{"kind":"notify","ts":"2026-06-30T13:35:45.205Z","level":"info","message":"  init dispatch: context · role=context · tier=sonnet · persona=engineer · model=ollama-cloud:glm-5.1 [L1]"}
+{"kind":"notify","ts":"2026-06-30T13:42:39.282Z","level":"info","message":"〇 project-context.json written."}
+{"kind":"notify","ts":"2026-06-30T13:42:39.315Z","level":"warning","message":"⚠ forge:init — sprintId not provided; skipping phase event emit for discover"}
+{"kind":"phase-end","ts":"2026-06-30T13:42:39.315Z","phase":"discover","phaseIndex":1,"attempt":1,"verdict":"n/a","elapsedMs":2386895}
+{"kind":"notify","ts":"2026-06-30T13:42:39.315Z","level":"info","message":"✓ init: discover complete (2386s)"}
+{"kind":"notify","ts":"2026-06-30T13:42:39.315Z","level":"info","message":"→ init: phase materialize (3/4)"}
+{"kind":"phase-start","ts":"2026-06-30T13:42:39.315Z","phase":"materialize","phaseIndex":2,"phaseCount":4,"attempt":1,"workflowFile":"init-materialize","persona":"engineer"}
+{"kind":"notify","ts":"2026-06-30T13:42:39.400Z","level":"info","message":"〇 Phase 3 complete."}
+{"kind":"phase-end","ts":"2026-06-30T13:42:39.400Z","phase":"materialize","phaseIndex":2,"attempt":1,"verdict":"n/a","elapsedMs":85}
+{"kind":"notify","ts":"2026-06-30T13:42:39.400Z","level":"info","message":"✓ init: materialize complete (0s)"}
+{"kind":"notify","ts":"2026-06-30T13:42:39.400Z","level":"info","message":"→ init: phase register (4/4)"}
+{"kind":"phase-start","ts":"2026-06-30T13:42:39.400Z","phase":"register","phaseIndex":3,"phaseCount":4,"attempt":1,"workflowFile":"init-register","persona":"engineer"}
+{"kind":"notify","ts":"2026-06-30T13:42:39.477Z","level":"info","message":"〇 Copied 16 schema files to .forge/schemas/."}
+{"kind":"notify","ts":"2026-06-30T13:42:39.479Z","level":"info","message":"〇 Copied bundled tools to .forge/tools/ (v1.6.4)."}
+{"kind":"notify","ts":"2026-06-30T13:42:39.848Z","level":"info","message":"〇 Update-check cache baseline written."}
+{"kind":"notify","ts":"2026-06-30T13:42:39.849Z","level":"info","message":"〇 refresh-kb-links: updated CLAUDE.md"}
+{"kind":"notify","ts":"2026-06-30T13:42:39.849Z","level":"info","message":"〇 .forge/store/events/ already gitignored — skipped."}
+{"kind":"notify","ts":"2026-06-30T13:42:39.849Z","level":"info","message":"〇 Phase 4 complete — /forge:init done."}
+{"kind":"phase-end","ts":"2026-06-30T13:42:39.849Z","phase":"register","phaseIndex":3,"attempt":1,"verdict":"n/a","elapsedMs":449}
+{"kind":"notify","ts":"2026-06-30T13:42:39.849Z","level":"info","message":"✓ init: register complete (0s)"}
+{"kind":"pipeline-end","ts":"2026-06-30T13:42:39.849Z","outcome":"complete","elapsedMs":1782826959849}
