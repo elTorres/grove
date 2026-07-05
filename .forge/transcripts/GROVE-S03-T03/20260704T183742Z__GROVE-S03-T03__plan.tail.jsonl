@@ -1,0 +1,109 @@
+{"line":"[T0:00:07:42] ─── phase 1/8 plan begin · GROVE-S03-T03 ───"}
+{"line":"╭ [T1:00:07:44] ✱ Let me start by running the banner and then follow the workflow algorithm step by step."}
+{"line":"│ → forge_banner"}
+{"line":"│ ← forge_banner ok 5L"}
+{"line":"╭ [T2:00:07:47] » ## Step 0a — Pre-flight Gate Check"}
+{"line":"│ → forge_preflight"}
+{"line":"│ ← forge_preflight ok 1L"}
+{"line":"╭ [T3:00:07:49] » ## Step 0b — Pipeline Step Guard"}
+{"line":"│ ⚙ forge_store read"}
+{"line":"│ ← forge_store ok 12L ⇌5%"}
+{"line":"╭ [T4:00:07:53] ✱ Status is `draft` which is in the allowed set (`draft`, `planned`, `plan-revision-required`). Proceed.\n\nNow Step 1: Load Context - Read persona first."}
+{"line":"│ » Status is `draft` — allowed. Proceeding.\n\n## Step 1 — Load Context"}
+{"line":"│ ⌕ read .forge/personas/architect.md"}
+{"line":"│ ← read ok 22L"}
+{"line":"╭ [T5:00:07:57] » 🗻 **grove Architect** — I hold the shape of the whole. I give final sign-off before commit."}
+{"line":"│ → forge_artifact read"}
+{"line":"│ ⚙ forge_store_query nlp"}
+{"line":"│ ← forge_artifact ok 11L ⇌86%"}
+{"line":"│ ← forge_store_query ok 26L ⇌75%"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 5"}
+{"line":"╭ [T6:00:08:01] → forge_artifact read"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 8L"}
+{"line":"│ ← forge_artifact ok 22L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 6"}
+{"line":"╭ [T7:00:08:04] → forge_artifact read"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 7L"}
+{"line":"│ ← forge_artifact ok 10L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 7"}
+{"line":"╭ [T8:00:08:09] ✱ Now I need to read the architecture docs and the sprint requirements to understand the full picture."}
+{"line":"│ → forge_artifact read"}
+{"line":"│ ⌕ read engineering/architecture/stack.md"}
+{"line":"│ ← read ok 67L"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 8"}
+{"line":"╭ [T9:00:08:12] → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 18L"}
+{"line":"╭ [T10:00:08:16] ✱ Now let me look at the current code to understand what we're working with. Let me check the relevant files."}
+{"line":"│ » ## Step 2 — Research\n\nNow let me look at the actual code files I need to modify."}
+{"line":"│ → mcp__grove__outline"}
+{"line":"│ → mcp__grove__outline"}
+{"line":"│ ← mcp__grove__outline ok 1L"}
+{"line":"│ ← mcp__grove__outline ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 10"}
+{"line":"╭ [T11:00:08:20] → mcp__grove__source"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 11"}
+{"line":"╭ [T12:00:08:23] → mcp__grove__source"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 12"}
+{"line":"╭ [T13:00:08:25] ⌕ read cli/src/mcp.rs"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"│ ← read ok 47L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 13"}
+{"line":"╭ [T14:00:08:30] ✱ Now I have a good picture of the code. Let me also look at the T01 and T02 summaries to understand the dependencies, since they must be completed first."}
+{"line":"│ → forge_artifact list"}
+{"line":"│ → forge_artifact list"}
+{"line":"│ ← forge_artifact ok 16L"}
+{"line":"│ ← forge_artifact ok 15L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 14"}
+{"line":"╭ [T15:00:08:34] ✱ Both T01 and T02 are complete (have approve-summary). Let me look at the implementation summaries to understand what they produced, to inform this plan."}
+{"line":"│ → forge_artifact read"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 31L"}
+{"line":"│ ← forge_artifact ok 23L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 15"}
+{"line":"╭ [T16:00:08:38] ✱ Now I have a clear picture of what T01 and T02 implemented. Let me now look at the current state of `core/src/config.rs` and `cli/src/mcp.rs` since these have been modified by T01 and T02."}
+{"line":"│ » Now let me look at the current state of the files (post-T01 and T02):"}
+{"line":"│ ⌕ read core/src/config.rs"}
+{"line":"│ ← read ok 272L"}
+{"line":"╭ [T17:00:09:30] ✱ Now I have a clear picture of the current codebase. Let me understand what T03 needs to do:\n\n1. **Add `active_mode(root, force) -> Mode` to `core/src/config.rs`** — A shared resolver that:\n   - Loads `GroveConfig` from `root`\n   - Applies a `force` choice (none / force-explore / force-standard), applying precedence: `--standard` wins over `--explore`\n   - Returns the effective `Mode`\n\n2. **Rewrite `determine_surface` in `cli/src/mcp.rs`** — Instead of checking `ExploreConfig::config_path(root).exists()`, call `active_mode(...)` and key off `Mode::McpLlm`. \n\nI need to check how `ExploreConfig` is currently being used in `determine_surface`. The function loads `GroveConfig` which already contains the embedded `explore` field, so I can extract the config from there instead of loading it separately. The `force` parameter will control which mode takes precedence when both are available. Defining the enum and function...\n\nNow I'm weighing how to handle the ExploreConfig alongside the mode resolution. The challenge is that `active_mode` would need to return both the mode and the explore config, which feels awkward. I could have `determine_surface` call `active_mode` for the mode, then load `GroveConfig` again if needed for the explore config—a bit redundant but keeps the separation clean. Alternatively, both functions could load `GroveConfig` independently, which is slightly wasteful but maintains clear responsibilities.\n\nActually, the better framing is that `active_mode` is a shared resolver for the mode decision itself, while the explore config extraction is specific to the serve command. So in `determine_surface`, I'd compute the force flags, call `active_mode` to get the mode, then return `Standard` if it's not `McpLlm`. means the `explore` field from the loaded GroveConfig becomes the ExploreConfig we need, rather than loading it separately through `ExploreConfig::load`. So `determine_surface` checks the mode first, and only if it's McpLlm does it load the full GroveConfig to access the explore section.\n\nI should also verify the regression tests—specifically that when `mode: \"mcp\"` is set, `serve` immediately boots the standard 7-tool surface regardless of any stale explore config files lying around, and that `mode: \"mcp-llm\"` with a healthy provider surfaces the LLM-powered tools instead.\n\nFor testing `active_mode`, I'll add unit tests directly in the config module, and for the `determine_surface` behavior changes, the existing integration tests should cover the main scenarios, though I may need to add one that explicitly checks the interaction between a config file with `mode: mcp` and leftover explore config.\n\nI'm defining a `ModeChoice` enum as a simple three-variant type that captures CLI overrides, and then building a shared `active_mode` resolver function that applies the same precedence logic `serve` currently uses.\n\nDefining the enum and resolver function... Completing the function definition... Now I need to check what imports in mcp.rs will need to be updated."}
+{"line":"│ » Now let me look at the existing integration tests for surface/serve behavior:"}
+{"line":"│ $ bash grep -n \"determine_surface\\|Surface\\|force_explore\\|force_standard\\|explore_json\\|ExploreConfig\" cli/src/mcp.rs | head -40"}
+{"line":"│ $ bash grep -n \"serve\\|surface\\|force_explore\\|force_standard\\|mode.*mcp\\|explore\" cli/tests/cli.rs | head -60"}
+{"line":"│ ← bash ok 36L"}
+{"line":"│ ← bash ok 35L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 17"}
+{"line":"╭ [T18:00:10:31] ✱ I see several tests that reference `explore.json` directly. In T03, we're changing the surface decision to use `config.json` mode instead of `explore.json.exists()`. The existing tests that set up `explore.json` will need to be examined.\n\nThe test at line 424 (`explore_mode_unhealthy_provider_falls_back_to_standard_surface`) writes `.grove/explore.json` and relies on `explore.json.exists()` triggering explore mode. After T03, this should be triggered by `config.json` with `mode: \"mcp-llm\"`. This test needs updating.\n \nLooking at the other tests that pre-seed `explore.json` — like those around lines 579, 600, 605, 610, 644, 648 — these seem to be about bypassing the TUI during `grove init` or `grove config`, not about the `serve` surface selection logic. The TUI might still check for `explore.json` existence in those contexts, so those tests may not need changes for T03.\n\nFor the failing test at line 424, the flow after T02 and T03 would be: `grove serve` reads `explore.json`, triggers migration to create `config.json` with `mode: McpLlm`, then `determine_surface` calls `active_mode` which loads the config and sees `McpLlm` mode, attempts a health check on port 1, fails, and falls back — so the test should still pass. But I need to trace through what happens after the health check fails to confirm the fallback behavior works correctly.\n\nThe bug-1 regression test is checking that when `config.json` has `mode: \"mcp\"` and a stale `explore.json` exists, we boot the standard surface instead of explore mode. After T03, `active_mode` reads the config directly and returns `Mode::Mcp`, which fixes the bug. Now I'm looking at the other tests around lines 600-610, 644-648, and 843-852 to see if they're still valid, particularly the ones that pre-seed `explore.json` to prevent TUI launch. The `init` command likely checks for config existence to decide whether to launch the TUI, so after T01/T02 it might look for `config.json` instead of `explore.json` — but that's a future concern. For T03, I need to add a `ModeChoice` enum and `active_mode()` function to handle the surface determination logic, update the `determine_surface` function to use this new mode detection and load the explore section from the config, and verify the existing test at line 424 still works since `active_mode` will trigger migration when only `explore.json` exists.\n\nActually, let me trace through that test: it writes `explore.json` with an unreachable provider, runs `grove serve`, and expects fallback to the standard surface. After T03, `active_mode` will load the config, trigger migration to create `config.json` with `mode: mcp-llm`, then `determine_surface` loads the config again and gets the explore section. When health probing fails on the unreachable port, it returns `Surface::Standard` — so the test behavior is preserved through the migration.\n\nFor the regression test, I need to create a new scenario where `config.json` already exists with `mode: mcp`, plus a stale `explore.json`, then verify `grove serve` falls back to standard surface. Since `determine_surface` is private and `serve` runs an infinite loop, I should test this through `active_mode` unit tests in the config module, plus rely on existing integration tests to cover the `determine_surface` behavior change.\n\nThe unit tests would cover all the mode resolution cases: force flags overriding config, config file settings when no force flag is present, the stale explore.json scenario, and the fallback when nothing is configured. For the imports in `mcp.rs`, I'll need to add the `active_mode` function and related types from `grove_core::config`, while keeping `ExploreConfig` since it's still used in the `Surface::Explore` variant. I need to import `Mode` from `grove_core::config` to check against `Mode::McpLlm` in the comparison. Let me also verify what the existing tests expect — the smoke test and surface tests should still pass as long as they account for the `config.json` trigger behavior. Looking at the tap test more carefully, it reads from `explore.json` and checks the `tap` setting there. But if T03's migration moves the config to `config.json`, that setting would no longer be in `explore.json`, which could break the test. However, T03 only affects `serve` and `determine_surface`, so the `tap` command itself might still write to `explore.json` independently.\n\nThe tap test doesn't actually run `grove serve`, so the T02 migration wouldn't trigger — it just runs `grove tap` and reads back from `explore.json`. That means the test should still pass. Similarly, the other tests that pre-seed `explore.json` for TUI bypass are testing `grove init` and `grove config`, not `serve`, so T03 shouldn't affect them either.\n\nNow I'm mapping out the actual changes needed: I'll add a `ModeChoice` enum and `active_mode` function to `core/src/config.rs` with unit tests covering force-standard, force-explore, declared mode reading, and the MCP stale-explore-json bug. Then I'll rewrite `determine_surface` in `cli/src/mcp.rs` and add a regression test for that bug, plus potentially a unit test for surface selection if it's testable.\n\nThis is a bug fix to `serve` with a behavioral change to surface selection, so it's material and requires a version bump at release. I'm ready to write the PLAN.md now."}
+{"line":"│ » Now let me examine the integration test that uses explore.json with serve, and check how `grove_core` exports:"}
+{"line":"│ ⌕ read cli/tests/cli.rs"}
+{"line":"│ ⌕ read core/src/lib.rs"}
+{"line":"│ ← read ok 69L"}
+{"line":"│ ← read ok 82L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 18"}
+{"line":"╭ [T19:00:11:31] ✱ Now I see that `core/src/lib.rs` already re-exports `GroveConfig` and `Mode` from `config`. Good. I'll need to also re-export `active_mode` and `ModeChoice` from `lib.rs`.\n\nLet me now write the plan. I have enough information.\n\nKey points:\n1. Add `ModeChoice` enum and `active_mode(root, force) -> Mode` to `core/src/config.rs`\n2. Re-export them from `core/src/lib.rs`\n3. Rewrite `determine_surface` in `cli/src/mcp.rs` to use `active_mode` + load ExploreConfig from GroveConfig\n4. Update the imports in `cli/src/mcp.rs` to pull from `grove_core::config`\n5. Add unit tests for the `active_mode` function in `core/src/config.rs`\n6. For the integration test, I could either leave it as-is to rely on migration, or update it to write a proper `config.json` with the mode set explicitly to exercise the new code path directly\n\n. Let me trace through what happens: when `serve` runs, it calls `determine_surface`, which invokes `active_mode` with no mode choice specified. Since there's no `config.json` but `explore.json` exists, the migration kicks in and creates a `config.json` with `mode: mcp-llm` plus the explore section. Then `active_mode` returns `McpLlm`, `determine_surface` loads the config again, attempts a health probe on the explore provider, gets a connection refused, logs the unhealthy message, and falls back to Standard.\n\nThe stderr assertion for \"falling back\" still passes, so the test works as-is. The comment references T04 but could mention T03 as well for clarity. For the regression test, I should add it to the unit tests in `core/src/config.rs` where `active_mode` is tested, since that's where the core resolution logic lives and it's faster than spawning the full binary."}
+{"line":"│ » I have all the context I need. Let me now write the plan.\n\n## Step 3 — Write the Plan"}
+{"line":"│ → forge_artifact write"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╭ [T20:00:11:35] » ## Step 4 — Knowledge Writeback\n\nNo new architectural patterns were discovered; the design follows ADR 0002 §Decision-1 as specified. No writeback needed.\n\n## Step 5 — Finalize Status"}
+{"line":"│ ⚙ forge_store update-status"}
+{"line":"│ ← forge_store ok 1L"}
+{"line":"╭ [T21:00:11:52] » ## Step 6 — Emit Plan Summary Sidecar"}
+{"line":"│ → forge_artifact write"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╭ [T22:00:11:54] ⚙ forge_store set-summary"}
+{"line":"│ ← forge_store ok 1L"}
+{"line":"╭ [T23:00:12:01] » ## Step 7 — Post-Phase Output Guard"}
+{"line":"│ → forge_artifact exists"}
+{"line":"│ ⚙ forge_store read"}
+{"line":"│ ← forge_store ok 23L ⇌52%"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 23"}
+{"line":"╭ [T24:00:12:12] » All outputs satisfied. Here is a summary of what was planned:\n\n---\n\n## GROVE-S03-T03 Plan — Summary\n\n**Status:** `draft → planned` ✓  \n**PLAN.md:** written (7 560 bytes) ✓  \n**PLAN-SUMMARY.json:** written and registered ✓\n\n### What the plan calls for\n\n| Area | Change |\n|---|---|\n| `core/src/config.rs` | Add `pub enum ModeChoice { None, ForceExplore, ForceStandard }` and `pub fn active_mode(root, force) -> Mode` with 6 unit tests |\n| `core/src/lib.rs` | Re-export `ModeChoice` and `active_mode` |\n| `cli/src/mcp.rs` | Rewrite `determine_surface` to call `active_mode` → branch on `Mode::McpLlm` → load `GroveConfig` for explore section; drop `ExploreConfig::config_path().exists()` and `ExploreConfig::load()` triggers |\n| `cli/tests/cli.rs` | Update existing unhealthy-provider test comment; add `bug1_serve_mcp_mode_ignores_stale_explore_json` integration test |\n\n### Key design decisions\n\n- **`active_mode` is config-only** — no network I/O, no health probe. The health probe stays in `determine_surface` where it belongs (CLI concern).\n- **`determine_surface` loads `GroveConfig` twice** — once inside `active_mode`, once to extract `explore`. The redundancy is cheap (one file read) and preserves clean separation of concerns.\n- **Bug-1 is fixed by construction** — `config.mode = \"mcp\"` + stale `explore.json` → `active_mode` returns `Mcp` → `Surface::Standard` immediately, file-existence of `explore.json` is never consulted.\n- **Legacy projects (explore.json only)** — T02 migration handles them transparently; `GroveConfig::load` converts `explore.json → config.json` on first call."}

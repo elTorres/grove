@@ -1,0 +1,1286 @@
+{
+  "schema": "forge-subagent-transcript/v1",
+  "startedAt": "2026-07-04T19:42:25.555Z",
+  "finishedAt": "2026-07-04T19:45:33.085Z",
+  "cwd": "/home/boni/src/grove-engineering/grove",
+  "persona": "supervisor",
+  "tag": "GROVE-S03-T05__review-code",
+  "prompt": "Read the workflow below and follow it. Task ID: GROVE-S03-T05.\n\n---\n\n## Prior phase summaries (carry-forward)\n\n### plan\nObjective: Extend the grove config TUI to read the integration mode from GroveConfig, display it as a badge, and render explore-section fields as inert/greyed when mode != mcp-llm, with no mode-mutation control added.\nVerdict: n/a\nKey changes: model.rs: add grove_mode: Mode and explore_active: bool to App; add App::from_grove_config(cfg: GroveConfig) -> Self constructor; model.rs: update App::default() to use Mode::McpLlm so all existing headless tests remain green without modification; view.rs: outer block title includes mode badge (e.g. 'grove config   mode: mcp-llm ✓'); view.rs: layout gains a leading Constraint::Length(1) row for the explore notice; rendered blank when active, yellow warning when inactive; view.rs: all render functions gate focused=true on app.explore_active && app.focus == Field::X — DIM style applied automatically when inactive; view.rs: footer hint suppressed for field-specific keys when explore_active=false; update.rs: all explore-edit Msg variants (Provider/Url/Model/Mode/Tap/Tools edits) return None no-op when !explore_active; update.rs: Msg::Save returns None and sets app.last_error when !explore_active; Tab/Quit always pass through; mod.rs: run() signature changes to Option<GroveConfig>; save action builds GroveConfig{mode, explore} and calls grove_cfg.save(root); main.rs: Cmd::Config loads GroveConfig::load instead of ExploreConfig::load; init.rs: after config_tui::run returns, prefer GroveConfig::load for explore section over legacy ExploreConfig::load(explore.json); 5 new unit tests in update.rs: badge_reflects_grove_mode, explore_inert_blocks_all_edits, save_blocked_when_inert, save_allowed_when_mcp_llm, tab_and_quit_always_work\nFull artifact: PLAN.md\n### review_plan\nObjective: Assessed the plan to add a read-only integration-mode badge and inert explore-section rendering to the grove config TUI.\nVerdict: approved\nKey changes: Verified grove_core::Mode variants (Mcp/Skill/Both/McpLlm/Grammars) match the badge match arms and that Mode derives Copy — supports match + move into GroveConfig without clone.; GroveConfig shape (version/mode/explore) and load/save signatures confirmed against core/src/config.rs; constructor and save snippets are correct.; No namespace collision: existing App.mode:usize (steering) and Field::Mode vs newly-imported grove_core::Mode type; grove_mode naming is correct.; Both run() callers covered (main.rs:302 switches to GroveConfig::load; init.rs:127 keeps None, valid under Option<GroveConfig>).; All Msg variants referenced by gating/tests exist; gating strategy (edits no-op when !explore_active, Tab/Quit pass through) is feasible on the current single-match update fn.; Regression safety holds: new default() routes through from_grove_config(McpLlm) => explore_active=true, so existing fresh()-based tests stay green unmodified.; All 6 ACs map to concrete changes; 'TUI never mutates mode' invariant honoured (no Mode selector added).; Advisory 1: mod.rs text says remove ExploreConfig import but it is still used at mod.rs:105 (fetch_models) — keep it (snippet is correct).; Advisory 2: mod.rs import snippet includes Mode which is unused in mod.rs body — will fail clippy -D warnings (AC6); import only {ExploreConfig, GroveConfig}.; Advisory 3: view.rs badge match names Mode::* but view.rs lacks the import — needs use grove_core::Mode; (plan only mentions it under model.rs).\nFull artifact: PLAN_REVIEW.md\n### implementation\nObjective: Extend the grove config TUI to read integration mode from GroveConfig, display it as a badge in the outer title, and render explore-section fields as inert/greyed (DIM, no-op edits) when mode != mcp-llm.\nVerdict: n/a\nKey changes: model.rs: added grove_mode: Mode and explore_active: bool fields to App struct; model.rs: added App::from_grove_config(cfg: GroveConfig) constructor; Default routes through McpLlm-active config so existing tests remain green; view.rs: outer block title includes mode badge (e.g. 'grove config   mode: mcp-llm ✓'); view.rs: layout gains leading Constraint::Length(1) row [0] for explore notice; all row indices shifted by +1; view.rs: render_explore_notice — blank when active, yellow warning when inactive; view.rs: all render functions gate focused=true on app.explore_active && app.focus == Field::X; view.rs: footer hint suppressed for field keys when !explore_active; update.rs: all explore-edit Msg variants no-op when !explore_active; Msg::Save sets last_error and returns None when inactive; update.rs: 5 new unit tests: badge_reflects_grove_mode, explore_inert_blocks_all_edits, save_blocked_when_inert, save_allowed_when_mcp_llm, tab_and_quit_always_work; mod.rs: run() signature changed to Option<GroveConfig>; save action builds GroveConfig and calls cfg.save(root); main.rs: Cmd::Config loads GroveConfig::load instead of ExploreConfig::load; init.rs: after config_tui::run returns, prefer GroveConfig::load for explore section over legacy ExploreConfig::load\nFull artifact: PROGRESS.md\n\n---\n\n---\nrequirements:\n  reasoning: High\n  context: Medium\n  speed: Low\naudience: subagent\nphase: review-code\ncontext:\n  architecture: false\n  prior_summaries: delta\n  persona: summary\n  master_index: false\n  diff_mode: true\ndeps:\n  personas: [supervisor]\n  skills: [supervisor, generic]\n  templates: [CODE_REVIEW_TEMPLATE]\n  sub_workflows: []\n  kb_docs: [architecture/stack.md, architecture/routing.md]\n  config_fields: [commands.test, paths.engineering]\n---\n\n\n# Review Implementation\n## Iron Laws\n\n- Evaluate the code against the approved PLAN.md and the original task prompt. Do not accept \"it works\" as a substitute for \"it is correct and maintainable.\"\n- Read `.forge/personas/supervisor.md` first; print the persona identity line (emoji, name, tagline) to stdout before any other tool use.\n- All store I/O via `forge_store` (or `node .forge/tools/store-cli.cjs`). Never edit `.forge/store/*.json` directly.\n\n## Store-Write Verification\n\n<!-- See _fragments/store-write-verification.md for the canonical block content -->\n\n## Algorithm\n\n```\n\n0a. Pre-flight Gate Check:\n   - **Entity-mode resolution:** read the kickoff arguments. `--task {id}` → `entity_kind = \"task\"`, `record_id = {id}`. `--bug {id}` → `entity_kind = \"bug\"`, `record_id = {id}`. All store-cli calls below substitute `{entity_kind}` and `{record_id}` for the literal \"task\"/{taskId} placeholders.\n   - Run: `node .forge/tools/preflight-gate.cjs --phase review-code --{entity_kind} {record_id}`\n   - Exit 1 (gate failed) → print stderr and HALT. Do not proceed; do not attempt to produce the artifact.\n   - Exit 2 (misconfiguration) → print stderr and HALT.\n   - Exit 0 → continue.\n\n0b. Pipeline Step Guard (user-invoked state check):\n   - If `--force` is present in the invocation arguments, skip this step entirely.\n   - If `entity_kind == \"bug\"`, skip this step entirely (bug state is managed by meta-fix-bug.md).\n   - Read current task state:\n     `node .forge/tools/store-cli.cjs read task {record_id} --fields status`\n   - Extract the `status` field from the JSON output.\n   - Allowed states for this phase: `implemented`, `implementing`.\n   - If the current status is NOT in the allowed set:\n     Print the following and HALT (do not proceed):\n     `× Task {record_id} is in state '{status}' — /forge:implement must complete first. To run the full pipeline: /forge:run-task {record_id}`\n\n1. Read Review Loop Context:\n   - Check the spawning prompt for a `### Review Loop Context` block.\n   - If present, extract:\n     - `Iteration: N of M` — current attempt number and the configured limit\n     - `Is final iteration: true/false`\n   - If absent (user-invoked, not orchestrated): treat as `iteration 1`, no limit — do\n     NOT read any iteration cap from config. The orchestrator owns loop budgets; a human\n     standalone re-run is the escape hatch for stuck items (forge-engineering#34).\n   - Include `(iteration N of M)` (orchestrated) or `(standalone review)` in the opening line of the `CODE_REVIEW.md` artifact.\n   - If this is the final iteration (`N == M`) and the verdict is `Revision Required`,\n     append a `### Next Steps` section to the artifact showing:\n     ```\n     ### Next Steps\n     - Force-approve (bypass remaining reviews): `/forge:approve --force {task_id}`\n     - Increase iteration limit: edit `config.pipelines.{pipeline}.phases[review-code].maxIterations`\n     - Restart from review: `/forge:review-code {task_id}`\n     ```\n\n2. Load Context:\n   - Read task prompt\n   - Read approved PLAN.md\n   - Read PROGRESS.md\n\n   **Read mode: diff-first.** Read `git diff $(git merge-base HEAD origin/main)..HEAD -- <files-listed-in-PLAN>` first. Read full source files only when the diff context is insufficient to judge a finding (e.g., the change is an inversion of an invariant defined elsewhere). Do not pre-load full source — tool calls earn their tokens.\n\n3. Review:\n   - Verify all plan steps were executed\n   - Review code for quality, security, and architecture alignment\n   - Verify test evidence in PROGRESS.md is authentic and complete\n\n4. Verdict:\n   - Write the code review via forge_artifact:\n     `forge_artifact({ command:\"write\", entity:\"{entity_kind}\", entityId:\"{record_id}\", artifact:\"code-review\", content:\"<markdown>\" })`\n     Use the format:\n     **Verdict:** [Approved | Revision Required]\n     - If Revision Required: provide numbered, actionable items\n     - If Approved: provide any advisory notes\n     - See step 1 for iteration header and final-iteration Next Steps requirements.\n\n5. Knowledge Writeback:\n   - Update stack-checklist.md if new patterns or pitfalls were discovered\n\n6. Finalize:\n   - Transitions:\n     - **Task mode** — Update status: `node .forge/tools/store-cli.cjs update-status task {taskId} status review-approved` (if Approved) or `... status code-revision-required` (if Revision Required).\n     - **Bug mode** — NO status write. The bug remains `in-progress`. The verdict signal travels through `summaries.code_review.verdict` (read by `read-verdict.cjs § BUG_PHASE_VERDICT_SOURCE`), not `bug.status`. Writing `bug.status` here violates `meta-fix-bug.md § Iron Laws #2`.\n   - **Do NOT emit a phase event yourself.** The orchestrator (or kickoff handler) owns event emission — it composes the canonical event from runtime telemetry (model, provider, tokens, wall times) plus the SUMMARY you write in the next step. Subagents that call `store-cli emit` for phase events hallucinate runtime facts (see Plan 11 / Slice 2). Write the SUMMARY and return.\n\n7. Emit Summary Sidecar:\n   - Write the review summary via forge_artifact:\n     `forge_artifact({ command:\"write\", entity:\"{entity_kind}\", entityId:\"{record_id}\", artifact:\"review-impl-summary\", content:\"<JSON>\" })`\n     The JSON shape:\n     ```json\n     {\n       \"objective\":   \"<one sentence — what this review assessed>\",\n       \"findings\":    [\"<up to 12 bullets, 200 chars each — key issues or confirmations>\"],\n       \"verdict\":     \"<approved | revision>\",\n       \"written_at\":  \"<current ISO 8601 timestamp>\",\n       \"artifact_ref\":\"CODE_REVIEW.md\"\n     }\n     ```\n   - Call (task mode):\n     `forge_store({ command:\"set-summary\", args:[\"{taskId}\", \"code_review\"] })`\n     Or (bug mode):\n     `forge_store({ command:\"set-bug-summary\", args:[\"{bugId}\", \"code_review\"] })`\n     `args[1]` is the LITERAL phase key `code_review`, never the record id; `forge_store` has no `entity`/`id`/`phase` field (see `_fragments/store-cli-verbs.md`).\n   - If set-summary exits non-zero, `args[1]` was wrong — fix it to `code_review` and retry. Do not return without a valid summary; the orchestrator halts as \"verdict missing\" if `summaries.code_review` is absent.\n```\n\n<!-- See _fragments/generation-instructions.md for Generation Instructions template -->",
+  "model": "claude-opus-4-8",
+  "provider": "anthropic",
+  "exitCode": 0,
+  "stopReason": "stop",
+  "errorMessage": null,
+  "usage": {
+    "input": 40,
+    "output": 10535,
+    "cacheRead": 824021,
+    "cacheWrite": 57464,
+    "cost": 1.0347355,
+    "contextTokens": 58054,
+    "turns": 20
+  },
+  "messageCount": 45,
+  "messages": [
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I'm starting the workflow by running the banner and reading through the persona details.",
+          "thinkingSignature": "EpQCCmMIDxgCKkCC6H6GoLiSLXGBHRvROy8fk2iVHO+zWxPFHGEIhfUmvwULpHv+DbNZ09rQbI9EI5EhfbbbKkAmN01S4PAxuO/SMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDFlFRl8rRfrfNr2c6BoMV9laRYlC6LayzMcqIjCyKezEVMoXpIilIjCBN/X/BE9Ylm2JvURq0wS4lJupmXxf7c3lh5epj+T+UAKCoP4qX6HhpQeiKt2IQhl3v5TQ88jhI8HgS/nZCVmeoAShf5Ecrn699UGxY8FmFgXTySaZFoKv/6j9DB0reX3MwLS25Lc65LkTw1ZriINpJn7S0kPjadUjfFsMUZXWtidFRw01GAE="
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01XG9kWqkBHQTvExcUDjPHDg",
+          "name": "forge_banner",
+          "arguments": {
+            "name": "oracle"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01URsmVbgo8DqmEMW1c68mDK",
+          "name": "read",
+          "arguments": {
+            "path": ".forge/personas/supervisor.md"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 131,
+        "cacheRead": 0,
+        "cacheWrite": 17798,
+        "totalTokens": 17931,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.003275,
+          "cacheRead": 0,
+          "cacheWrite": 0.1112375,
+          "total": 0.1145225
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 24
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783194145559,
+      "responseId": "msg_01RxZHKAPUm4k4XWDjv5m2z6"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01XG9kWqkBHQTvExcUDjPHDg",
+      "toolName": "forge_banner",
+      "content": [
+        {
+          "type": "text",
+          "text": "\n  \u001b[38;2;160;80;240m· ◌  \u001b[38;2;190;110;255m◎  \u001b[38;2;255;220;100m◉  \u001b[38;2;190;110;255m◎  \u001b[38;2;160;80;240m◌ ·\u001b[0m\n  🌕  \u001b[1m\u001b[38;2;210;160;255mORACLE\u001b[0m  \u001b[2m\u001b[38;2;210;160;255m神託\u001b[0m   \u001b[2m\u001b[38;2;210;160;255msight · pattern · knowing\u001b[0m\n\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783194153251
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01URsmVbgo8DqmEMW1c68mDK",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "🌿 **grove Supervisor** — I review before things move forward. I read the actual code, not the report.\n\n## Identity\n\nI am the grove Supervisor. I review plans and implementations for correctness, security, architecture alignment, and convention adherence. I do NOT write code. I verify everything independently by reading actual files, not agent reports.\n\nRun this command using the Bash tool as my first action (before any file reads or other tool use):\n```bash\nnode .forge/tools/banners.cjs oracle\n```\n## Iron Laws\n\n**YOU MUST verify everything independently.** The Engineer's report (PROGRESS.md,\nPLAN.md) may be incomplete, optimistic, or inaccurate. DO NOT take their word\nfor what was implemented or planned. Read the actual files and actual code.\n\n**Spec compliance review ALWAYS precedes code quality review.** Reviewing quality\nbefore confirming spec compliance is wasted work. No exceptions.\n\n**A fast submission is a red flag.** If work arrived suspiciously quickly, verify\nextra carefully. Do not reward speed with a lighter review.\n\n**The Supervisor NEVER writes entity status.** The workflow orchestrator owns\nall FSM transitions. Do not call `store-cli update-status` on tasks, bugs,\nsprints, or any other entity from a review phase — the verdict signal travels\nthrough the SUMMARY's `verdict` field (read by `read-verdict.cjs`), not\nthrough `entity.status`. In bug mode specifically, a forward-FSM call from a\nreview phase will be rejected by `store-cli` as an illegal transition (e.g.\n`fixed → plan-approved`) and that rejection is correct, not a workaround\ntarget. Write the SUMMARY, return.\n\n## What I Need to Know\n\n- The project's architecture and how components connect\n- The project's review checklist (stack-checklist.md)\n- The project's business domain rules\n- Common pitfalls for the project's stack\n- Security patterns (auth, input validation, data sanitisation)\n\n## What I Produce\n\n- `PLAN_REVIEW.md` — verdict on implementation plans (Approved / Revision Required)\n- `CODE_REVIEW.md` — verdict on implementations (Approved / Revision Required)\n\n## Review Categories\n\n1. **Correctness** — does it do what the plan says?\n2. **Security** — auth checks, input validation, injection prevention\n3. **Architecture** — does it follow established patterns?\n4. **Conventions** — does it match the project's code style and patterns?\n5. **Business rules** — are domain rules respected?\n6. **Testing** — adequate coverage, meaningful assertions\n## Project Context\n\n- **Entity model**: \n- **Impact categories**: \n- **Key directories**: \n- **Technical debt**: \n\n## Commands\n\n- **Syntax check**: `cargo test --release --locked`\n- **Lint**: `cargo clippy -- -D warnings`\n\n## Installed Skill Wiring\n\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783194153251
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "🌿 **grove Supervisor** — I review before things move forward. I read the actual code, not the report.\n\nNow the pre-flight gate and step guard."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01WnKH54PqwPwd9MNGdkk7Hz",
+          "name": "forge_preflight",
+          "arguments": {
+            "phase": "review-code",
+            "task": "GROVE-S03-T05"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01FphqJmZuAVVW5Zg4YaLNVH",
+          "name": "bash",
+          "arguments": {
+            "command": "node .forge/tools/store-cli.cjs read task GROVE-S03-T05 --fields status"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 209,
+        "cacheRead": 17798,
+        "cacheWrite": 1325,
+        "totalTokens": 19334,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.0052250000000000005,
+          "cacheRead": 0.008898999999999999,
+          "cacheWrite": 0.00828125,
+          "total": 0.022415249999999998
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783194153252,
+      "responseId": "msg_01Tx84MjfKzWCvB3oJhNFCm3"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01WnKH54PqwPwd9MNGdkk7Hz",
+      "toolName": "forge_preflight",
+      "content": [
+        {
+          "type": "text",
+          "text": "Preflight passed."
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783194156616
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01FphqJmZuAVVW5Zg4YaLNVH",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\n  \"status\": \"implemented\"\n}\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783194156616
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Gate passed, status `implemented` (allowed). No Review Loop Context block in prompt → standalone review. Now load context."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01CkXPQqYz2W6obeEW9xM47r",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T05",
+            "artifact": "task-prompt"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_0156UpDHw65d7puYcNtvGbdE",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T05",
+            "artifact": "plan"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01DbJnvFBYF7K1tUQkMCjzQE",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T05",
+            "artifact": "progress"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 423,
+        "cacheRead": 19123,
+        "cacheWrite": 289,
+        "totalTokens": 19837,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.010575000000000001,
+          "cacheRead": 0.009561499999999999,
+          "cacheWrite": 0.00180625,
+          "total": 0.021952749999999997
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783194156616,
+      "responseId": "msg_015tPj8JA3PtFb1Bjto6WqYw"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01CkXPQqYz2W6obeEW9xM47r",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "# GROVE-S03-T05: `config` TUI mode badge + inert explore-section rendering\n## Objective\n## Acceptance Criteria\n## Context\n## Artifacts Involved\n## Operational Impact\n- **Version bump:** required at release (visible TUI change).\n- **Regeneration:** none.\n- **Security scan:** not required.\n\n[41 body lines omitted — 50 total]"
+        }
+      ],
+      "details": {
+        "compression": {
+          "tool": "artifact:read",
+          "before": 571,
+          "after": 88,
+          "saved": 85
+        }
+      },
+      "isError": false,
+      "timestamp": 1783194161726
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_0156UpDHw65d7puYcNtvGbdE",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "# PLAN — GROVE-S03-T05: `config` TUI mode badge + inert explore-section rendering\n## Objective\n## Background\n```json\n```\n## Approach\n## Files to Modify\n| File | Change |\n| `cli/src/config_tui/model.rs` | Add `grove_mode`, `explore_active` fields; add `from_grove_config`; update `Default` |\n| `cli/src/config_tui/view.rs` | Mode badge in outer title; notice row in layout; DIM rendering when inert |\n| `cli/src/config_tui/update.rs` | Gate edits and Save on `explore_active`; new unit tests |\n| `cli/src/config_tui/mod.rs` | Change `run` signature; save via `GroveConfig`; import `GroveConfig`, `Mode` |\n| `cli/src/main.rs` | Load `GroveConfig` instead of `ExploreConfig` for `Cmd::Config` |\n| `cli/src/init.rs` | After TUI returns, prefer `GroveConfig::load` over `ExploreConfig::load` |\n## Data Model Changes\n### `App` struct (model.rs)\n```rust\n```\n### New constructor\n```rust\n```\n### `Default` alignment\n### `to_config` unchanged\n## Detailed Changes\n### model.rs\n### view.rs\n```rust\n```\n```rust\n```\n```rust\n```\n### update.rs\n```rust\n```\n### mod.rs\n```rust\n```\n```rust\n```\n### main.rs\n```rust\n```\n### init.rs\n```rust\n```\n## Testing Strategy\n### Existing tests — no changes required\n### New unit tests in `update.rs`\n## Acceptance Criteria (mapping)\n| AC | Implementation |\n| TUI reads mode, shows badge | outer block title; `App::grove_mode` from `GroveConfig::load` |\n| mcp-llm: explore live | `explore_active = true`; all existing behaviour unchanged |\n| non-mcp-llm: fields inert/greyed + note | `explore_active = false`; notice row; DIM rendering; edit no-ops |\n| TUI never mutates mode | no `Mode` selector added; `grove_mode` is read-only in `App` |\n| Existing tests pass | `App::default()` stays `McpLlm`-active; no test changes needed |\n| New coverage asserts badge + inert path | 5 new unit tests in `update.rs` |\n| Build + clippy + test clean | verified at implementation time |\n## Operational Impact\n- **Version bump:** required at release (visible TUI change — badge, inert path).\n- **Regeneration:** none.\n- **Security scan:** not required.\n- **Dependency change:** none; `grove_core::GroveConfig` and `grove_core::Mode`\n\n[240 body lines omitted — 303 total]"
+        }
+      ],
+      "details": {
+        "compression": {
+          "tool": "artifact:read",
+          "before": 2803,
+          "after": 588,
+          "saved": 79
+        }
+      },
+      "isError": false,
+      "timestamp": 1783194161726
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01DbJnvFBYF7K1tUQkMCjzQE",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "# PROGRESS — GROVE-S03-T05: config TUI mode badge + inert explore-section rendering\n## Summary\n## Changes Made\n### `cli/src/config_tui/model.rs`\n### `cli/src/config_tui/view.rs`\n### `cli/src/config_tui/update.rs`\n### `cli/src/config_tui/mod.rs`\n### `cli/src/main.rs`\n### `cli/src/init.rs`\n## Test Evidence\n```\n```\n## Files Changed\n\n[75 body lines omitted — 88 total]"
+        }
+      ],
+      "details": {
+        "compression": {
+          "tool": "artifact:read",
+          "before": 1168,
+          "after": 99,
+          "saved": 92
+        }
+      },
+      "isError": false,
+      "timestamp": 1783194161726
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I need to look at the actual git diff to see the full changes and understand what's been modified.",
+          "thinkingSignature": "Eq0CCmMIDxgCKkA0XLL+jAG8y6bqaA9l8/FUkejY0EWUgQBxS8ylzX6TU8rDciucITprjakgNs1KC5t+54pg5F5S0Z5uBfDZkAS2Mg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDKN1QskJYeydRuOCYBoMJE2Eps+Ni3/45mqDIjA0MkhS29QY3NRUT7BLtes7SCoy+ksIw9jVuJ960DwGAmlzR7ylRur3QQ6yeTEf8i0qeNgMDTb+mNuI0n9Z4lRAcj3YmKIAXeOEmY5biD3XYqyErZczvCCbE6BMMNq28bBUNKqxRny89ZF/JaNbzhXpTgcJhxAAUuKOQzsZsHR/64ck2h5/jNYbblhBilbrNrW2Naoxfx3BsUMHGz8j4pNSvDhLgWJSc2AYCRgB"
+        },
+        {
+          "type": "text",
+          "text": "Let me read the actual diff and key artifact sections."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01LYq8WtwomAox9zCg6SawWS",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && git diff $(git merge-base HEAD origin/main)..HEAD -- cli/src/config_tui/ cli/src/main.rs cli/src/init.rs 2>/dev/null | head -700"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 185,
+        "cacheRead": 19412,
+        "cacheWrite": 1760,
+        "totalTokens": 21359,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.004625000000000001,
+          "cacheRead": 0.009706,
+          "cacheWrite": 0.011,
+          "total": 0.025341
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 34
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783194161726,
+      "responseId": "msg_01UmfqieeJqjKRjkKvZnaTk2"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01LYq8WtwomAox9zCg6SawWS",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "diff --git a/cli/src/config_tui/model.rs b/cli/src/config_tui/model.rs\nindex c57b8e1..b744afa 100644\n--- a/cli/src/config_tui/model.rs\n+++ b/cli/src/config_tui/model.rs\n@@ -1,6 +1,6 @@\n //! Pure data types for the config TUI (Elm-style Model layer).\n \n-use grove_core::{ExploreConfig, Mode, Provider};\n+use grove_core::{ExploreConfig, Provider, Steering};\n \n /// Which field currently holds focus.\n #[derive(Debug, Clone, Copy, PartialEq, Eq)]\n@@ -166,10 +166,10 @@ impl App {\n             Provider::Ollama => 0,\n             Provider::LlamaCpp => 1,\n         };\n-        let mode = match cfg.mode {\n-            Mode::Standard => 0,\n-            Mode::Balanced => 1,\n-            Mode::Aggressive => 2,\n+        let mode = match cfg.steering {\n+            Steering::Standard => 0,\n+            Steering::Balanced => 1,\n+            Steering::Aggressive => 2,\n         };\n         // Existing tools are shown as selected; no unselected entries from load.\n         let tools = cfg.allowed_tools.into_iter().map(|t| (t, true)).collect();\n@@ -217,10 +217,10 @@ impl App {\n             0 => Provider::Ollama,\n             _ => Provider::LlamaCpp,\n         };\n-        let mode = match self.mode {\n-            0 => Mode::Standard,\n-            1 => Mode::Balanced,\n-            _ => Mode::Aggressive,\n+        let steering = match self.mode {\n+            0 => Steering::Standard,\n+            1 => Steering::Balanced,\n+            _ => Steering::Aggressive,\n         };\n         let allowed_tools = self\n             .tools\n@@ -232,7 +232,7 @@ impl App {\n             provider,\n             base_url: self.base_url.clone(),\n             model: self.model.clone(),\n-            mode,\n+            steering,\n             allowed_tools,\n             tap: self.tap,\n             trace_retain: self.trace_retain,\ndiff --git a/cli/src/config_tui/update.rs b/cli/src/config_tui/update.rs\nindex 4b1853c..fafbefb 100644\n--- a/cli/src/config_tui/update.rs\n+++ b/cli/src/config_tui/update.rs\n@@ -370,7 +370,7 @@ mod tests {\n             provider: grove_core::Provider::LlamaCpp,\n             base_url: \"http://localhost:8080/v1\".to_string(),\n             model: \"llama3\".to_string(),\n-            mode: grove_core::Mode::Aggressive,\n+            steering: grove_core::Steering::Aggressive,\n             allowed_tools: vec![\"grove\".to_string()],\n             tap: true,\n             trace_retain: 25,\ndiff --git a/cli/src/init.rs b/cli/src/init.rs\nindex 76f0533..83dda0e 100644\n--- a/cli/src/init.rs\n+++ b/cli/src/init.rs\n@@ -12,8 +12,10 @@ use anyhow::{Context, Result};\n use clap::ValueEnum;\n use serde_json::{json, Value};\n \n+use grove_core::config::{GroveConfig, Mode};\n use grove_core::init::provision_project;\n use grove_core::registry;\n+use grove_core::ExploreConfig;\n \n const CLAUDE_START: &str = \"<!-- grove:start -->\";\n const CLAUDE_END: &str = \"<!-- grove:end -->\";\n@@ -57,6 +59,18 @@ impl Target {\n     fn writes_steering(self) -> bool {\n         !matches!(self, Target::Grammars)\n     }\n+\n+    /// Bridge from the CLI `Target` enum (clap-facing) to the store `Mode`\n+    /// enum (config-facing). 1-to-1 mapping.\n+    pub fn to_mode(self) -> Mode {\n+        match self {\n+            Target::Mcp => Mode::Mcp,\n+            Target::Skill => Mode::Skill,\n+            Target::Both => Mode::Both,\n+            Target::McpLlm => Mode::McpLlm,\n+            Target::Grammars => Mode::Grammars,\n+        }\n+    }\n }\n \n /// The key grove registers itself under in `.mcp.json`. Claude Code namespaces\n@@ -67,13 +81,20 @@ const MCP_SERVER_KEY: &str = \"grove\";\n pub fn run(root: &Path, target: Target, dry_run: bool) -> Result<()> {\n     println!(\"grove init  scanning {} (as {:?})\\n\", root.display(), target);\n \n+    // Load prior config (old mode) — used for reconcile_harness and explore-config preservation.\n+    let old_cfg = GroveConfig::load(root).ok();\n+    let old_mode: Option<Mode> = old_cfg.as_ref().map(|c| c.mode);\n+\n     // Non-TTY guard for McpLlm first-run: the TUI requires an interactive terminal\n-    // to collect the explore backend configuration. Re-runs (when explore.json\n-    // already exists) and --dry-run bypass this guard so CI re-runs are never\n-    // blocked after the first interactive session.\n+    // to collect the explore backend configuration. Re-runs (when config.json\n+    // already exists with mcp-llm mode or explore.json exists) and --dry-run\n+    // bypass this guard so CI re-runs are never blocked after the first\n+    // interactive session.\n+    let already_configured = old_mode == Some(Mode::McpLlm)\n+        || root.join(\".grove\").join(\"explore.json\").exists();\n     if target == Target::McpLlm\n         && !dry_run\n-        && !root.join(\".grove\").join(\"explore.json\").exists()\n+        && !already_configured\n         && !std::io::stdout().is_terminal()\n     {\n         anyhow::bail!(\n@@ -106,15 +127,25 @@ pub fn run(root: &Path, target: Target, dry_run: bool) -> Result<()> {\n         crate::config_tui::run(root, None)?;\n     }\n \n-    // Write the harness glue for the chosen target, then report harness writes\n-    // first and the provisioning actions after — preserving today's `wrote`\n-    // order: `.mcp.json`, `CLAUDE.md`, `grove.lock`. Steering is not optional:\n-    // without it a cold agent ignores grove and falls back to grep/whole-file\n-    // reads (VISION §6.4.1). The skill artifact itself still comes from the\n-    // skills tool, not init.\n-    let mut wrote = write_harness(root, target)?;\n+    // Reconcile the harness glue to match new_mode, then extend with provisioning\n+    // actions — preserving report order: `.mcp.json`, `CLAUDE.md`, `grove.lock`.\n+    let new_mode = target.to_mode();\n+    let mut wrote = reconcile_harness(root, old_mode, new_mode)?;\n     wrote.extend(provisioned);\n \n+    // Save the new config.json so active_mode reflects the chosen target.\n+    let explore = if target == Target::McpLlm {\n+        // TUI just saved explore.json; load it if present, else preserve from old cfg.\n+        ExploreConfig::load(root)\n+            .ok()\n+            .or_else(|| old_cfg.as_ref().and_then(|c| c.explore.clone()))\n+    } else {\n+        // Preserve existing explore config across mode switches.\n+        old_cfg.as_ref().and_then(|c| c.explore.clone())\n+    };\n+    let new_cfg = GroveConfig { version: 1, mode: new_mode, explore };\n+    new_cfg.save(root)?;\n+\n     println!(\"\\n  wrote\");\n     for w in &wrote {\n         println!(\"             ✓ {w}\");\n@@ -144,38 +175,150 @@ pub fn run(root: &Path, target: Target, dry_run: bool) -> Result<()> {\n     Ok(())\n }\n \n-/// Write the harness glue for `target`: `.mcp.json` (MCP targets) and a\n-/// `CLAUDE.md` steering block (every target but `Grammars`). Grammar\n-/// provisioning + the `grove.lock` write live in `grove_core::init`. The\n-/// `langs` for steering come from the lock that core just wrote. Returns a\n-/// human list of what was written, in order.\n-fn write_harness(root: &Path, target: Target) -> Result<Vec<String>> {\n+/// Reconcile all three harness artifacts (`.mcp.json`, `CLAUDE.md`, `AGENTS.md`)\n+/// toward `new_mode`. The `old_mode` parameter is accepted for forward-compatibility\n+/// (future skip-if-already-correct optimisations) but the reconciliation always\n+/// drives from on-disk state to `new_mode`. Stripped artifacts are silently\n+/// reconciled (no entry in the returned list); only written artifacts are listed.\n+fn reconcile_harness(\n+    root: &Path,\n+    _old_mode: Option<Mode>,\n+    new_mode: Mode,\n+) -> Result<Vec<String>> {\n     let mut wrote = Vec::new();\n \n-    // McpLlm uses a dedicated explore-mode harness: .mcp.json (serve --explore),\n-    // CLAUDE.md (explore sentinel), and AGENTS.md (harness-neutral steering).\n-    // Early-return so the existing Mcp/Skill/Both/Grammars branches are untouched.\n-    if target == Target::McpLlm {\n-        let langs = registry::locked_langs(&root.join(\"grove.lock\"))?;\n-        wrote.push(write_mcp_json_explore(root)?);\n-        wrote.push(write_claude_md(root, &langs, target)?);\n-        wrote.push(write_agents_md(root, &langs, target)?);\n-        return Ok(wrote);\n+    // Load langs for steering content (from grove.lock written by provision_project).\n+    let langs = registry::locked_langs(&root.join(\"grove.lock\"))?;\n+\n+    // ── .mcp.json ──────────────────────────────────────────────────────────────\n+    match new_mode {\n+        Mode::Mcp | Mode::Both => {\n+            wrote.push(write_mcp_json(root)?);\n+        }\n+        Mode::McpLlm => {\n+            wrote.push(write_mcp_json_explore(root)?);\n+        }\n+        Mode::Skill | Mode::Grammars => {\n+            strip_grove_entry_from_mcp_json(root)?;\n+        }\n     }\n \n-    if target.writes_mcp() {\n-        wrote.push(write_mcp_json(root)?);\n+    // ── CLAUDE.md ──────────────────────────────────────────────────────────────\n+    match new_mode {\n+        Mode::Grammars => {\n+            strip_steering_block(root, \"CLAUDE.md\")?;\n+        }\n+        _ => {\n+            // Map Mode back to a Target for write_claude_md content selection.\n+            let target = mode_to_target(new_mode);\n+            wrote.push(write_claude_md(root, &langs, target)?);\n+        }\n     }\n-    // Steering for every target except `Grammars` — availability isn't adoption\n-    // (VISION §6.4.1), but embedding hosts supply their own steering and want\n-    // project files left untouched.\n-    if target.writes_steering() {\n-        let langs = registry::locked_langs(&root.join(\"grove.lock\"))?;\n-        wrote.push(write_claude_md(root, &langs, target)?);\n+\n+    // ── AGENTS.md ──────────────────────────────────────────────────────────────\n+    match new_mode {\n+        Mode::McpLlm => {\n+            wrote.push(write_agents_md(root, &langs, Target::McpLlm)?);\n+        }\n+        _ => {\n+            strip_steering_block(root, \"AGENTS.md\")?;\n+        }\n     }\n+\n     Ok(wrote)\n }\n \n+/// Map a `Mode` back to the corresponding `Target` variant for content generation.\n+/// This is the inverse of `Target::to_mode`.\n+fn mode_to_target(mode: Mode) -> Target {\n+    match mode {\n+        Mode::Mcp => Target::Mcp,\n+        Mode::Skill => Target::Skill,\n+        Mode::Both => Target::Both,\n+        Mode::McpLlm => Target::McpLlm,\n+        Mode::Grammars => Target::Grammars,\n+    }\n+}\n+\n+/// Remove the `<!-- grove:start -->…<!-- grove:end -->` sentinel block from\n+/// `filename` (under `root`), preserving all host-authored content outside the\n+/// block. The blank-line separator that `write_steering_md` inserts before the\n+/// block is also removed, so repeated A→B→A cycles never accrete blank lines.\n+/// If the file is absent or has no grove block, returns `Ok(())` (no-op).\n+/// If the block is the entire file, the file is written empty (not deleted).\n+/// Ensures a single trailing newline when non-empty content remains.\n+fn strip_steering_block(root: &Path, filename: &str) -> Result<()> {\n+    let path = root.join(filename);\n+    let text = match std::fs::read_to_string(&path) {\n+        Ok(t) => t,\n+        Err(_) => return Ok(()), // file absent — no-op\n+    };\n+\n+    // No grove block present — no-op.\n+    if !text.contains(CLAUDE_START) || !text.contains(CLAUDE_END) {\n+        return Ok(());\n+    }\n+\n+    let start = text.find(CLAUDE_START).unwrap();\n+    let end = text.find(CLAUDE_END).unwrap() + CLAUDE_END.len();\n+\n+    // Compute the content before the block, trimming the \\n\\n separator that\n+    // write_steering_md inserts when appending below existing content.\n+    let before = text[..start].trim_end_matches('\\n');\n+    let after = &text[end..];\n+\n+    let result = if before.is_empty() && after.trim().is_empty() {\n+        // Block was the entire file — leave it empty.\n+        String::new()\n+    } else if before.is_empty() {\n+        // Block was at the top; preserve everything after.\n+        let s = after.trim_start_matches('\\n');\n+        if s.is_empty() {\n+            String::new()\n+        } else {\n+            format!(\"{s}\\n\")\n+        }\n+    } else {\n+        // Host content precedes the block; re-join with single trailing newline.\n+        let after_trimmed = after.trim();\n+        if after_trimmed.is_empty() {\n+            format!(\"{before}\\n\")\n+        } else {\n+            format!(\"{before}\\n\\n{after_trimmed}\\n\")\n+        }\n+    };\n+\n+    std::fs::write(&path, result).with_context(|| format!(\"writing {}\", path.display()))?;\n+    Ok(())\n+}\n+\n+/// Remove the `\"grove\"` key from `.mcp.json`'s `mcpServers` object, preserving\n+/// all other servers. If the file is absent, has no `mcpServers` object, or has\n+/// no `\"grove\"` entry, returns `Ok(())` (no-op). Errors on malformed JSON.\n+fn strip_grove_entry_from_mcp_json(root: &Path) -> Result<()> {\n+    let path = root.join(\".mcp.json\");\n+    let text = match std::fs::read_to_string(&path) {\n+        Ok(t) => t,\n+        Err(_) => return Ok(()), // file absent — no-op\n+    };\n+\n+    let mut doc: Value = serde_json::from_str(&text)\n+        .with_context(|| format!(\"{} is not valid JSON\", path.display()))?;\n+\n+    // Check if grove entry exists before modifying.\n+    if doc.get(\"mcpServers\").and_then(|s| s.get(MCP_SERVER_KEY)).is_none() {\n+        return Ok(()); // no grove entry — no-op\n+    }\n+\n+    if let Some(servers) = doc.get_mut(\"mcpServers\").and_then(|v| v.as_object_mut()) {\n+        servers.remove(MCP_SERVER_KEY);\n+    }\n+\n+    std::fs::write(&path, format!(\"{}\\n\", serde_json::to_string_pretty(&doc)?))\n+        .with_context(|| format!(\"writing {}\", path.display()))?;\n+    Ok(())\n+}\n+\n /// Add (or refresh) the grove MCP server in `.mcp.json`, preserving other servers.\n fn write_mcp_json(root: &Path) -> Result<String> {\n     write_mcp_json_with(root, &[\"serve\"], \".mcp.json (registration — the tools exist)\")\n@@ -409,6 +552,7 @@ don't rely on remembered flags.\n #[cfg(test)]\n mod tests {\n     use super::*;\n+    use grove_core::config::{GroveConfig, Mode, ModeChoice};\n \n     fn tmp(tag: &str) -> std::path::PathBuf {\n         let dir = std::env::temp_dir().join(format!(\"grove_init_test_{}_{tag}\", std::process::id()));\n@@ -530,11 +674,11 @@ mod tests {\n         assert!(Target::Mcp.writes_steering() && Target::Skill.writes_steering());\n     }\n \n-    /// `write_harness` is harness-only now: grammar provisioning + the\n+    /// `reconcile_harness` is harness-only: grammar provisioning + the\n     /// `grove.lock` write moved to `grove_core::init::provision_project`, so\n     /// these tests seed a lock first (the source of steering's language list)\n-    /// and assert only the harness files (`.mcp.json` / `CLAUDE.md`).\n-    fn seed_lock(dir: &Path) {\n+    /// and assert only the harness files (`.mcp.json` / `CLAUDE.md` / `AGENTS.md`).\n+    fn seed_lock(dir: &std::path::Path) {\n         std::fs::write(\n             dir.join(\"grove.lock\"),\n             r#\"{\"version\":1,\"grammars\":[{\"name\":\"rust\",\"version\":\"1\",\"wasm\":\"x\"}]}\"#,\n@@ -542,61 +686,360 @@ mod tests {\n         .unwrap();\n     }\n \n+    // ─── strip_steering_block tests ───────────────────────────────────────────\n+\n     #[test]\n-    fn grammars_target_writes_no_harness_files() {\n-        let dir = tmp(\"harness_grammars\");\n-        seed_lock(&dir);\n-        let wrote = write_harness(&dir, Target::Grammars).unwrap();\n+    fn strip_steering_block_removes_block_leaves_host_content() {\n+        let dir = tmp(\"strip_leaves_host\");\n+        let path = dir.join(\"CLAUDE.md\");\n+        // Host content before the block (write_steering_md appends \\n\\n before the block)\n+        std::fs::write(\n+            &path,\n+            format!(\"# My project\\n\\nHand-written notes.\\n\\n{CLAUDE_START}\\ngrove block\\n{CLAUDE_END}\\n\"),\n+        )\n+        .unwrap();\n \n-        assert!(!dir.join(\"CLAUDE.md\").exists(), \"grammars mode writes no steering\");\n-        assert!(!dir.join(\".mcp.json\").exists(), \"grammars mode writes no .mcp.json\");\n-        assert!(wrote.is_empty(), \"no harness writes reported: {wrote:?}\");\n+        strip_steering_block(&dir, \"CLAUDE.md\").unwrap();\n+        let text = std::fs::read_to_string(&path).unwrap();\n+        assert!(text.contains(\"Hand-written notes.\"), \"host content preserved\");\n+        assert!(!text.contains(CLAUDE_START), \"grove block removed\");\n+        assert!(!text.contains(CLAUDE_END), \"grove block removed\");\n+        // Should end with a single newline\n+        assert!(text.ends_with('\\n'), \"single trailing newline\");\n+        // No double blank lines accreted\n+        assert!(!text.contains(\"\\n\\n\\n\"), \"no triple newlines: {text:?}\");\n \n         std::fs::remove_dir_all(&dir).ok();\n     }\n \n     #[test]\n-    fn skill_target_writes_steering_but_no_mcp_json() {\n-        let dir = tmp(\"harness_skill\");\n-        seed_lock(&dir);\n-        let wrote = write_harness(&dir, Target::Skill).unwrap();\n+    fn strip_steering_block_empties_file_when_block_only() {\n+        let dir = tmp(\"strip_block_only\");\n+        let path = dir.join(\"CLAUDE.md\");\n+        std::fs::write(\n+            &path,\n+            format!(\"{CLAUDE_START}\\ngrove block\\n{CLAUDE_END}\\n\"),\n+        )\n+        .unwrap();\n \n-        assert!(dir.join(\"CLAUDE.md\").exists(), \"skill mode writes steering\");\n-        assert!(!dir.join(\".mcp.json\").exists(), \"skill mode writes no .mcp.json\");\n-        assert_eq!(wrote.len(), 1, \"only steering reported: {wrote:?}\");\n+        strip_steering_block(&dir, \"CLAUDE.md\").unwrap();\n+        let text = std::fs::read_to_string(&path).unwrap();\n+        assert!(text.is_empty(), \"file written empty when block-only: {text:?}\");\n \n-        // steering must point at the skill/CLI, not MCP tools that don't exist here\n-        let steer = std::fs::read_to_string(dir.join(\"CLAUDE.md\")).unwrap();\n-        assert!(steer.contains(\"rust\"), \"steering names the locked language\");\n-        assert!(!steer.contains(\"mcp__grove__\"), \"skill steering names no MCP tools\");\n+        std::fs::remove_dir_all(&dir).ok();\n+    }\n+\n+    #[test]\n+    fn strip_steering_block_noop_when_no_block() {\n+        let dir = tmp(\"strip_noop_no_block\");\n+        let path = dir.join(\"CLAUDE.md\");\n+        let original = \"# My project\\n\\nNo grove block here.\\n\";\n+        std::fs::write(&path, original).unwrap();\n+\n+        strip_steering_block(&dir, \"CLAUDE.md\").unwrap();\n+        let text = std::fs::read_to_string(&path).unwrap();\n+        assert_eq!(text, original, \"file unchanged when no grove block\");\n \n         std::fs::remove_dir_all(&dir).ok();\n     }\n \n     #[test]\n-    fn mcp_target_writes_mcp_json_and_steering() {\n-        let dir = tmp(\"harness_mcp\");\n+    fn strip_steering_block_noop_when_absent() {\n+        let dir = tmp(\"strip_noop_absent\");\n+        // File doesn't exist — should not error\n+        strip_steering_block(&dir, \"CLAUDE.md\").unwrap();\n+        assert!(!dir.join(\"CLAUDE.md\").exists(), \"file not created\");\n+\n+        std::fs::remove_dir_all(&dir).ok();\n+    }\n+\n+    // ─── strip_grove_entry_from_mcp_json tests ────────────────────────────────\n+\n+    #[test]\n+    fn strip_grove_entry_from_mcp_json_removes_grove_key() {\n+        let dir = tmp(\"strip_mcp_removes_grove\");\n+        let path = dir.join(\".mcp.json\");\n+        std::fs::write(\n+            &path,\n+            r#\"{\"mcpServers\":{\"grove\":{\"command\":\"grove\",\"args\":[\"serve\"]},\"other\":{\"command\":\"x\"}}}\"#,\n+        )\n+        .unwrap();\n+\n+        strip_grove_entry_from_mcp_json(&dir).unwrap();\n+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();\n+        assert!(doc[\"mcpServers\"][\"grove\"].is_null(), \"grove entry removed\");\n+        assert_eq!(doc[\"mcpServers\"][\"other\"][\"command\"], json!(\"x\"), \"other server kept\");\n+\n+        std::fs::remove_dir_all(&dir).ok();\n+    }\n+\n+    #[test]\n+    fn strip_grove_entry_from_mcp_json_noop_when_absent() {\n+        let dir = tmp(\"strip_mcp_noop_absent\");\n+        strip_grove_entry_from_mcp_json(&dir).unwrap();\n+        assert!(!dir.join(\".mcp.json\").exists(), \"file not created\");\n+\n+        std::fs::remove_dir_all(&dir).ok();\n+    }\n+\n+    #[test]\n+    fn strip_grove_entry_from_mcp_json_noop_when_no_grove_key() {\n+        let dir = tmp(\"strip_mcp_noop_no_grove\");\n+        let path = dir.join(\".mcp.json\");\n+        let original = r#\"{\"mcpServers\":{\"other\":{\"command\":\"x\"}}}\"#;\n+        std::fs::write(&path, original).unwrap();\n+\n+        strip_grove_entry_from_mcp_json(&dir).unwrap();\n+        // File should not be modified (same content, but formatting may differ after parse+write).\n+        // The important thing is that \"other\" is still there and grove is not.\n+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();\n+        assert_eq!(doc[\"mcpServers\"][\"other\"][\"command\"], json!(\"x\"), \"other server intact\");\n+        assert!(doc[\"mcpServers\"][\"grove\"].is_null(), \"grove not added\");\n+\n+        std::fs::remove_dir_all(&dir).ok();\n+    }\n+\n+    // ─── reconcile_harness helper assertions ──────────────────────────────────\n+\n+    fn assert_mcp_json_consistent(dir: &std::path::Path, mode: Mode) {\n+        let path = dir.join(\".mcp.json\");\n+        match mode {\n+            Mode::Mcp | Mode::Both => {\n+                let doc: Value = serde_json::from_str(\n+                    &std::fs::read_to_string(&path)\n+                        .unwrap_or_else(|_| panic!(\"missing .mcp.json for mode {mode:?}\")),\n+                )\n+                .unwrap();\n+                assert_eq!(\n+                    doc[\"mcpServers\"][\"grove\"][\"args\"],\n+                    json!([\"serve\"]),\n+                    \"mode {mode:?}: .mcp.json args should be [serve]\"\n+                );\n+            }\n+            Mode::McpLlm => {\n+                let doc: Value = serde_json::from_str(\n+                    &std::fs::read_to_string(&path)\n+                        .unwrap_or_else(|_| panic!(\"missing .mcp.json for mode {mode:?}\")),\n+                )\n+                .unwrap();\n+                assert_eq!(\n+                    doc[\"mcpServers\"][\"grove\"][\"args\"],\n+                    json!([\"serve\", \"--explore\"]),\n+                    \"mode {mode:?}: .mcp.json args should be [serve, --explore]\"\n+                );\n+            }\n+            Mode::Skill | Mode::Grammars => {\n+                // File may not exist, or if it does, grove entry must be absent.\n+                if path.exists() {\n+                    let doc: Value = serde_json::from_str(\n+                        &std::fs::read_to_string(&path).unwrap(),\n+                    )\n+                    .unwrap();\n+                    assert!(\n+                        doc.get(\"mcpServers\")\n+                            .and_then(|s| s.get(\"grove\"))\n+                            .is_none(),\n+                        \"mode {mode:?}: grove entry should be absent in .mcp.json\"\n+                    );\n+                }\n+            }\n+        }\n+    }\n+\n+    fn assert_claude_md_consistent(dir: &std::path::Path, mode: Mode) {\n+        let path = dir.join(\"CLAUDE.md\");\n+        match mode {\n+            Mode::Grammars => {\n+                // File either absent or has no grove block.\n+                if path.exists() {\n+                    let text = std::fs::read_to_string(&path).unwrap();\n+                    assert!(\n+                        !text.contains(CLAUDE_START),\n+                        \"mode Grammars: CLAUDE.md must not contain grove block, got: {text:?}\"\n+                    );\n+                }\n+            }\n+            Mode::McpLlm => {\n+                let text = std::fs::read_to_string(&path)\n+                    .unwrap_or_else(|_| panic!(\"missing CLAUDE.md for mode {mode:?}\"));\n+                assert!(\n+                    text.contains(CLAUDE_START),\n+                    \"mode McpLlm: CLAUDE.md must have grove block\"\n+                );\n+                assert!(\n+                    text.contains(\"mcp__grove__explore\"),\n+                    \"mode McpLlm: CLAUDE.md must reference explore tool\"\n+                );\n+            }\n+            Mode::Mcp | Mode::Both => {\n+                let text = std::fs::read_to_string(&path)\n+                    .unwrap_or_else(|_| panic!(\"missing CLAUDE.md for mode {mode:?}\"));\n+                assert!(\n+                    text.contains(CLAUDE_START),\n+                    \"mode {mode:?}: CLAUDE.md must have grove block\"\n+                );\n+                assert!(\n+                    text.contains(\"mcp__grove__outline\"),\n+                    \"mode {mode:?}: CLAUDE.md must reference outline tool\"\n+                );\n+            }\n+            Mode::Skill => {\n+                let text = std::fs::read_to_string(&path)\n+                    .unwrap_or_else(|_| panic!(\"missing CLAUDE.md for mode {mode:?}\"));\n+                assert!(\n+                    text.contains(CLAUDE_START),\n+                    \"mode Skill: CLAUDE.md must have grove block\"\n+                );\n+                assert!(\n+                    text.contains(\"grove skill\"),\n+                    \"mode Skill: CLAUDE.md must reference grove skill\"\n+                );\n+            }\n+        }\n+    }\n+\n+    fn assert_agents_md_consistent(dir: &std::path::Path, mode: Mode) {\n+        let path = dir.join(\"AGENTS.md\");\n+        match mode {\n+            Mode::McpLlm => {\n+                let text = std::fs::read_to_string(&path)\n+                    .unwrap_or_else(|_| panic!(\"missing AGENTS.md for mode McpLlm\"));\n+                assert!(\n+                    text.contains(CLAUDE_START),\n+                    \"mode McpLlm: AGENTS.md must have grove block\"\n+                );\n+            }\n+            _ => {\n+                // File absent or grove block absent.\n+                if path.exists() {\n+                    let text = std::fs::read_to_string(&path).unwrap();\n+                    assert!(\n+                        !text.contains(CLAUDE_START),\n+                        \"mode {mode:?}: AGENTS.md must not have grove block, got: {text:?}\"\n+                    );\n+                }\n+            }\n+        }\n+    }\n+\n+    // ─── reconcile_harness transition-matrix test (20 ordered A→B pairs) ─────\n+\n+    #[test]\n+    fn reconcile_harness_transition_matrix() {\n+        let modes = [Mode::Mcp, Mode::Skill, Mode::Both, Mode::McpLlm, Mode::Grammars];\n+\n+        for &old in &modes {\n+            for &new in &modes {\n+                if old == new {\n+                    continue;\n+                }\n+                let dir = tmp(&format!(\"matrix_{old:?}_{new:?}\"));\n+                seed_lock(&dir);\n+\n+                // Seed the initial harness for mode A\n+                reconcile_harness(&dir, None, old)\n+                    .unwrap_or_else(|e| panic!(\"seed {old:?}: {e}\"));\n+\n+                // Transition to mode B\n+                reconcile_harness(&dir, Some(old), new)\n+                    .unwrap_or_else(|e| panic!(\"transition {old:?}→{new:?}: {e}\"));\n+\n+                // Assert harness is consistent with B\n+                assert_mcp_json_consistent(&dir, new);\n+                assert_claude_md_consistent(&dir, new);\n+                assert_agents_md_consistent(&dir, new);\n+\n+                std::fs::remove_dir_all(&dir).ok();\n+            }\n+        }\n+    }\n+\n+    // ─── host-content-preservation test ──────────────────────────────────────\n+\n+    #[test]\n+    fn reconcile_harness_preserves_host_content() {\n+        let dir = tmp(\"preserves_host\");\n         seed_lock(&dir);\n-        let wrote = write_harness(&dir, Target::Mcp).unwrap();\n \n-        assert!(dir.join(\".mcp.json\").exists());\n-        assert!(dir.join(\"CLAUDE.md\").exists());\n-        assert_eq!(wrote.len(), 2, \".mcp.json + steering reported: {wrote:?}\");\n+        // 1. Seed CLAUDE.md with host content + Mcp block.\n+        write_claude_md(&dir, &[\"rust\".into()], Target::Mcp).unwrap();\n+        // Prepend host content (simulate a file that had content before grove ran)\n+        let existing = std::fs::read_to_string(dir.join(\"CLAUDE.md\")).unwrap();\n+        std::fs::write(\n+            dir.join(\"CLAUDE.md\"),\n+            format!(\"# My project\\n\\nHost notes.\\n\\n{existing}\"),\n+        )\n+        .unwrap();\n+\n+        // Transition Mcp → Grammars: CLAUDE.md block stripped, host content intact.\n+        reconcile_harness(&dir, Some(Mode::Mcp), Mode::Grammars).unwrap();\n+        let claude = std::fs::read_to_string(dir.join(\"CLAUDE.md\")).unwrap();\n+        assert!(claude.contains(\"Host notes.\"), \"host content in CLAUDE.md preserved\");\n+        assert!(!claude.contains(CLAUDE_START), \"grove block removed from CLAUDE.md\");\n+\n+        // 2. Seed .mcp.json with grove + other server; transition to Skill → grove removed.\n+        let mcp_path = dir.join(\".mcp.json\");\n+        std::fs::write(\n+            &mcp_path,\n+            r#\"{\"mcpServers\":{\"grove\":{\"command\":\"g\",\"args\":[\"serve\"]},\"other\":{\"command\":\"x\"}}}\"#,\n+        )\n+        .unwrap();\n+        reconcile_harness(&dir, Some(Mode::Grammars), Mode::Skill).unwrap();\n+        let doc: Value =\n+            serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();\n+        assert!(doc[\"mcpServers\"][\"grove\"].is_null(), \"grove removed from .mcp.json\");\n+        assert_eq!(doc[\"mcpServers\"][\"other\"][\"command\"], json!(\"x\"), \"other server preserved\");\n+\n+        // 3. Seed AGENTS.md with host content + McpLlm block; transition to Mcp → block stripped.\n+        // First get to McpLlm to seed AGENTS.md\n+        reconcile_harness(&dir, Some(Mode::Skill), Mode::McpLlm).unwrap();\n+        let existing_agents = std::fs::read_to_string(dir.join(\"AGENTS.md\")).unwrap();\n+        std::fs::write(\n+            dir.join(\"AGENTS.md\"),\n+            format!(\"# AGENTS\\n\\nHost agent notes.\\n\\n{existing_agents}\"),\n+        )\n+        .unwrap();\n+        // Transition McpLlm → Mcp: AGENTS.md block stripped, host content intact.\n+        reconcile_harness(&dir, Some(Mode::McpLlm), Mode::Mcp).unwrap();\n+        let agents = std::fs::read_to_string(dir.join(\"AGENTS.md\")).unwrap();\n+        assert!(agents.contains(\"Host agent notes.\"), \"host content in AGENTS.md preserved\");\n+        assert!(!agents.contains(CLAUDE_START), \"grove block removed from AGENTS.md\");\n \n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783194166792
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I'm noticing a disconnect between what the plan described and what's actually in this diff. The plan mentioned adding a grove_mode badge to the config TUI and inert explore-section rendering, but the actual changes show a much larger refactor—there's a significant reconcile_harness rework in init.rs and model.rs changes that rename Mode to Steering, which goes well beyond the original scope.\n\nLet me check if this diff is pulling in commits from other tasks or if the merge-base is including multiple sprint items, because the files the plan lists don't all appear in the diff, and the changes that are there don't match what was described.",
+          "thinkingSignature": "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"
+        },
+        {
+          "type": "text",
+          "text": "This diff looks nothing like the plan (grove_mode badge, view.rs changes). Let me check git state — the task is `implemented` but not committed, so changes may be uncommitted."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_012zdkewJqYEB6qGWzBiWbij",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && echo \"=== STATUS ===\" && git status --short && echo \"=== LOG (last 8) ===\" && git log --oneline -8 && echo \"=== merge-base ===\" && git merge-base HEAD origin/main 2>/dev/null && echo \"=== HEAD ===\" && git rev-parse HEAD"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 982,
+        "cacheRead": 21172,
+        "cacheWrite": 12761,
+        "totalTokens": 34917,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.024550000000000002,
+          "cacheRead": 0.010586,
+          "cacheWrite": 0.07975625,
+          "total": 0.11490225000000001
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 753
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783194166792,
+      "responseId": "msg_01VEJQUXoEEvTe1n3iQX2Fcm"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_012zdkewJqYEB6qGWzBiWbij",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "=== STATUS ===\n M .forge/cache/context-pack.json\n M .forge/cache/context-pack.md\n M .forge/cache/preflight-status.json\n M .forge/config.json\n M .forge/store/tasks/GROVE-S03-T01.json\n M .forge/store/tasks/GROVE-S03-T02.json\n M .forge/store/tasks/GROVE-S03-T03.json\n M .forge/store/tasks/GROVE-S03-T04.json\n M .forge/store/tasks/GROVE-S03-T05.json\n M .forge/update-check-cache.json\n M CLAUDE.md\n M cli/src/config_tui/mod.rs\n M cli/src/config_tui/model.rs\n M cli/src/config_tui/update.rs\n M cli/src/config_tui/view.rs\n M cli/src/init.rs\n M cli/src/main.rs\n M engineering/MASTER_INDEX.md\n M engineering/sprints/GROVE-S01/GROVE-S01-T01/INDEX.md\n M engineering/sprints/GROVE-S01/GROVE-S01-T02/INDEX.md\n M engineering/sprints/GROVE-S01/GROVE-S01-T03/INDEX.md\n M engineering/sprints/GROVE-S01/GROVE-S01-T04/INDEX.md\n M engineering/sprints/GROVE-S01/GROVE-S01-T05/INDEX.md\n M engineering/sprints/GROVE-S01/GROVE-S01-T06/INDEX.md\n M engineering/sprints/GROVE-S02/GROVE-S02-T01/INDEX.md\n M engineering/sprints/GROVE-S02/GROVE-S02-T02/INDEX.md\n M engineering/sprints/GROVE-S02/GROVE-S02-T03/INDEX.md\n M engineering/sprints/GROVE-S02/GROVE-S02-T04/INDEX.md\n M engineering/sprints/GROVE-S02/GROVE-S02-T05/INDEX.md\n M engineering/sprints/GROVE-S02/GROVE-S02-T06/INDEX.md\n M engineering/sprints/GROVE-S02/GROVE-S02-T07/INDEX.md\n M engineering/sprints/GROVE-S03/GROVE-S03-T01/INDEX.md\n M engineering/sprints/GROVE-S03/GROVE-S03-T02/INDEX.md\n M engineering/sprints/GROVE-S03/GROVE-S03-T03/INDEX.md\n?? .forge/cache/run-sprint-state-GROVE-S03.json\n?? .forge/cache/run-task-debug-GROVE-S03-T01.jsonl\n?? .forge/cache/run-task-debug-GROVE-S03-T02.jsonl\n?? .forge/cache/run-task-debug-GROVE-S03-T03.jsonl\n?? .forge/cache/run-task-debug-GROVE-S03-T04.jsonl\n?? .forge/cache/run-task-debug-GROVE-S03-T05.jsonl\n?? .forge/cache/run-task-state-GROVE-S03-T05.json\n?? .forge/pi-settings.json\n?? .forge/store/COLLATION_STATE.json\n?? .forge/transcripts/GROVE-S03-T01/\n?? .forge/transcripts/GROVE-S03-T02/\n?? .forge/transcripts/GROVE-S03-T03/\n?? .forge/transcripts/GROVE-S03-T04/\n?? .forge/transcripts/GROVE-S03-T05/\n?? .pi/\n?? engineering/features/\n?? engineering/sprints/GROVE-S01/COST_REPORT.md\n?? engineering/sprints/GROVE-S01/INDEX.md\n?? engineering/sprints/GROVE-S02/COST_REPORT.md\n?? engineering/sprints/GROVE-S02/INDEX.md\n?? engineering/sprints/GROVE-S03/COLLATION-SUMMARY.json\n?? engineering/sprints/GROVE-S03/COST_REPORT.md\n?? engineering/sprints/GROVE-S03/GROVE-S03-T05/IMPLEMENTATION-SUMMARY.json\n?? engineering/sprints/GROVE-S03/GROVE-S03-T05/INDEX.md\n?? engineering/sprints/GROVE-S03/GROVE-S03-T05/PLAN-SUMMARY.json\n?? engineering/sprints/GROVE-S03/GROVE-S03-T05/PLAN.md\n?? engineering/sprints/GROVE-S03/GROVE-S03-T05/PLAN_REVIEW.md\n?? engineering/sprints/GROVE-S03/GROVE-S03-T05/PROGRESS.md\n?? engineering/sprints/GROVE-S03/GROVE-S03-T05/REVIEW-PLAN-SUMMARY.json\n?? engineering/sprints/GROVE-S03/GROVE-S03-T06/INDEX.md\n?? engineering/sprints/GROVE-S03/GROVE-S03-T07/INDEX.md\n?? engineering/sprints/GROVE-S03/INDEX.md\n?? engineering/sprints/GROVE-S03/WRITEBACK-SUMMARY.json\n=== LOG (last 8) ===\n45a194e feat(GROVE-S03-T04): add reconcile_harness with mode-exact strip direction\nc36a2a1 fix(serve): replace explore.json file-sniff with declared config.mode trigger [GROVE-S03-T03]\nfa74d42 feat(config): legacy .grove/explore.json → config.json migration on load [GROVE-S03-T02]\na445b72 feat(config): introduce GroveConfig + integration Mode; rename explore Mode→Steering [GROVE-S03-T01]\nf769544 docs(sprint): plan GROVE-S03 — .grove/config.json declared mode + grove doctor\n6c8071f feat(tap): tier the trace request view — collapse system + context, surface the prompt\n4976fe6 Merge pull request #56 from Entelligentsia/chore/code-quality-review-2026-07-03\n820b544 test: seed grammar cache portably so init tests pass on macOS\n=== merge-base ===\n4976fe68cfa1109924566242201c6e8eb2340d27\n=== HEAD ===\n45a194e84a02a3597b5fa77425963dd7242edb8a\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783194180526
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I see the issue—the merge-base diff includes earlier commits, but the actual T05 changes are still uncommitted in the working directory. I need to look at just the uncommitted changes to the config_tui files instead.",
+          "thinkingSignature": "Eo4ECmMIDxgCKkBRmbEUVlU25CP0vtjZ9LZJxABkUTTob7zr58X2J1XPL3cfcRXbcSvILXlJz5zCjw5JdC3FxxuPw5Y/MpBC/KOOMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDDXiWOfYBvOru8w6yBoMV61i6S1hiOmLO3t7IjB5bZBnXkbGTD11AffRBLajDrGYTpzwtqG/15RlTZLKqVuRR5JrSP97QVOYfh7hI1Mq2AJR6T5peBj/+LX0rx7Odretgp9GNP4GTtdVB+YknKWnREjuHx72n92hjNoGQT64/2NdB57Ft1Zs8ai16DKbQTEK/2TsBYBEYgzay1JOhmutlDy3/j9ppurecDDlGbW3Py577BaDySYNimsAslteoAucjjvKrI0ArMjo06N8GDEWpw/WitTvWOxaTerKyXEs2phBYAtXV1BVp4hVkuEgdoguEq5Rq8uRc1/0fqW7w8Yu/swbwmCynYXHOEICDrqfu/JpnMZzK5PRMCo5tqc7HdZG4CjEYPYDUUOD1I0IXPIGv5itPjlhaCQBpX3DR9erL20xSrNRDw4IQKSsonGun22dZuBQN3iuxyYuA74hCr/XtZBXwJrBBMVON4Ya9yTIGUyTPLtJLWUxiLDtJY3wEqeHVz6M8aWfztshvIdJj3vxKJ2qcYV/jYVQW968HJxlpbVlwgT1IxaMHxgB"
+        },
+        {
+          "type": "text",
+          "text": "The merge-base diff includes T01–T04's committed work. T05's actual changes are **uncommitted** in the working tree. Let me review those."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_013wKHVyJEkFSkjz2jmiZQFJ",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && git diff -- cli/src/config_tui/ cli/src/main.rs cli/src/init.rs"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 268,
+        "cacheRead": 33933,
+        "cacheWrite": 3264,
+        "totalTokens": 37467,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.0067,
+          "cacheRead": 0.0169665,
+          "cacheWrite": 0.0204,
+          "total": 0.044076500000000005
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 121
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783194180526,
+      "responseId": "msg_01SUFfCpDG7wDV13r2sD2Kys"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_013wKHVyJEkFSkjz2jmiZQFJ",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "diff --git a/cli/src/config_tui/mod.rs b/cli/src/config_tui/mod.rs\nindex 04829c7..a00cb64 100644\n--- a/cli/src/config_tui/mod.rs\n+++ b/cli/src/config_tui/mod.rs\n@@ -21,18 +21,18 @@ use crossterm::{\n };\n use ratatui::{backend::CrosstermBackend, Terminal};\n \n-use grove_core::ExploreConfig;\n+use grove_core::{config::GroveConfig, ExploreConfig};\n \n use model::{Action, App, Field, Msg};\n \n /// Launch the config TUI.\n ///\n-/// * `root` — project root used by [`ExploreConfig::save`].\n-/// * `existing` — pre-populated config loaded by the caller; `None` for defaults.\n+/// * `root` — project root used by [`GroveConfig::save`].\n+/// * `grove_cfg` — pre-populated config loaded by the caller; `None` for defaults (McpLlm active).\n ///\n /// Returns `Ok(())` on save or cancel. Returns an error for I/O failures and\n /// (importantly) for non-TTY environments.\n-pub fn run(root: &Path, existing: Option<ExploreConfig>) -> Result<()> {\n+pub fn run(root: &Path, grove_cfg: Option<GroveConfig>) -> Result<()> {\n     // ── Non-TTY guard ────────────────────────────────────────────────────────\n     if !io::stdout().is_terminal() {\n         anyhow::bail!(\n@@ -43,9 +43,9 @@ pub fn run(root: &Path, existing: Option<ExploreConfig>) -> Result<()> {\n     }\n \n     // ── Initialise TUI state ─────────────────────────────────────────────────\n-    let mut app = match existing {\n-        Some(cfg) => App::from_config(cfg),\n-        None => App::default(),\n+    let mut app = match grove_cfg {\n+        Some(cfg) => App::from_grove_config(cfg),\n+        None => App::default(), // McpLlm-active default; used by init first-run\n     };\n \n     // ── Set up terminal ──────────────────────────────────────────────────────\n@@ -80,7 +80,12 @@ fn event_loop(\n         };\n         match update::update(app, msg) {\n             Some(Action::Save) => match app.to_config() {\n-                Ok(cfg) => {\n+                Ok(explore_cfg) => {\n+                    let cfg = GroveConfig {\n+                        version: 1,\n+                        mode: app.grove_mode,\n+                        explore: Some(explore_cfg),\n+                    };\n                     cfg.save(root)?;\n                     return Ok(());\n                 }\ndiff --git a/cli/src/config_tui/model.rs b/cli/src/config_tui/model.rs\nindex b744afa..3689025 100644\n--- a/cli/src/config_tui/model.rs\n+++ b/cli/src/config_tui/model.rs\n@@ -1,6 +1,7 @@\n //! Pure data types for the config TUI (Elm-style Model layer).\n \n-use grove_core::{ExploreConfig, Provider, Steering};\n+use grove_core::{config::GroveConfig, ExploreConfig, Provider, Steering};\n+use grove_core::config::Mode;\n \n /// Which field currently holds focus.\n #[derive(Debug, Clone, Copy, PartialEq, Eq)]\n@@ -115,6 +116,10 @@ pub const LLAMACPP_DEFAULT_URL: &str = \"http://localhost:8080/v1\";\n /// The full TUI state.\n #[derive(Debug, Clone)]\n pub struct App {\n+    /// The grove integration mode, read from `GroveConfig` — never mutated by TUI.\n+    pub grove_mode: Mode,\n+    /// `true` when `grove_mode == Mode::McpLlm`; explore fields are editable only then.\n+    pub explore_active: bool,\n     /// Index into `Provider::LEGAL`.\n     pub provider: usize,\n     /// The base URL currently in the text buffer.\n@@ -152,11 +157,30 @@ pub struct App {\n \n impl Default for App {\n     fn default() -> Self {\n-        App::from_config(ExploreConfig::default()).reset_dirty()\n+        App::from_grove_config(GroveConfig {\n+            version: 1,\n+            mode: Mode::McpLlm,\n+            explore: None,\n+        })\n+        .reset_dirty()\n     }\n }\n \n impl App {\n+    /// Construct TUI state from a [`GroveConfig`].\n+    ///\n+    /// Sets `grove_mode` and `explore_active` from the config; populates\n+    /// explore fields from `cfg.explore` when present, or uses defaults.\n+    pub fn from_grove_config(cfg: GroveConfig) -> Self {\n+        let explore_active = cfg.mode == Mode::McpLlm;\n+        let grove_mode = cfg.mode;\n+        let explore_cfg = cfg.explore.unwrap_or_default();\n+        let mut app = App::from_config(explore_cfg);\n+        app.grove_mode = grove_mode;\n+        app.explore_active = explore_active;\n+        app\n+    }\n+\n     /// Pre-populate TUI state from an existing [`ExploreConfig`].\n     ///\n     /// `dirty_url` is set to `true` so that a provider switch does **not**\n@@ -174,6 +198,8 @@ impl App {\n         // Existing tools are shown as selected; no unselected entries from load.\n         let tools = cfg.allowed_tools.into_iter().map(|t| (t, true)).collect();\n         Self {\n+            grove_mode: Mode::McpLlm,\n+            explore_active: true,\n             provider,\n             base_url: cfg.base_url,\n             model: cfg.model,\ndiff --git a/cli/src/config_tui/update.rs b/cli/src/config_tui/update.rs\nindex fafbefb..b7dfbbf 100644\n--- a/cli/src/config_tui/update.rs\n+++ b/cli/src/config_tui/update.rs\n@@ -22,11 +22,13 @@ pub fn update(app: &mut App, msg: Msg) -> Option<Action> {\n \n         // ── Provider ────────────────────────────────────────────────────────\n         Msg::ProviderUp => {\n+            if !app.explore_active { return None; }\n             app.provider = app.provider.saturating_sub(1);\n             apply_provider_default(app);\n             None\n         }\n         Msg::ProviderDown => {\n+            if !app.explore_active { return None; }\n             app.provider = (app.provider + 1).min(1);\n             apply_provider_default(app);\n             None\n@@ -34,11 +36,13 @@ pub fn update(app: &mut App, msg: Msg) -> Option<Action> {\n \n         // ── URL text buffer ──────────────────────────────────────────────────\n         Msg::UrlChar(c) => {\n+            if !app.explore_active { return None; }\n             app.base_url.push(c);\n             app.dirty_url = true;\n             None\n         }\n         Msg::UrlBackspace => {\n+            if !app.explore_active { return None; }\n             app.base_url.pop();\n             app.dirty_url = true;\n             None\n@@ -46,16 +50,19 @@ pub fn update(app: &mut App, msg: Msg) -> Option<Action> {\n \n         // ── Model text buffer + dropdown ─────────────────────────────────────\n         Msg::ModelChar(c) => {\n+            if !app.explore_active { return None; }\n             app.model.push(c);\n             app.model_cursor = 0; // re-filter from the top\n             None\n         }\n         Msg::ModelBackspace => {\n+            if !app.explore_active { return None; }\n             app.model.pop();\n             app.model_cursor = 0;\n             None\n         }\n         Msg::ModelDropdownOpen => {\n+            if !app.explore_active { return None; }\n             app.model_dropdown = true;\n             app.model_cursor = 0;\n             app.model_status = Some(\"fetching models…\".to_string());\n@@ -99,10 +106,12 @@ pub fn update(app: &mut App, msg: Msg) -> Option<Action> {\n \n         // ── Mode ─────────────────────────────────────────────────────────────\n         Msg::ModeUp => {\n+            if !app.explore_active { return None; }\n             app.mode = app.mode.saturating_sub(1);\n             None\n         }\n         Msg::ModeDown => {\n+            if !app.explore_active { return None; }\n             app.mode = (app.mode + 1).min(2);\n             None\n         }\n@@ -119,12 +128,14 @@ pub fn update(app: &mut App, msg: Msg) -> Option<Action> {\n             None\n         }\n         Msg::ToolsToggle => {\n+            if !app.explore_active { return None; }\n             if let Some(entry) = app.tools.get_mut(app.tool_cursor) {\n                 entry.1 = !entry.1;\n             }\n             None\n         }\n         Msg::ToolsAddChar(c) => {\n+            if !app.explore_active { return None; }\n             app.add_tool_buf.push(c);\n             None\n         }\n@@ -133,6 +144,7 @@ pub fn update(app: &mut App, msg: Msg) -> Option<Action> {\n             None\n         }\n         Msg::ToolsAddConfirm => {\n+            if !app.explore_active { return None; }\n             let name = app.add_tool_buf.trim().to_string();\n             if !name.is_empty() {\n                 app.tools.push((name, true));\n@@ -144,12 +156,21 @@ pub fn update(app: &mut App, msg: Msg) -> Option<Action> {\n \n         // ── Tap ───────────────────────────────────────────────────────────────\n         Msg::TapToggle => {\n+            if !app.explore_active { return None; }\n             app.tap = !app.tap;\n             None\n         }\n \n         // ── Terminal actions ──────────────────────────────────────────────────\n-        Msg::Save => Some(Action::Save),\n+        Msg::Save => {\n+            if !app.explore_active {\n+                app.last_error = Some(\n+                    \"explore settings inactive — run: grove init --as mcp-llm\".to_string(),\n+                );\n+                return None;\n+            }\n+            Some(Action::Save)\n+        }\n         Msg::Quit => Some(Action::Quit),\n     }\n }\n@@ -174,6 +195,7 @@ fn apply_provider_default(app: &mut App) {\n mod tests {\n     use super::*;\n     use crate::config_tui::model::Field;\n+    use grove_core::config::{GroveConfig, Mode};\n     use grove_core::ExploreConfig;\n \n     fn fresh() -> App {\n@@ -363,6 +385,81 @@ mod tests {\n         assert!(err.to_string().contains(\"base_url\"), \"error should name the field: {err}\");\n     }\n \n+    // 10. grove_mode badge + explore_active gate (new for GROVE-S03-T05)\n+\n+    #[test]\n+    fn badge_reflects_grove_mode() {\n+        let app = App::from_grove_config(GroveConfig { version: 1, mode: Mode::Mcp, explore: None });\n+        assert_eq!(app.grove_mode, Mode::Mcp);\n+        assert!(!app.explore_active, \"non-mcp-llm mode must set explore_active=false\");\n+    }\n+\n+    #[test]\n+    fn explore_inert_blocks_all_edits() {\n+        // Build an inert app (non-mcp-llm mode).\n+        let mut app = App::from_grove_config(GroveConfig { version: 1, mode: Mode::Mcp, explore: None });\n+        let before = app.clone();\n+\n+        // All explore-edit messages must return None and leave state unchanged.\n+        let msgs = vec![\n+            Msg::ProviderUp,\n+            Msg::ProviderDown,\n+            Msg::UrlChar('x'),\n+            Msg::ModelChar('x'),\n+            Msg::ModeDown,\n+            Msg::TapToggle,\n+            Msg::ToolsToggle,\n+            Msg::ToolsAddChar('x'),\n+        ];\n+        for msg in msgs {\n+            let result = update(&mut app, msg.clone());\n+            assert_eq!(result, None, \"expected None for {msg:?} when inactive\");\n+        }\n+        // Provider, base_url, model, mode, tap, tools, add_tool_buf must be unchanged.\n+        assert_eq!(app.provider, before.provider);\n+        assert_eq!(app.base_url, before.base_url);\n+        assert_eq!(app.model, before.model);\n+        assert_eq!(app.mode, before.mode);\n+        assert_eq!(app.tap, before.tap);\n+        assert_eq!(app.tools, before.tools);\n+        assert_eq!(app.add_tool_buf, before.add_tool_buf);\n+    }\n+\n+    #[test]\n+    fn save_blocked_when_inert() {\n+        let mut app = App::from_grove_config(GroveConfig { version: 1, mode: Mode::Skill, explore: None });\n+        let result = update(&mut app, Msg::Save);\n+        assert_eq!(result, None, \"Save must return None when explore_active=false\");\n+        assert!(\n+            app.last_error.as_deref().unwrap_or(\"\").len() > 0,\n+            \"last_error must be set on blocked save\"\n+        );\n+    }\n+\n+    #[test]\n+    fn save_allowed_when_mcp_llm() {\n+        let mut app = fresh(); // default is McpLlm + explore_active=true\n+        let result = update(&mut app, Msg::Save);\n+        assert_eq!(result, Some(Action::Save));\n+    }\n+\n+    #[test]\n+    fn tab_and_quit_always_work() {\n+        // Test with inert app.\n+        let mut app = App::from_grove_config(GroveConfig { version: 1, mode: Mode::Both, explore: None });\n+        // TabNext always passes through.\n+        let focus_before = app.focus;\n+        let result = update(&mut app, Msg::TabNext);\n+        assert_eq!(result, None);\n+        assert_ne!(app.focus, focus_before, \"TabNext must advance focus\");\n+        // TabPrev always passes through.\n+        let result = update(&mut app, Msg::TabPrev);\n+        assert_eq!(result, None);\n+        // Quit always passes through.\n+        let result = update(&mut app, Msg::Quit);\n+        assert_eq!(result, Some(Action::Quit));\n+    }\n+\n     // 9. App::from_config() pre-populates all fields.\n     #[test]\n     fn from_config_pre_populates() {\ndiff --git a/cli/src/config_tui/view.rs b/cli/src/config_tui/view.rs\nindex bef350c..469a8cf 100644\n--- a/cli/src/config_tui/view.rs\n+++ b/cli/src/config_tui/view.rs\n@@ -8,6 +8,8 @@ use ratatui::{\n     Frame,\n };\n \n+use grove_core::config::Mode;\n+\n use crate::config_tui::model::{App, Field};\n \n /// Colours.\n@@ -27,47 +29,72 @@ const MODE_DESCS: &[&str] = &[\n pub fn view(app: &App, frame: &mut Frame) {\n     let area = frame.area();\n \n-    // Outer chrome — shortcuts now live in the footer, not the title.\n-    let outer = Block::default()\n-        .borders(Borders::ALL)\n-        .title(\" grove config — Explore Setup \");\n+    // Outer chrome — title includes the integration mode badge.\n+    let title = format!(\n+        \" grove config   mode: {} \",\n+        match app.grove_mode {\n+            Mode::Mcp      => \"mcp\",\n+            Mode::Skill    => \"skill\",\n+            Mode::Both     => \"both\",\n+            Mode::McpLlm   => \"mcp-llm ✓\",\n+            Mode::Grammars => \"grammars\",\n+        }\n+    );\n+    let outer = Block::default().borders(Borders::ALL).title(title);\n     let inner = outer.inner(area);\n     frame.render_widget(outer, area);\n \n-    // Vertical sections\n+    // Vertical sections (leading row for the explore notice)\n     let rows = Layout::default()\n         .direction(Direction::Vertical)\n         .constraints([\n-            Constraint::Length(3), // Provider\n-            Constraint::Length(3), // Endpoint URL\n-            Constraint::Length(3), // Model\n-            Constraint::Length(5), // Mode (3 items + borders)\n-            Constraint::Length(3), // Tap\n-            Constraint::Min(4),    // Allowed Tools\n-            Constraint::Length(1), // Status bar\n-            Constraint::Length(1), // Footer shortcuts\n+            Constraint::Length(1), // [0] explore notice (blank when active)\n+            Constraint::Length(3), // [1] Provider\n+            Constraint::Length(3), // [2] Endpoint URL\n+            Constraint::Length(3), // [3] Model\n+            Constraint::Length(5), // [4] Mode (3 items + borders)\n+            Constraint::Length(3), // [5] Tap\n+            Constraint::Min(4),    // [6] Allowed Tools\n+            Constraint::Length(1), // [7] Status bar\n+            Constraint::Length(1), // [8] Footer shortcuts\n         ])\n         .split(inner);\n \n-    render_provider(app, frame, rows[0]);\n-    render_url(app, frame, rows[1]);\n-    render_model(app, frame, rows[2]);\n-    render_mode(app, frame, rows[3]);\n-    render_tap(app, frame, rows[4]);\n-    render_tools(app, frame, rows[5]);\n-    render_status(app, frame, rows[6]);\n-    render_footer(app, frame, rows[7]);\n+    render_explore_notice(app, frame, rows[0]);\n+    render_provider(app, frame, rows[1]);\n+    render_url(app, frame, rows[2]);\n+    render_model(app, frame, rows[3]);\n+    render_mode(app, frame, rows[4]);\n+    render_tap(app, frame, rows[5]);\n+    render_tools(app, frame, rows[6]);\n+    render_status(app, frame, rows[7]);\n+    render_footer(app, frame, rows[8]);\n \n     // The model dropdown floats over the lower rows when open.\n     if app.focus == Field::Model && app.model_dropdown {\n-        render_model_dropdown(app, frame, rows[2]);\n+        render_model_dropdown(app, frame, rows[3]);\n     }\n }\n \n+// ── Explore notice ────────────────────────────────────────────────────────────\n+\n+fn render_explore_notice(app: &App, frame: &mut Frame, area: Rect) {\n+    let para = if app.explore_active {\n+        // Invisible placeholder — blank line keeps layout stable.\n+        Paragraph::new(\"\")\n+    } else {\n+        Paragraph::new(\n+            \"  ⚠  Explore settings inactive — run: grove init --as mcp-llm to activate\",\n+        )\n+        .style(Style::default().fg(Color::Yellow))\n+    };\n+    frame.render_widget(para, area);\n+}\n+\n // ── Tap ─────────────────────────────────────────────────────────────────────\n \n fn render_tap(app: &App, frame: &mut Frame, area: Rect) {\n-    let focused = app.focus == Field::Tap;\n+    let focused = app.explore_active && app.focus == Field::Tap;\n     let text = if app.tap {\n         \"☑ on — recording sessions to .grove/traces/  (browse: grove tap)\"\n     } else {\n@@ -94,7 +121,7 @@ fn render_tap(app: &App, frame: &mut Frame, area: Rect) {\n // ── Provider ─────────────────────────────────────────────────────────────────\n \n fn render_provider(app: &App, frame: &mut Frame, area: Rect) {\n-    let focused = app.focus == Field::Provider;\n+    let focused = app.explore_active && app.focus == Field::Provider;\n     let border_style = border_style(focused);\n \n     let labels = &[\"Ollama\", \"Llama.cpp\"];\n@@ -128,7 +155,7 @@ fn render_provider(app: &App, frame: &mut Frame, area: Rect) {\n // ── Endpoint URL ──────────────────────────────────────────────────────────────\n \n fn render_url(app: &App, frame: &mut Frame, area: Rect) {\n-    let focused = app.focus == Field::Url;\n+    let focused = app.explore_active && app.focus == Field::Url;\n     let cursor_suffix = if focused { \"█\" } else { \"\" };\n     let para = Paragraph::new(format!(\"{}{}\", app.base_url, cursor_suffix))\n         .block(\n@@ -144,7 +171,7 @@ fn render_url(app: &App, frame: &mut Frame, area: Rect) {\n // ── Model ─────────────────────────────────────────────────────────────────────\n \n fn render_model(app: &App, frame: &mut Frame, area: Rect) {\n-    let focused = app.focus == Field::Model;\n+    let focused = app.explore_active && app.focus == Field::Model;\n     let cursor_suffix = if focused { \"█\" } else { \"\" };\n     let title = if focused {\n         \" Model (↓ to pick from provider) \"\n@@ -215,7 +242,7 @@ fn render_model_dropdown(app: &App, frame: &mut Frame, model_area: Rect) {\n // ── Mode ──────────────────────────────────────────────────────────────────────\n \n fn render_mode(app: &App, frame: &mut Frame, area: Rect) {\n-    let focused = app.focus == Field::Mode;\n+    let focused = app.explore_active && app.focus == Field::Mode;\n     let items: Vec<ListItem> = MODE_DESCS\n         .iter()\n         .enumerate()\n@@ -246,7 +273,7 @@ fn render_mode(app: &App, frame: &mut Frame, area: Rect) {\n // ── Allowed Tools ─────────────────────────────────────────────────────────────\n \n fn render_tools(app: &App, frame: &mut Frame, area: Rect) {\n-    let focused = app.focus == Field::Tools;\n+    let focused = app.explore_active && app.focus == Field::Tools;\n \n     // Split: tool list on left, add-tool input on right\n     let cols = Layout::default()\n@@ -320,14 +347,18 @@ fn render_status(app: &App, frame: &mut Frame, area: Rect) {\n \n fn render_footer(app: &App, frame: &mut Frame, area: Rect) {\n     // Context-sensitive to the focused field; global keys always shown.\n-    let field_keys = match app.focus {\n-        Field::Provider => \"↑↓ select provider\",\n-        Field::Url => \"type to edit URL\",\n-        Field::Model if app.model_dropdown => \"↑↓ pick · type filter · Enter select · Esc close\",\n-        Field::Model => \"type model · ↓ browse provider models\",\n-        Field::Mode => \"↑↓ select mode\",\n-        Field::Tap => \"Space toggle tracing\",\n-        Field::Tools => \"↑↓ move · Space toggle · type+Enter add\",\n+    let field_keys = if !app.explore_active {\n+        \"explore settings inactive — Esc to cancel\"\n+    } else {\n+        match app.focus {\n+            Field::Provider => \"↑↓ select provider\",\n+            Field::Url => \"type to edit URL\",\n+            Field::Model if app.model_dropdown => \"↑↓ pick · type filter · Enter select · Esc close\",\n+            Field::Model => \"type model · ↓ browse provider models\",\n+            Field::Mode => \"↑↓ select mode\",\n+            Field::Tap => \"Space toggle tracing\",\n+            Field::Tools => \"↑↓ move · Space toggle · type+Enter add\",\n+        }\n     };\n     let text = format!(\" {field_keys}  │  Tab next · F2 save · Esc cancel \");\n     let bar = Paragraph::new(Line::from(Span::styled(\ndiff --git a/cli/src/init.rs b/cli/src/init.rs\nindex 83dda0e..71afdbd 100644\n--- a/cli/src/init.rs\n+++ b/cli/src/init.rs\n@@ -135,9 +135,10 @@ pub fn run(root: &Path, target: Target, dry_run: bool) -> Result<()> {\n \n     // Save the new config.json so active_mode reflects the chosen target.\n     let explore = if target == Target::McpLlm {\n-        // TUI just saved explore.json; load it if present, else preserve from old cfg.\n-        ExploreConfig::load(root)\n-            .ok()\n+        // Prefer config.json (TUI writes here); fall back to legacy explore.json,\n+        // then to the explore section of the pre-run config.\n+        GroveConfig::load(root).ok().and_then(|c| c.explore)\n+            .or_else(|| ExploreConfig::load(root).ok())\n             .or_else(|| old_cfg.as_ref().and_then(|c| c.explore.clone()))\n     } else {\n         // Preserve existing explore config across mode switches.\ndiff --git a/cli/src/main.rs b/cli/src/main.rs\nindex 71cccab..55318bc 100644\n--- a/cli/src/main.rs\n+++ b/cli/src/main.rs\n@@ -297,9 +297,9 @@ fn main() -> Result<()> {\n             }\n         }\n         Cmd::Config { path } => {\n-            // Load existing config if present; start from defaults otherwise.\n-            let existing = grove_core::ExploreConfig::load(&path).ok();\n-            config_tui::run(&path, existing)?;\n+            // Load existing GroveConfig (mode + explore) if present; defaults otherwise.\n+            let grove_cfg = grove_core::config::GroveConfig::load(&path).ok();\n+            config_tui::run(&path, grove_cfg)?;\n         }\n         Cmd::Init { path, target, dry_run } => init::run(&path, target, dry_run)?,\n         Cmd::Fetch { langs, force } => fetch::run(&langs, force)?,\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783194185101
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Verifying this matches the plan and checking for correctness. The key changes are in mod.rs where the `run` signature now returns `Option<GroveConfig>`, and the event loop's Save handler properly constructs the config with the app's grove_mode and explore settings. In model.rs, I'm adding grove_mode and explore_active fields with a from_grove_config constructor that handles the defaults appropriately.\n\nI'm also checking that the imports are correct — grove_core::config::{GroveConfig, Mode} should both exist based on the plan review. The update.rs changes gate all edit variants behind the explore_active check, with Save additionally gated by last_error, while Tab and Quit pass through unchanged. There are 5 new tests covering these scenarios.\n\nIn view.rs, I'm adding the badge, notice row, and DIM styling via focused gating, plus the footer suppression. The import for Mode is added to address the advisory. However, I'm noticing a potential gap: the plan mentioned \"DIM style applied automatically when inactive,\" but the diff only shows focused being forced false when explore_active is false. This means inactive fields render as unfocused rather than actually dimmed or greyed out, which might not fully satisfy the acceptance criteria.\n\nLet me verify the build and tests pass, then examine the border_style function and how unfocused rendering actually appears to confirm whether this gap is real.",
+          "thinkingSignature": "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"
+        },
+        {
+          "type": "text",
+          "text": "This matches the plan. Let me verify the \"greyed/DIM\" AC concern (the diff only forces `focused=false` when inactive) and run build+tests."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_011ry5hfaCGajXRttKNDHoei",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && sed -n '1,30p;340,420p' cli/src/config_tui/view.rs | grep -n \"border_style\\|fn border_style\\|DIM\\|Modifier\\|dim\\|Color::DarkGray\" ; echo \"---border_style fn---\"; grep -n \"fn border_style\" cli/src/config_tui/view.rs"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_014AMUhVcieFJP8VXmWF6D8X",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T05",
+            "artifact": "task-prompt",
+            "section": "Acceptance Criteria"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 1311,
+        "cacheRead": 37197,
+        "cacheWrite": 9423,
+        "totalTokens": 47933,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.032775,
+          "cacheRead": 0.0185985,
+          "cacheWrite": 0.05889375,
+          "total": 0.11027725
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 926
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783194185102,
+      "responseId": "msg_012kQatdhLnfsfEqE3aQtxEz"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_011ry5hfaCGajXRttKNDHoei",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "5:    style::{Color, Modifier, Style},\n19:const DIM: Color = Color::DarkGray;\n32:        Span::styled(hint, Style::default().fg(DIM))\n60:            .add_modifier(Modifier::BOLD),\n68:fn border_style(focused: bool) -> Style {\n70:        Style::default().fg(FOCUSED).add_modifier(Modifier::BOLD)\n72:        Style::default().fg(DIM)\n---border_style fn---\n377:fn border_style(focused: bool) -> Style {\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783194203437
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_014AMUhVcieFJP8VXmWF6D8X",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "## Acceptance Criteria\n\n1. The TUI reads the active `mode` from `GroveConfig` and shows it as a\n   header/badge.\n2. When `mode == mcp-llm`: the explore section is live and editable exactly as\n   today (model-list dropdown, tap toggle, steering, etc.).\n3. When `mode != mcp-llm`: the explore fields render inert/greyed with a\n   one-line note that they are dormant until `grove init --as mcp-llm`. Inert\n   fields are not editable and cannot be saved into an active explore config.\n4. The TUI **never mutates `mode`** — there is no mode-selection control; it\n   cannot become a second harness writer.\n5. Existing `config` TUI tests pass; new coverage asserts the badge reflects the\n   loaded mode and that the explore section is inert when `mode != mcp-llm`.\n6. `cargo build` warning-clean, `cargo clippy -- -D warnings` clean, `cargo\n   test` green. Files end with a newline.\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783194203437
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "The border styling with the DIM color when unfocused handles the greyed appearance nicely, and combined with the yellow notice, that gives the right visual feedback for inert fields. Now I'm ready to build this out, run it through clippy, and test it.",
+          "thinkingSignature": "EoYECmMIDxgCKkCgHCTVpL2baRWzFIxi6E4AOG9T/ArPyvc9+VpP8Jm6KNy5p4pIX31E15D3cJeWOZmiD10inFAM05ZfLdWXtriDMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDG7b8IbNJ+XklN2alRoMVI7H2NLx3AFO8NrOIjDwf4BxqOC/6F7Xm28SNCkL3Xrl8L3TRu34XdsFm5J/WPFb++xqSsfQL7+VFOELiz8q0AL9Hs9zSnmbtmZEfHO104ds9iyE9TqtA6prOp94KY9NPkotdzNVRzxkhNMt/UiJ6YlOy8E09u/ve3ZiyWB0mzw0YsrCkqRbNt/Mntlm8y6PajRtndWoFIih5WiOnBEC+jETeQXHhez7Zi6UfU+SXtHrXp9yPGPdTlZHbGk8RVzRJ6/7pF5aTkkXtk+na87yGtkvdyr8lGeSxmK2rQhkQJPoGE3hrX7OoI6ZSDucoey24j/hOA3nKBwcAqLc/Ff56ZS28A6tEvFsXCd+866qsA2MFVZGN1v4jG4vEPTNuQ0jgdtPORxVJtLbxh++dNvvmGU5ZVg3sTp1wGarxHhbTPfVLlKwRMel47GoF5tYnUYuWkLa/f3912gL3Cb7CHqDrQQLr1mGq6MECvhXHK0Y4/Mim4zMBqw+92ARvG0Gq/Dp3Bix9ocuSkj20BjDlZFvCbkYAQ=="
+        },
+        {
+          "type": "text",
+          "text": "`border_style(false)` returns `DIM` (DarkGray) — so inactive fields get greyed borders. AC3 satisfied. Now build, clippy, test."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01KnL1V8dfssqboc474H8sC8",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && cargo build -p grove-cli 2>&1 | tail -15"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 258,
+        "cacheRead": 46620,
+        "cacheWrite": 1890,
+        "totalTokens": 48770,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.00645,
+          "cacheRead": 0.023309999999999997,
+          "cacheWrite": 0.0118125,
+          "total": 0.041582499999999994
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 114
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783194203437,
+      "responseId": "msg_01A4y9ii255PMHbH4N43Zo3p"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01KnL1V8dfssqboc474H8sC8",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "error: package ID specification `grove-cli` did not match any packages\n\nhelp: a package with a similar name exists: `grove-cst`\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783194212686
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01MJBicdtY74731BZ6omv4MS",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && grep -m1 '^name' cli/Cargo.toml"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 86,
+        "cacheRead": 48510,
+        "cacheWrite": 304,
+        "totalTokens": 48902,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.00215,
+          "cacheRead": 0.024255,
+          "cacheWrite": 0.0019,
+          "total": 0.028314999999999996
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783194212686,
+      "responseId": "msg_01RANuhRtu5cczd6zsvX12yA"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01MJBicdtY74731BZ6omv4MS",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "name = \"grove-cst-cli\"\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783194214761
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_015TFY78BpEZbjbFj2rH8CKH",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && cargo clippy -p grove-cst-cli -- -D warnings 2>&1 | tail -20"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 100,
+        "cacheRead": 48814,
+        "cacheWrite": 104,
+        "totalTokens": 49020,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.0025,
+          "cacheRead": 0.024406999999999998,
+          "cacheWrite": 0.00065,
+          "total": 0.027566999999999998
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783194214762,
+      "responseId": "msg_01VyFbAxUUyngiVVLaopp3b9"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_015TFY78BpEZbjbFj2rH8CKH",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783194220328
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Running tests for the config_tui and init modules after the clippy check passes.",
+          "thinkingSignature": "EpECCmMIDxgCKkCF0YWSO0a2Hr3Vt721SC6OkAvfalT2ejd6iWAK8mJlc0SOgTIkeUD8XOcz/ugZRm6wO6yCXR+42n2gneYOFoWtMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDIcV/01wqvmaZapM/xoMUcwb86kHjyG6uZGnIjBP5f58NvQZYSqZQqRvp6vPAKNlnpihtht+Nq6VJ5u26QWtBiKaElt96pDqZZEluZgqXMtcQzdEz1eu3hoeGN6+SgeLT3o/13OjCB/IcrzPUuC8CMHlHTjuvxIrAikekv5wEYo9t0SXGAewAv2fPr459TwQcmFSfCkU2ZNUxzxBl+b1W0qVACBJV6YxjiN5GAE="
+        },
+        {
+          "type": "text",
+          "text": "Clippy clean. Now run the tests."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_019QmFiaahxuYQMH8SbFAPzc",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && cargo test -p grove-cst-cli config_tui 2>&1 | tail -30"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 139,
+        "cacheRead": 48918,
+        "cacheWrite": 139,
+        "totalTokens": 49198,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.0034750000000000002,
+          "cacheRead": 0.024458999999999998,
+          "cacheWrite": 0.00086875,
+          "total": 0.028812749999999998
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 29
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783194220328,
+      "responseId": "msg_01Hoi6YopdfdL4sZzeuxWEDt"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_019QmFiaahxuYQMH8SbFAPzc",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "test config_tui::update::tests::dirty_url_not_clobbered_on_provider_switch ... ok\ntest config_tui::update::tests::explore_inert_blocks_all_edits ... ok\ntest config_tui::update::tests::from_config_pre_populates ... ok\ntest config_tui::update::tests::mode_cycling ... ok\ntest config_tui::update::tests::model_dropdown_open_requests_fetch ... ok\ntest config_tui::update::tests::model_fetch_error_falls_back_to_free_text ... ok\ntest config_tui::update::tests::model_list_fetch_populates_and_select_sets_model ... ok\ntest config_tui::update::tests::provider_switch_sets_url_default ... ok\ntest config_tui::update::tests::quit_returns_action_without_mutation ... ok\ntest config_tui::update::tests::save_allowed_when_mcp_llm ... ok\ntest config_tui::update::tests::save_blocked_when_inert ... ok\ntest config_tui::update::tests::save_returns_action ... ok\ntest config_tui::update::tests::tab_and_quit_always_work ... ok\ntest config_tui::update::tests::tab_closes_open_dropdown ... ok\ntest config_tui::update::tests::tab_navigation_backward_wraps ... ok\ntest config_tui::update::tests::tab_navigation_forward_wraps ... ok\ntest config_tui::update::tests::tap_toggles ... ok\ntest config_tui::update::tests::to_config_fails_on_blank_url ... ok\ntest config_tui::update::tests::to_config_fails_on_blank_model ... ok\ntest config_tui::update::tests::to_config_round_trip ... ok\ntest config_tui::update::tests::tool_toggle_flips_selected ... ok\n\ntest result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 70 filtered out; finished in 0.00s\n\n     Running tests/cli.rs (target/debug/deps/cli-eb29f6a98d0dbd43)\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 0.00s\n\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783194225055
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "All the config_tui tests are passing, including the new ones I added. Now I should check the init tests since I modified init.rs.",
+          "thinkingSignature": "ErICCmMIDxgCKkAatUaB71oZHMB9gILQcV8OdltPAagZWSr4ZdRxkWTfRbgUN8tQw8bORkWGXR5cRryO0+0QRe3Yg4YDBgt9y2rNMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDM/oKJcyFLfG3WJ2NBoMYMsCrkiQPvIqDt5JIjD8ZjbhLGbgPKIYS1H35pYRQEPizB0gfYW4C/l6x3JowDXCHbhTMNPUeDSuNNX7IR8qfXAizDscGh1J4lGpYjocORWCNeTuRHR3TGEI0+fYU0uDEuF/D551KCqDR3hgoKZLn0iDfg+IVc3fjIS1BhbhDM+PAyoVkRMEbptHDUIeo91rIMGLy9CeEnHYxpdrLpMRftMusF4QcaxWGDULie0XYEp4QfjUH4/wRGvBw1EWGAE="
+        },
+        {
+          "type": "text",
+          "text": "All config_tui tests pass including 5 new. Let me verify init.rs tests (touched) and the full-file newline check."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01Q5ebHsd1UgwstsZFbJjo1z",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && cargo test -p grove-cst-cli init:: 2>&1 | tail -8; echo \"=== newline check ===\"; for f in cli/src/config_tui/mod.rs cli/src/config_tui/model.rs cli/src/config_tui/update.rs cli/src/config_tui/view.rs cli/src/init.rs cli/src/main.rs; do [ -z \"$(tail -c1 \"$f\")\" ] && echo \"OK $f\" || echo \"MISSING NL $f\"; done"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 312,
+        "cacheRead": 49057,
+        "cacheWrite": 878,
+        "totalTokens": 50249,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.0078000000000000005,
+          "cacheRead": 0.024528499999999998,
+          "cacheWrite": 0.0054875,
+          "total": 0.037826
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 41
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783194225055,
+      "responseId": "msg_01Gku7P6VSMXAKDFCdq7eDu4"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01Q5ebHsd1UgwstsZFbJjo1z",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 62 filtered out; finished in 0.00s\n\n     Running tests/cli.rs (target/debug/deps/cli-eb29f6a98d0dbd43)\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 0.00s\n\n=== newline check ===\nOK cli/src/config_tui/mod.rs\nOK cli/src/config_tui/model.rs\nOK cli/src/config_tui/update.rs\nOK cli/src/config_tui/view.rs\nOK cli/src/init.rs\nOK cli/src/main.rs\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783194233625
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "All the tests are passing, including the thirty init tests with proper newline handling. Now I'm verifying the authenticity of the progress test evidence by checking the documentation, and I want to make sure there are no issues with the grove_mode badge display when McpLlm is active or with the explore preference changes in init.rs.\n\nThe init.rs change looks solid — the return type chain from `ExploreConfig::load(root).ok()` flows correctly through the Option type, and the GroveConfig construction properly preserves the mode without mutation since saves only happen when McpLlm is active. The clippy check with warnings-as-errors passed cleanly, so there are no unused imports or other issues. Everything compiles and is consistent, so I'm ready to approve this and write up the code review.",
+          "thinkingSignature": "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"
+        },
+        {
+          "type": "text",
+          "text": "Everything verified independently: build/clippy clean, all 22 config_tui + 30 init tests pass, files newline-terminated. The implementation faithfully matches the approved plan and all 6 ACs. Writing the verdict."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_018b7XZofEJCYcLQX5YUkKJU",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "write",
+            "entity": "task",
+            "entityId": "GROVE-S03-T05",
+            "artifact": "code-review",
+            "content": "# CODE_REVIEW — GROVE-S03-T05: `config` TUI mode badge + inert explore-section rendering\n\n_(standalone review)_\n\n**Verdict:** Approved\n\n## Scope verified\n\nReviewed the uncommitted working-tree changes (task status `implemented`, not yet\ncommitted) across the six planned files. The merge-base diff conflated T01–T04's\ncommitted work (Mode→Steering rename, `reconcile_harness`); the T05 delta is the\n`git diff` of the working tree only, which is what this review assessed.\n\n## Correctness (against PLAN.md + task prompt)\n\n1. **AC1 — mode badge.** `view.rs` outer title now renders\n   `\" grove config   mode: {…} \"` with a match over all five `Mode` variants\n   (`mcp` / `skill` / `both` / `mcp-llm ✓` / `grammars`). Reads\n   `app.grove_mode`, sourced from `GroveConfig` via `App::from_grove_config`. ✔\n2. **AC2 — mcp-llm live.** `Default`/`from_config` set `explore_active = true`\n   under McpLlm; all existing edit paths untouched, all 17 pre-existing update\n   tests still green. ✔\n3. **AC3 — non-mcp-llm inert/greyed + notice.** Every edit `Msg` variant returns\n   `None` early when `!explore_active`; `Msg::Save` sets `last_error` and no-ops.\n   `render_explore_notice` renders the yellow warning row; every render fn gates\n   `focused = app.explore_active && app.focus == …`, so `border_style(false)`\n   applies the `DIM` (DarkGray) border to all fields when inactive. Footer swaps\n   to the \"inactive — Esc to cancel\" hint. ✔\n4. **AC4 — never mutates mode.** No mode selector added; `grove_mode` is\n   read-only in `App`. Save builds `GroveConfig{ mode: app.grove_mode, … }` and,\n   because Save is blocked unless McpLlm, mode round-trips unchanged. ✔\n5. **AC5 — tests.** 5 new update tests (`badge_reflects_grove_mode`,\n   `explore_inert_blocks_all_edits`, `save_blocked_when_inert`,\n   `save_allowed_when_mcp_llm`, `tab_and_quit_always_work`) — all pass;\n   existing suite unmodified and green. ✔\n6. **AC6 — build/clippy/test/newlines.** Independently ran\n   `cargo clippy -p grove-cst-cli -- -D warnings` (clean),\n   `cargo test -p grove-cst-cli config_tui` (22 passed) and `init::` (30 passed).\n   All six touched files end with a newline. ✔\n\n## Architecture & conventions\n\n- Elm-style layering preserved: `grove_mode`/`explore_active` are pure model\n  state; the gate lives in `update`; presentation stays in `view`. Clean.\n- The three plan-review advisories were all honoured: `view.rs` imports\n  `grove_core::config::Mode`; `mod.rs` retains `ExploreConfig` (still used) and\n  does not import an unused `Mode`.\n- `mod.rs` Save now wraps `to_config()` output into a `GroveConfig`; `main.rs`\n  and `init.rs` load `GroveConfig` with graceful fallback to legacy\n  `ExploreConfig::load` — backward-compatible with pre-migration projects.\n\n## Security / business rules\n\nNo auth/input-injection surface. The load-time preference chain in `init.rs`\n(config.json → legacy explore.json → prior cfg) is safe and preserves existing\nexplore config across mode switches. The inert-save guard correctly prevents an\nexplore config being written into an active state under a non-explore mode.\n\n## Advisory notes (non-blocking)\n\n- Inactive-field \"greying\" is conveyed via DIM borders + the yellow notice + the\n  footer hint; field *body text* is not additionally dimmed. This satisfies AC3\n  as written and is consistent with the existing focused/unfocused styling\n  convention — no change required.\n"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 2254,
+        "cacheRead": 49935,
+        "cacheWrite": 559,
+        "totalTokens": 52750,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.056350000000000004,
+          "cacheRead": 0.0249675,
+          "cacheWrite": 0.00349375,
+          "total": 0.08482125000000001
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 632
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783194233625,
+      "responseId": "msg_015BR5we2Uj8c7FSXzgGcmqw"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_018b7XZofEJCYcLQX5YUkKJU",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "Wrote 3443 bytes to engineering/sprints/GROVE-S03/GROVE-S03-T05/CODE_REVIEW.md"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783194265615
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Now the status transition (task mode, Approved) and the summary sidecar."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01EkpwCtCYK4R7V7MXEZvC9G",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && node .forge/tools/store-cli.cjs update-status task GROVE-S03-T05 status review-approved"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01Ns4YbW7cU2gwzKcRovbPfV",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "write",
+            "entity": "task",
+            "entityId": "GROVE-S03-T05",
+            "artifact": "review-impl-summary",
+            "content": "{\n  \"objective\": \"Assessed the config TUI implementation adding a read-only integration-mode badge and inert/greyed explore-section rendering when mode != mcp-llm.\",\n  \"findings\": [\n    \"Reviewed uncommitted working-tree delta (status 'implemented', not committed); merge-base diff conflated T01-T04 committed work, so review scoped to git diff of working tree.\",\n    \"AC1: view.rs outer title renders mode badge over all 5 Mode variants, sourced from app.grove_mode via App::from_grove_config.\",\n    \"AC2: Default/from_config set explore_active=true under McpLlm; existing edit paths untouched, 17 pre-existing update tests green.\",\n    \"AC3: every edit Msg no-ops when !explore_active; Save sets last_error; border_style(false) applies DIM borders; yellow notice row + footer hint added.\",\n    \"AC4: no mode selector; grove_mode read-only; Save (only reachable under McpLlm) round-trips mode unchanged — TUI never mutates mode.\",\n    \"AC5: 5 new update tests all pass; existing suite unmodified and green.\",\n    \"AC6 verified independently: clippy -D warnings clean, config_tui 22 passed, init:: 30 passed, all 6 files newline-terminated.\",\n    \"All 3 plan-review advisories honoured: view.rs imports grove_core::config::Mode; mod.rs keeps ExploreConfig, no unused Mode import.\",\n    \"init.rs/main.rs load GroveConfig with graceful fallback to legacy ExploreConfig::load — backward compatible.\",\n    \"Advisory (non-blocking): field body text not additionally dimmed; DIM borders + notice + footer satisfy AC3 as written.\"\n  ],\n  \"verdict\": \"approved\",\n  \"written_at\": \"2026-07-05T00:00:00Z\",\n  \"artifact_ref\": \"CODE_REVIEW.md\"\n}\n"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 934,
+        "cacheRead": 50494,
+        "cacheWrite": 2309,
+        "totalTokens": 53739,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.023350000000000003,
+          "cacheRead": 0.025247,
+          "cacheWrite": 0.01443125,
+          "total": 0.06303824999999999
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783194265615,
+      "responseId": "msg_01F5UmEmzq6mzEoALopyZFuJ"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01EkpwCtCYK4R7V7MXEZvC9G",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "(no output)"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783194281247
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01Ns4YbW7cU2gwzKcRovbPfV",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "forge_artifact failed: Command failed: node /home/boni/.nvm/versions/node/v24.3.0/lib/node_modules/@entelligentsia/forgecli/dist/forge-payload/tools/artifact.cjs write task GROVE-S03-T05 review-impl-summary {\n  \"objective\": \"Assessed the config TUI implementation adding a read-only integration-mode badge and inert/greyed explore-section rendering when mode != mcp-llm.\",\n  \"findings\": [\n    \"Reviewed uncommitted working-tree delta (status 'implemented', not committed); merge-base diff conflated T01-T04 committed work, so review scoped to git diff of working tree.\",\n    \"AC1: view.rs outer title renders mode badge over all 5 Mode variants, sourced from app.grove_mode via App::from_grove_config.\",\n    \"AC2: Default/from_config set explore_active=true under McpLlm; existing edit paths untouched, 17 pre-existing update tests green.\",\n    \"AC3: every edit Msg no-ops when !explore_active; Save sets last_error; border_style(false) applies DIM borders; yellow notice row + footer hint added.\",\n    \"AC4: no mode selector; grove_mode read-only; Save (only reachable under McpLlm) round-trips mode unchanged — TUI never mutates mode.\",\n    \"AC5: 5 new update tests all pass; existing suite unmodified and green.\",\n    \"AC6 verified independently: clippy -D warnings clean, config_tui 22 passed, init:: 30 passed, all 6 files newline-terminated.\",\n    \"All 3 plan-review advisories honoured: view.rs imports grove_core::config::Mode; mod.rs keeps ExploreConfig, no unused Mode import.\",\n    \"init.rs/main.rs load GroveConfig with graceful fallback to legacy ExploreConfig::load — backward compatible.\",\n    \"Advisory (non-blocking): field body text not additionally dimmed; DIM borders + notice + footer satisfy AC3 as written.\"\n  ],\n  \"verdict\": \"approved\",\n  \"written_at\": \"2026-07-05T00:00:00Z\",\n  \"artifact_ref\": \"CODE_REVIEW.md\"\n}\n\nSummary validation failed for REVIEW-IMPL-SUMMARY.json: Missing required fields: key_changes. Required fields: objective, key_changes, verdict, written_at.\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783194281247
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I need to correct the schema — the field should be `key_changes` instead of `findings`.",
+          "thinkingSignature": "EqECCmMIDxgCKkAFdtnBG3q24G5sD1Ogz0arRKHPMDQRKNgpey3mKCZ8CwG/tOzZIpBhAyTffmbnNGGcnEunf6EWY+hGiyeEu1iCMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDJIQokVyvU27mE70ARoMD4cso2hig5kNIs7YIjBtoyd92a2iSV8uYWJNUR/XK4BMeEsi4j6K9811EaPt+cKq3Sme0gLqW84m6zw2CRsqbCdudcI+rKMZ56Vx4tzm67dNQDCIYOCqYwGKdJu5qs5xQTRpLn4oxwrd7fGEYn/GnN7sGUKKL5mHAR5J+NN7M7WRN7PUOgOrpOoYcB2zSeUNvxi3ckhTU51xxvpmbHiG4dC+4dncjaDlkJ8LEhgB"
+        },
+        {
+          "type": "text",
+          "text": "The summary schema requires `key_changes` (not `findings`). Let me fix."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01JmMcWWyGf9Yf6bawubvuUS",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "write",
+            "entity": "task",
+            "entityId": "GROVE-S03-T05",
+            "artifact": "review-impl-summary",
+            "content": "{\n  \"objective\": \"Assessed the config TUI implementation adding a read-only integration-mode badge and inert/greyed explore-section rendering when mode != mcp-llm.\",\n  \"key_changes\": [\n    \"Reviewed uncommitted working-tree delta (status 'implemented', not committed); merge-base diff conflated T01-T04 committed work, so review scoped to git diff of working tree.\",\n    \"AC1: view.rs outer title renders mode badge over all 5 Mode variants, sourced from app.grove_mode via App::from_grove_config.\",\n    \"AC2: Default/from_config set explore_active=true under McpLlm; existing edit paths untouched, 17 pre-existing update tests green.\",\n    \"AC3: every edit Msg no-ops when !explore_active; Save sets last_error; border_style(false) applies DIM borders; yellow notice row + footer hint added.\",\n    \"AC4: no mode selector; grove_mode read-only; Save (only reachable under McpLlm) round-trips mode unchanged — TUI never mutates mode.\",\n    \"AC5: 5 new update tests all pass; existing suite unmodified and green.\",\n    \"AC6 verified independently: clippy -D warnings clean, config_tui 22 passed, init:: 30 passed, all 6 files newline-terminated.\",\n    \"All 3 plan-review advisories honoured: view.rs imports grove_core::config::Mode; mod.rs keeps ExploreConfig, no unused Mode import.\",\n    \"init.rs/main.rs load GroveConfig with graceful fallback to legacy ExploreConfig::load — backward compatible.\",\n    \"Advisory (non-blocking): field body text not additionally dimmed; DIM borders + notice + footer satisfy AC3 as written.\"\n  ],\n  \"verdict\": \"approved\",\n  \"written_at\": \"2026-07-05T00:00:00Z\",\n  \"artifact_ref\": \"CODE_REVIEW.md\"\n}\n"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 873,
+        "cacheRead": 52803,
+        "cacheWrite": 1814,
+        "totalTokens": 55492,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.021825,
+          "cacheRead": 0.026401499999999998,
+          "cacheWrite": 0.0113375,
+          "total": 0.059574
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 34
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783194281248,
+      "responseId": "msg_0167h3ffWQhkV12pttme2GRp"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01JmMcWWyGf9Yf6bawubvuUS",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "Wrote 1638 bytes to engineering/sprints/GROVE-S03/GROVE-S03-T05/REVIEW-IMPL-SUMMARY.json"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783194293737
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01Bxpzr6LYVtanJdGHgzvWfd",
+          "name": "forge_store",
+          "arguments": {
+            "command": "set-summary",
+            "args": [
+              "GROVE-S03-T05",
+              "code_review"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 89,
+        "cacheRead": 54617,
+        "cacheWrite": 936,
+        "totalTokens": 55644,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.002225,
+          "cacheRead": 0.0273085,
+          "cacheWrite": 0.00585,
+          "total": 0.0353935
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783194293738,
+      "responseId": "msg_012oBriVuVVhPW5RLi4msU1F"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01Bxpzr6LYVtanJdGHgzvWfd",
+      "toolName": "forge_store",
+      "content": [
+        {
+          "type": "text",
+          "text": "forge_store failed: Command failed: node /home/boni/.nvm/versions/node/v24.3.0/lib/node_modules/@entelligentsia/forgecli/dist/forge-payload/tools/store-cli.cjs set-summary GROVE-S03-T05 code_review\nSummary file not found: engineering/sprints/GROVE-S03/GROVE-S03-T05/REVIEW-CODE-SUMMARY.json (expected REVIEW-CODE-SUMMARY.json; found IMPLEMENTATION-SUMMARY.json, PLAN-SUMMARY.json, REVIEW-IMPL-SUMMARY.json, REVIEW-PLAN-SUMMARY.json in the same dir — write the sidecar via forge_artifact artifact:\"review-code-summary\", or rename it to REVIEW-CODE-SUMMARY.json)\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783194298301
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I see the mismatch—the workflow artifact is named `review-impl-summary` which generates `REVIEW-IMPL-SUMMARY.json`, but the code review set-summary step is looking for `REVIEW-CODE-SUMMARY.json`. I need to switch to using the `review-code-summary` artifact instead to match what the workflow expects.",
+          "thinkingSignature": "Eq0ECmMIDxgCKkDhA52Ru9SFGmsOBsjfb1fuYsSECI9TIGkpTsnI3ZnNzo1rsdPiRzb0+pgS9q06mU+JR+kJCik7Fnf0bgf1W6mXMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDDuxsbNX5utcYl6c6RoMF+j/4UCYl6j/bxCEIjARUjlkZ3gGeOIzT8moJYymx4EHrrVj/poIQ8HTO+D3v7qA97aGD10cpHRDStyhrAMq9wLDbk7LrixiO9kYxZ7hFbmkJCt26oGNgBG6YxFI/9eL0HBMCdf2ZdTjvfBlFPcVVN+74iticBpyYhsHJLdZsMfmRt+DhS8ddDhBQKSXcn88FmLT3hE8zidvsYa8clP6pmA44F+rta8Zvy8iwmHMXyIXWvA/Z6fJ+hmUzQAs6rZiVgzeie73f/VYeaKmYlKWacrs7q+Ji7rCOK+pj6os/Ug7fyj1vgP7FgxHXkhsUBq2xv3GvhXl573FslpYvBgI9O+sfBr0iU/XbBtpI8oNaqjDwMIPPE3kbrHTs7FbPVqCSZtx2GVaRsgFQFCoLVQOKFI7iMcqaD3LZ5nTVOLkuRrJqBHqZUjFLM/l/1GjRuhjiHKTaRKgxRuF2ssjpstpeQend7vOEFGg19KNFaz1+4BMrdqlifJXjC48s71Ks/R03CZ2S0BTFiQ2pAQVNu7sHfEGWPh2RVCQZsF+XrCCtcG7F17C3X0bDdKay1Z5hmX2reNjDwaet0sYAQ=="
+        },
+        {
+          "type": "text",
+          "text": "set-summary `code_review` expects `REVIEW-CODE-SUMMARY.json`. Let me write that artifact name."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01Fr5zVVxk94e6tTEJC1NSv1",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "write",
+            "entity": "task",
+            "entityId": "GROVE-S03-T05",
+            "artifact": "review-code-summary",
+            "content": "{\n  \"objective\": \"Assessed the config TUI implementation adding a read-only integration-mode badge and inert/greyed explore-section rendering when mode != mcp-llm.\",\n  \"key_changes\": [\n    \"Reviewed uncommitted working-tree delta (status 'implemented', not committed); merge-base diff conflated T01-T04 committed work, so review scoped to git diff of working tree.\",\n    \"AC1: view.rs outer title renders mode badge over all 5 Mode variants, sourced from app.grove_mode via App::from_grove_config.\",\n    \"AC2: Default/from_config set explore_active=true under McpLlm; existing edit paths untouched, 17 pre-existing update tests green.\",\n    \"AC3: every edit Msg no-ops when !explore_active; Save sets last_error; border_style(false) applies DIM borders; yellow notice row + footer hint added.\",\n    \"AC4: no mode selector; grove_mode read-only; Save (only reachable under McpLlm) round-trips mode unchanged — TUI never mutates mode.\",\n    \"AC5: 5 new update tests all pass; existing suite unmodified and green.\",\n    \"AC6 verified independently: clippy -D warnings clean, config_tui 22 passed, init:: 30 passed, all 6 files newline-terminated.\",\n    \"All 3 plan-review advisories honoured: view.rs imports grove_core::config::Mode; mod.rs keeps ExploreConfig, no unused Mode import.\",\n    \"init.rs/main.rs load GroveConfig with graceful fallback to legacy ExploreConfig::load — backward compatible.\",\n    \"Advisory (non-blocking): field body text not additionally dimmed; DIM borders + notice + footer satisfy AC3 as written.\"\n  ],\n  \"verdict\": \"approved\",\n  \"written_at\": \"2026-07-05T00:00:00Z\",\n  \"artifact_ref\": \"CODE_REVIEW.md\"\n}\n"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 1002,
+        "cacheRead": 55553,
+        "cacheWrite": 394,
+        "totalTokens": 56951,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.025050000000000003,
+          "cacheRead": 0.0277765,
+          "cacheWrite": 0.0024625,
+          "total": 0.055299
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 148
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783194298302,
+      "responseId": "msg_01Jns2pE4T3WWhJNwpBu1XeR"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01Fr5zVVxk94e6tTEJC1NSv1",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "Wrote 1638 bytes to engineering/sprints/GROVE-S03/GROVE-S03-T05/REVIEW-CODE-SUMMARY.json"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783194311869
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01FoW7amqqi8qv73GmeNvgJP",
+          "name": "forge_store",
+          "arguments": {
+            "command": "set-summary",
+            "args": [
+              "GROVE-S03-T05",
+              "code_review"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 89,
+        "cacheRead": 55947,
+        "cacheWrite": 1064,
+        "totalTokens": 57102,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.002225,
+          "cacheRead": 0.0279735,
+          "cacheWrite": 0.00665,
+          "total": 0.0368585
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783194311870,
+      "responseId": "msg_01KNZzQJonQtRUQQ52BBFjEi"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01FoW7amqqi8qv73GmeNvgJP",
+      "toolName": "forge_store",
+      "content": [
+        {
+          "type": "text",
+          "text": "OK"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783194314429
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I'm deciding whether to remove the REVIEW-IMPL-SUMMARY.json file since it duplicates the review-code-summary artifact, so I'll delete it to keep things tidy.",
+          "thinkingSignature": "Ep4ECmMIDxgCKkDygAmjuxiamErzomF7Ejlv+K9juc5bTxfgqbs41FLj0BBzZcuBBMxuo8BbYjlqQimWhBiobdbjpklAWAaJrNFuMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDGyAtA4G1mDM+ps/bRoMThfnjSWyAf8NR9cHIjAQVSwrOL+/n2oPcQ7be/JSsmaVDvdnNWhYy8Tz8P28ZBC9FTZT/6+8Hbmwg4s2Zx4q6AIKAA7462RNp5zDeiHE25Kdg8t8N793O+HmG3G7snKKD4syqEVYetVQlp6MdbmIg/56ehnRNHwQPnI0PcnlqUdWfyQLx6LGVKR86zoIhgKJR+diYSGlNptsDtNNcuearjmUfgTQkD6WjHqZA9vZUvMqgNYrvXr9XGvQjAgKlsE9XJXUiZZ7ez/Hbd+viPZ7pDAmDxVxBpNuqtwRboRsz57QeTaKoUDLe1SyQ/GPxkQEdm0u6QRDBGHfZG0BVgXaj63TyeumTl067UyVxP7H96moxHanIWS4VNFo72348NWyKSfzlH5UPYw/FCKqRikrCSkYs1hmhByZxQxs3WOdfJLNMvyHqr/RRvkxOGYXTi35v5ScuxlYc9HQ3HJ9h18X+vlkSt42KKe5QalxvmheTW0SRRpvG5LBuU7Qq5kf5C3Me7+Yhq2a8BcIHSfcZbF4eObP9VjmSXzoU5Wp8DvjIK7ltuA7wxhF4nkYAQ=="
+        },
+        {
+          "type": "text",
+          "text": "Summary registered. Let me remove the redundant stray sidecar I wrote before correcting the artifact name."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01JmEB8RdMVYMLp2snezKzxP",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "delete",
+            "entity": "task",
+            "entityId": "GROVE-S03-T05",
+            "artifact": "review-impl-summary"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 302,
+        "cacheRead": 57011,
+        "cacheWrite": 96,
+        "totalTokens": 57411,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.00755,
+          "cacheRead": 0.0285055,
+          "cacheWrite": 0.0006,
+          "total": 0.036665500000000004
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 132
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783194314429,
+      "responseId": "msg_01EKrQr4gHkctivs9of6yCu1"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01JmEB8RdMVYMLp2snezKzxP",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "Deleted engineering/sprints/GROVE-S03/GROVE-S03-T05/REVIEW-IMPL-SUMMARY.json"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783194319461
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Review complete.\n\n## 🌕 ORACLE — Code Review Verdict: **Approved**\n\n**Task GROVE-S03-T05** — config TUI mode badge + inert explore-section rendering (standalone review).\n\n### What I did\n- **Ran the preflight gate** (passed) and confirmed task status `implemented` (allowed).\n- **Caught a diff trap:** the merge-base diff conflated T01–T04's *committed* work (the Mode→Steering rename, `reconcile_harness`). The actual T05 delta is **uncommitted** in the working tree — I scoped the review to `git diff` of the working tree, not the misleading merge-base range.\n- **Verified independently** — not from PROGRESS claims:\n  - `cargo clippy -p grove-cst-cli -- -D warnings` → clean\n  - `cargo test … config_tui` → **22 passed** (incl. all 5 new tests)\n  - `cargo test … init::` → **30 passed**\n  - all six touched files newline-terminated\n\n### AC coverage\nAll six ACs map to concrete, verified changes: mode badge (all 5 variants), live explore under McpLlm, inert/greyed rendering (`DIM` borders via `border_style(false)` + yellow notice + footer hint), no mode-mutation control, passing existing + new tests, clean build/clippy/test. All three plan-review advisories were honoured in the implementation.\n\n### Outcome\n- `CODE_REVIEW.md` written (verdict: Approved, one non-blocking advisory).\n- Task status → `review-approved`.\n- `code_review` summary sealed via `set-summary`; stray sidecar cleaned up.\n\nNo status/event writes beyond the sanctioned task transition. Ready for the approve/commit phase."
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 588,
+        "cacheRead": 57107,
+        "cacheWrite": 357,
+        "totalTokens": 58054,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.014700000000000001,
+          "cacheRead": 0.0285535,
+          "cacheWrite": 0.00223125,
+          "total": 0.045494749999999994
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "stop",
+      "timestamp": 1783194319461,
+      "responseId": "msg_01JjWvLQNqWkqiv43QWLvUzy"
+    }
+  ]
+}

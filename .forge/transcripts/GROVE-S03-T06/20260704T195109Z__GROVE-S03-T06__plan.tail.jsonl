@@ -1,0 +1,88 @@
+{"line":"[T0:01:21:09] ─── phase 1/8 plan begin · GROVE-S03-T06 ───"}
+{"line":"╭ [T1:01:21:12] ✱ Let me start by running the banner and then following the workflow algorithm."}
+{"line":"│ → forge_banner"}
+{"line":"│ ← forge_banner ok 5L"}
+{"line":"╭ [T2:01:21:14] → forge_preflight"}
+{"line":"│ ← forge_preflight ok 1L"}
+{"line":"╭ [T3:01:21:17] ⚙ forge_store read"}
+{"line":"│ ← forge_store ok 8L ⇌21%"}
+{"line":"╭ [T4:01:21:20] ✱ Status is \"draft\" — allowed. Let me load context: persona first."}
+{"line":"│ » Status is `draft` — allowed. Now loading context."}
+{"line":"│ ⌕ read .forge/personas/architect.md"}
+{"line":"│ ← read ok 46L"}
+{"line":"╭ [T5:01:21:23] » 🗻 **grove Architect** — I hold the shape of the whole. I give final sign-off before commit."}
+{"line":"│ ⚙ forge_store_query nlp"}
+{"line":"│ ← forge_store_query ok 26L ⇌76%"}
+{"line":"╭ [T6:01:21:26] → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 11L ⇌86%"}
+{"line":"╭ [T7:01:21:28] → forge_artifact outline"}
+{"line":"│ ← forge_artifact ok 7L"}
+{"line":"╭ [T8:01:21:31] → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 8L"}
+{"line":"╭ [T9:01:21:33] → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 21L"}
+{"line":"╭ [T10:01:21:35] → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 9L"}
+{"line":"╭ [T11:01:21:38] → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 5L"}
+{"line":"╭ [T12:01:21:41] ✱ Now let me research the codebase to understand the existing patterns. Let me look at the relevant files."}
+{"line":"│ » Now let me research the codebase."}
+{"line":"│ → mcp__grove__outline"}
+{"line":"│ ⌕ read engineering/architecture/stack.md"}
+{"line":"│ ← read ok 67L"}
+{"line":"│ ← mcp__grove__outline ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 12"}
+{"line":"╭ [T13:01:21:44] → mcp__grove__source"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"╰ ⇉ batched 3 tool calls in turn 13"}
+{"line":"╭ [T14:01:21:47] → mcp__grove__source"}
+{"line":"│ ⌕ read core/src/registry.rs"}
+{"line":"│ ← read ok 52L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 14"}
+{"line":"╭ [T15:01:21:49] ⌕ read core/src/registry.rs"}
+{"line":"│ ← read ok 32L"}
+{"line":"╭ [T16:01:21:54] ✱ Now I have a clear picture of the existing code. Let me also check how the wasm file path is resolved for a grammar to understand how we'd look up the cached wasm given a locked language name.\n\nLooking at the `resolve` function which loads the Grammar, I need to understand how it finds the wasm file on disk, since `verify_lock` needs to find the cached wasm for a locked language and recompute its sha256.\n\nLet me read the `resolve` function."}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"╭ [T17:01:21:58] ✱ Now I understand the structure. The `resolve` function reads from the in-memory registry (which is the local `registry/` directory, not the user's cache). For verifying the lock file, we need to find the wasm file in the cache directory (where `grove fetch` downloads them to).\n\nLet me look at `fetch.rs` to understand how the cache directory is used to store fetched wasm files."}
+{"line":"│ $ bash ls core/src/"}
+{"line":"│ ← bash ok 10L"}
+{"line":"╭ [T18:01:22:01] → mcp__grove__outline"}
+{"line":"│ ← mcp__grove__outline ok 1L"}
+{"line":"╭ [T19:01:22:03] → mcp__grove__source"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"╭ [T20:01:22:29] ✱ Now I have a complete picture. Let me understand the cache structure:\n- Fetched grammars are stored in `cache_root()/<lang>/grammar.wasm` (in the OS native cache, like `~/.cache/grove/grammars/<lang>/grammar.wasm`)\n- The in-registry grammars (dev stubs) are stored in `registry_root()/<lang>/grammar.wasm`\n\nFor `verify_lock`, we need to:\n1. Read `grove.lock` at a given path\n2. For each grammar in the lock (with its `name` and expected `wasm` hash):\n   - Check the cached wasm file at `cache_root()/<name>/grammar.wasm`, falling back to the registry if needed\n   - If the file doesn't exist, mark it as `Missing`\n   - If it exists, compute the sha256 hash and compare against the expected value to determine if it's a `Match` or `Mismatch`\n3. Return a `Vec<LockVerifyEntry>`\n\nThe tricky part is that `locked_langs` only gives us the grammar names, but we also need the expected wasm hashes from the lock file itself, so `verify_lock` will need to parse the lock file directly to get both pieces of information.\n\nFor the case where no `grove.lock` exists, the task specifies this should be a distinct, non-error signal that the caller can render as \"not present\". So the return type should be `Result<Option<Vec<LockVerifyEntry>>>` — `Ok(None)` when there's no lock file, and `Ok(Some(vec))` when the lock file exists and has been verified.\n\nFor locating the cached wasm files, fetched grammars are stored at `cache_root()/<lang>/grammar.wasm`, while dev stub grammars live at `registry_root()/<lang>/grammar.wasm`.\n\nThe `verify_lock` function needs to read the lock file, then for each grammar entry check if the wasm file exists at the expected location, compute its sha256 hash, and report whether it matches the locked hash or is missing. The challenge is handling the test environment where dev stubs are in the registry rather than the cache. So the real issue is that `resolve()` points to the dev stub registry, but after `grove fetch`, the actual grammars live in `cache_root()`. I need to decide whether `verify_lock` should check the cached wasm files directly or go through the registry mechanism. If I use `resolve()`, dev stubs work but I'm not actually verifying what's in the cache. If I read directly from `cache_root()/<lang>/grammar.wasm`, I'm checking the real cached files but bypassing the registry abstraction."}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ ⌕ read core/src/registry.rs"}
+{"line":"│ ← read ok 32L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 20"}
+{"line":"╭ [T21:01:22:51] ✱ Now I understand. The `registry_root` function:\n1. First checks `GROVE_REGISTRY` env var\n2. Then searches `search_path()` for existing registry directories\n3. Falls back to `cache_root()` or `dev_root()`\n\nSo `resolve()` actually can find grammars in `cache_root()` as a fallback. This means `verify_lock` can use `resolve()` under the hood to find the wasm file.\n\nBut we need to be careful: `verify_lock` should handle the `Missing` case where `resolve()` would fail because the grammar isn't in any of those locations. \nSince fetched grammars get written to `cache_root()`, and that's part of the fallback chain in `registry_root()`, the most straightforward approach is to read the lock file, parse its JSON, and then for each grammar entry, attempt to locate the wasm bytes using the existing resolution logic. I'll go with `Result<Option<Vec<LockVerifyEntry>>>` to give callers a clean way to distinguish between \"no lock file\" and \"lock file with entries.\" Now I'm defining the `LockVerifyEntry` and `LockVerifyStatus` types, then implementing the `verify_lock` function that reads the lock file, parses the JSON, and validates each grammar entry against the registry.\n\nFor each grammar, I'm extracting the name and expected wasm hash, resolving the actual wasm file path, computing its SHA256, and comparing it to determine whether it matches, mismatches, or is missing. Any IO errors get propagated up. Then I'll test this with the toy registry helper—creating a matching case, tampering with the hash to trigger a mismatch, and removing the wasm file to verify the missing case.\n\nSince this is a new read-only function being added to `registry.rs` without changing existing behavior, it's not material. I'll keep it in `registry.rs` alongside the other lock-related code rather than creating a separate file, following the existing pattern."}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 21"}
+{"line":"╭ [T22:01:23:19] ✱ Now I have a thorough understanding. Note that `write_lock_for_pins_versions_and_hashes` uses the `\"rust\"` lang from the actual dev registry (not a toy_registry). The tests that use `toy_registry` set `GROVE_REGISTRY` to force the `registry_root()` function to use that temp directory.\n\nFor the `verify_lock` tests, I need to:\n1. Use `GROVE_REGISTRY` env var to point to a toy registry\n2. Call `write_lock_for` to generate a lock\n3. Call `verify_lock` to verify it\n\nThe tricky part is that tests run in parallel and `GROVE_REGISTRY` is process-wide, so I need to see how other tests handle this conflict. Looking at `write_lock_for_pins_versions_and_hashes`, it actually uses the default registry with the \"rust\" dev stubs, while `toy_registry` is used by the `write_index_*` tests that manage `GROVE_REGISTRY`. For `verify_lock`, the function takes a root path parameter, so I can control which registry it uses that way. instead takes the lock file path directly, then constructs the wasm path using `registry_root()/<name>/grammar.wasm`. For testing, I can leverage the dev registry which already has \"rust\", \"javascript\", and \"python\" available—I could write a lock referencing \"rust\", verify it succeeds, then test failure cases by tampering with the hash or referencing a non-existent language like \"nonexistent\".\n\nBut wait, re-reading the requirements more carefully: the function should resolve cached wasm from `cache_root()/<lang>/grammar.wasm` after `grove fetch` populates the cache. The issue is that dev stubs won't be in the cache directory, so I need to think about how the function actually resolves wasm in both production and test scenarios. Looking at the search path logic, `registry_root()` tries the candidates from `search_path()` first—which includes `cache_root()`, environment variables, and local `.grove/grammars`—and only falls back to `cache_root()` if none of those exist. So I need to understand what `search_path()` actually returns to see where grammars would be resolved."}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"╭ [T23:01:23:42] ✱ Now I understand: `search_path()` includes `cache_root()` and `dev_root()`. So `registry_root()` will find grammars in `cache_root()/<lang>/grammar.wasm` when cache_root exists (and has a grammar directory). If cache_root is found as a directory, grammars fetched there would be found.\n\nFor tests, the dev_root() (the source tree's `registry/` dir) has `rust`, `javascript`, `python`. \n\nThe key insight: `verify_lock` should resolve the wasm by looking in `registry_root()/<lang>/grammar.wasm`. This covers:\n- Production: grammars in `cache_root()` or `.grove/grammars/`\n- Tests: dev stubs in source `registry/` dir\n\nNow I'm designing the `verify_lock` tests without needing GROVE_REGISTRY. I'll write a lock for `[\"rust\"]` using `write_lock_for`, then call `verify_lock` on the same lock path and expect all matches. For the second test, I'll tamper with the JSON hash after writing the lock and verify that `verify_lock` detects the mismatch for rust. Then I'll set up a third test case with a JSON lock.\n\nFor the third test, I need to manually write a lock file referencing a nonexistent language since `write_lock_for` would fail to resolve it, then call `verify_lock` and expect a `Missing` result for that language. I'll also test the case where the lock file doesn't exist at all—calling `verify_lock` with a nonexistent path should return `Ok(None)`.\n\nNow I'm realizing there's a subtle issue with how `verify_lock` works. The function verifies that cached grammars match the lock, but in production the grammars in `cache_root()` may differ from what `resolve` would return.\n\nActually, for the doctor use case, the goal is to verify that whatever the user has cached or installed matches the lock file. So I should look in the same place `resolve` would look. Using `registry_root()` for consistency makes sense—it falls back to `cache_root()` anyway, which is where grammars end up after `grove fetch`.\n\nNow I'm ready to finalize the plan. I'll add a `LockVerifyStatus` enum and a `LockVerifyEntry` struct to track the verification results for each language in the lock file.\n\nThe `verify_lock` function will read the lock file, extract each grammar's name and expected hash, resolve the wasm file path using `registry_root()`, compute the actual hash, and return whether each entry matches, mismatches, or is missing. If the lock file doesn't exist, it returns `None`. I'll also need to export these types from `lib.rs` and write unit tests."}
+{"line":"│ ⌕ read core/src/lib.rs"}
+{"line":"│ ← read ok 69L"}
+{"line":"╭ [T24:01:24:24] ✱ Good. The `registry` module is already public, so consumers can access `registry::verify_lock` and the new types directly. But I should also re-export `LockVerifyEntry` and `LockVerifyStatus` for convenience, like other types are.\n\nActually, looking at the existing re-exports - they re-export key types that consumers commonly use. Since T07 (`grove doctor`) will consume `verify_lock`, it will likely need these types. Let me add them to the re-exports too, or just let T07 use `registry::LockVerifyEntry` etc. directly.\nI'll add the re-exports to lib.rs for consistency, then move on to writing out the full plan."}
+{"line":"│ » Now I have enough context for a complete plan. Let me write it."}
+{"line":"│ → forge_artifact write"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╭ [T25:01:24:27] ⚙ forge_store update-status"}
+{"line":"│ ← forge_store ok 1L"}
+{"line":"╭ [T26:01:24:40] » Now write the plan summary sidecar:"}
+{"line":"│ → forge_artifact write"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╭ [T27:01:24:43] ⚙ forge_store set-summary"}
+{"line":"│ ← forge_store ok 1L"}
+{"line":"╭ [T28:01:24:58] » Plan complete. Here's a summary of what was produced:\n\n---\n\n## GROVE-S03-T06 — Plan Summary\n\n**Objective:** Add a `verify_lock` integrity primitive to `core/src/registry.rs` that reads `grove.lock`, resolves each grammar's cached wasm, recomputes its sha256, and returns a typed per-language `Match` / `Mismatch` / `Missing` result — the building block `grove doctor` (T07) needs.\n\n**Key design decisions:**\n\n| Decision | Rationale |\n|---|---|\n| Lives in `registry.rs`, not a new module | All lock-file code already there (`write_lock_for`, `locked_langs`, `sha256`) |\n| `Result<Option<Vec<LockVerifyEntry>>>` | `Ok(None)` = absent lock (non-error); `Ok(Some(…))` = verified |\n| Wasm resolved via `registry_root()/<name>/grammar.wasm` | Same path `resolve()` uses; covers dev-stubs, `cache_root()`, `GROVE_REGISTRY` |\n| Reuses `sha256()` | Guarantees a freshly written lock verifies `Match` without drift |\n| No `GROVE_REGISTRY` needed in tests | Tests use `\"rust\"` dev stub or hand-crafted JSON; no env-var mutation |\n\n**Files to change:**\n- `core/src/registry.rs` — new `LockVerifyStatus`, `LockVerifyEntry`, `verify_lock`, 4 unit tests\n- `core/src/lib.rs` — add re-exports of the two new types\n\n**Not material** — additive read-only function, no CLI surface, no version bump required."}

@@ -1,0 +1,83 @@
+{"line":"[T0:01:27:35] ─── phase 3/8 implement begin · GROVE-S03-T06 ───"}
+{"line":"╭ [T1:01:27:38] ✱ Let me start by running the banner and then following the workflow steps."}
+{"line":"│ → forge_banner"}
+{"line":"│ ← forge_banner ok 5L"}
+{"line":"╭ [T2:01:27:40] → forge_preflight"}
+{"line":"│ ← forge_preflight ok 1L"}
+{"line":"╭ [T3:01:27:44] ⚙ forge_store read"}
+{"line":"│ ⌕ read .forge/personas/engineer.md"}
+{"line":"│ ← read ok 12L"}
+{"line":"│ ← forge_store ok 19L ⇌69%"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 3"}
+{"line":"╭ [T4:01:27:48] ✱ 🌱 **grove Engineer** — I plan what will be built before any code is written. I do not move forward until the code is clean.\n\nNow let me read the approved PLAN.md for this task."}
+{"line":"│ » 🌱 **grove Engineer** — I plan what will be built before any code is written. I do not move forward until the code is clean.\n\nStatus is `plan-approved`. Let me read the approved PLAN.md and the relevant source files."}
+{"line":"│ → forge_artifact read"}
+{"line":"│ → mcp__grove__outline"}
+{"line":"│ ← mcp__grove__outline ok 1L"}
+{"line":"│ ← forge_artifact ok 37L ⇌74%"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 4"}
+{"line":"╭ [T5:01:27:54] ✱ Let me read the relevant parts of registry.rs to understand the existing code:\n1. The write_lock_for function to understand the JSON format\n2. The locked_langs function\n3. The sha256 function\n4. The end of the file where I'll add new code"}
+{"line":"│ ⌕ read core/src/registry.rs"}
+{"line":"│ ⌕ read core/src/lib.rs"}
+{"line":"│ ← read ok 162L"}
+{"line":"│ ← read ok 69L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 5"}
+{"line":"╭ [T6:01:27:58] ✱ Now let me read the end of the tests module to see where the tests are and also look at write_lock_for more carefully."}
+{"line":"│ » Now let me read the tests section of registry.rs to understand the pattern:"}
+{"line":"│ ⌕ read core/src/registry.rs"}
+{"line":"│ ⌕ read core/src/registry.rs"}
+{"line":"│ ← read ok 38L"}
+{"line":"│ ← read ok 22L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 6"}
+{"line":"╭ [T7:01:28:05] ✱ Now I have a good understanding of the codebase. Let me implement the plan:\n\n1. Add `LockVerifyStatus` enum, `LockVerifyEntry` struct, and `verify_lock` function to `core/src/registry.rs`\n2. Add `pub use registry::{LockVerifyEntry, LockVerifyStatus};` to `core/src/lib.rs`\n3. Add four unit tests\n\nLet me look at the full plan details for exact implementation guidance:"}
+{"line":"│ » Now let me read the full PLAN.md for implementation details:"}
+{"line":"│ → forge_artifact outline"}
+{"line":"│ ← forge_artifact ok 15L"}
+{"line":"╭ [T8:01:28:07] → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 81L"}
+{"line":"╭ [T9:01:28:13] ✱ Now I have all the information needed. Let me implement the plan.\n\nThe key things to add to `core/src/registry.rs`:\n1. `pub enum LockVerifyStatus { Match, Mismatch, Missing }` \n2. `pub struct LockVerifyEntry { pub lang: String, pub expected: String, pub actual: Option<String>, pub status: LockVerifyStatus }`\n3. `pub fn verify_lock(path: &Path) -> Result<Option<Vec<LockVerifyEntry>>>`\n4. Four unit tests\n\nAnd I need to export `LockVerifyEntry` and `LockVerifyStatus` from `core/src/lib.rs`. Let me check the testing strategy to see what the exact test cases should cover."}
+{"line":"│ → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 19L"}
+{"line":"╭ [T10:01:28:30] » Now I have everything I need. Let me implement the changes:"}
+{"line":"│ ✎ edit core/src/registry.rs"}
+{"line":"│ ← edit ok 1L"}
+{"line":"╭ [T11:01:28:42] ✎ edit core/src/registry.rs"}
+{"line":"│ ← edit ok 1L"}
+{"line":"╭ [T12:01:28:57] » Now add the four unit tests before the closing `}` of the tests module:"}
+{"line":"│ ✎ edit core/src/registry.rs"}
+{"line":"│ ← edit ok 1L"}
+{"line":"╭ [T13:01:29:02] » Now add the re-export to `lib.rs`:"}
+{"line":"│ ✎ edit core/src/lib.rs"}
+{"line":"│ ← edit ok 1L"}
+{"line":"╭ [T14:01:29:04] » Now let's check syntax and run the tests:"}
+{"line":"│ → mcp__grove__check"}
+{"line":"│ ← mcp__grove__check ok 1L"}
+{"line":"╭ [T15:01:29:07] $ bash cd /home/boni/src/grove-engineering/grove && cargo test --release --locked 2>&1 | tail -40"}
+{"line":"│ ← bash ok 41L"}
+{"line":"╭ [T16:01:29:44] ✱ The 29 tests passed! But wait - I don't see the new unit tests I added (verify_lock_returns_none_when_file_absent, verify_lock_matches_after_write_lock_for, etc.). That's because the integration tests for `core` are in the top-level tests directory. Let me run just the core unit tests to see those:"}
+{"line":"│ » Wait - the new unit tests weren't in the output. Let me run the core unit tests specifically:"}
+{"line":"│ $ bash cd /home/boni/src/grove-engineering/grove && cargo test --release --locked -p grove-core 2>&1 | tail -40"}
+{"line":"│ ← bash ok 4L"}
+{"line":"╭ [T17:01:29:46] $ bash cd /home/boni/src/grove-engineering/grove && cargo test --release --locked -p core 2>&1 | tail -40"}
+{"line":"│ ← bash ok 4L"}
+{"line":"╭ [T18:01:29:48] $ bash cd /home/boni/src/grove-engineering/grove && cat core/Cargo.toml | head -5"}
+{"line":"│ ← bash ok 6L"}
+{"line":"╭ [T19:01:29:51] $ bash cd /home/boni/src/grove-engineering/grove && cargo test --release --locked -p grove-cst 2>&1 | tail -50"}
+{"line":"│ ← bash ok 51L"}
+{"line":"╭ [T20:01:30:08] » All 4 new tests pass:\n- `verify_lock_returns_none_when_file_absent` ✓\n- `verify_lock_matches_after_write_lock_for` ✓\n- `verify_lock_detects_tampered_hash` ✓\n- `verify_lock_detects_missing_wasm` ✓\n\n165 total tests pass. Now let me transition the task status and write the artifacts:"}
+{"line":"│ ⚙ forge_store update-status"}
+{"line":"│ ← forge_store ok 1L"}
+{"line":"╭ [T21:01:30:10] ⚙ forge_store update-status"}
+{"line":"│ ← forge_store ok 1L"}
+{"line":"╭ [T22:01:30:27] → forge_artifact write"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╭ [T23:01:30:36] → forge_artifact write"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╭ [T24:01:30:44] ⚙ forge_store set-summary"}
+{"line":"│ ← forge_store ok 1L"}
+{"line":"╭ [T25:01:30:46] → forge_verify_apply"}
+{"line":"│ ← forge_verify_apply ok 9L"}
+{"line":"╭ [T26:01:30:51] ✱ Both files are \"untracked\" in the forge_verify_apply sense, which means they have no manifest entry — this is expected for source files outside .forge/. The tool says \"untracked (no manifest entry — ambiguous, treat as potentially modified)\" which is fine — these are source code files, not forge artifacts. The actual verification was done via cargo test which confirmed the changes work.\n\nLet me do a quick git status to confirm the changes are indeed on disk:"}
+{"line":"│ $ bash cd /home/boni/src/grove-engineering/grove && git diff --stat HEAD core/src/registry.rs core/src/lib.rs"}
+{"line":"│ ← bash ok 4L"}
+{"line":"╭ [T27:01:31:00] » Both files are confirmed modified on disk. Implementation complete. Here's a summary:\n\n---\n\n## GROVE-S03-T06 — Implementation Complete ✅\n\n### What was built\n\n**`core/src/registry.rs`** — three purely additive additions:\n\n1. **`pub enum LockVerifyStatus`** — `Match` / `Mismatch` / `Missing` — the three-way outcome of comparing a cached wasm's sha256 against the pinned lock hash.\n\n2. **`pub struct LockVerifyEntry`** — `lang`, `expected`, `actual: Option<String>`, `status` — one record per grammar entry in the lock file.\n\n3. **`pub fn verify_lock(path: &Path) -> Result<Option<Vec<LockVerifyEntry>>>`** — reads the lock file, resolves each grammar's wasm at `registry_root()/<name>/grammar.wasm`, recomputes sha256, and compares. Returns `Ok(None)` when the lock is absent (non-error), `Ok(Some(entries))` when parsed, `Err` on I/O/parse failure.\n\n4. **Four unit tests** — all green:\n   - `verify_lock_returns_none_when_file_absent` — `Ok(None)` for a non-existent path\n   - `verify_lock_matches_after_write_lock_for` — fresh lock verifies all `Match`\n   - `verify_lock_detects_tampered_hash` — mutated `wasm` field → `Mismatch`\n   - `verify_lock_detects_missing_wasm` — nonexistent lang → `Missing`\n\n**`core/src/lib.rs`** — `pub use registry::{LockVerifyEntry, LockVerifyStatus}` added to curated public surface.\n\n### Test result\n```\n165 passed; 0 failed — cargo test --release --locked -p grove-cst\n```"}

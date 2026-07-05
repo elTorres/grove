@@ -1,0 +1,94 @@
+{"line":"[T0:00:12:12] ─── phase 2/8 review-plan begin · GROVE-S03-T03 ───"}
+{"line":"╭ [T1:00:12:16] ✱ I'm going to start by running the banner and then reading through the persona to understand what I'm working with."}
+{"line":"│ → forge_banner"}
+{"line":"│ → forge_preflight"}
+{"line":"│ ⌕ read .forge/personas/supervisor.md"}
+{"line":"│ ← forge_banner ok 5L"}
+{"line":"│ ← forge_preflight ok 1L"}
+{"line":"│ ← read ok 67L"}
+{"line":"╰ ⇉ batched 3 tool calls in turn 1"}
+{"line":"╭ [T2:00:12:21] » 🌿 **grove Supervisor** — I review before things move forward. I read the actual code, not the report.\n\nPreflight passed. Now the pipeline step guard and loading context."}
+{"line":"│ $ bash node .forge/tools/store-cli.cjs read task GROVE-S03-T03 --fields status"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ ← bash ok 4L"}
+{"line":"│ ← forge_artifact ok 11L ⇌86%"}
+{"line":"│ ← forge_artifact ok 46L ⇌61%"}
+{"line":"╰ ⇉ batched 3 tool calls in turn 2"}
+{"line":"╭ [T3:00:12:30] ✱ I need to review the full plan and task prompt documents directly to verify the details rather than relying on compressed summaries."}
+{"line":"│ » Status is `planned` — guard passes. Let me read full detail of the plan and task prompt, plus the actual code files to verify feasibility."}
+{"line":"│ → forge_artifact read"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 22L"}
+{"line":"│ ← forge_artifact ok 10L"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╰ ⇉ batched 4 tool calls in turn 3"}
+{"line":"╭ [T4:00:12:36] » Section headings need the plain text form. Let me re-read those sections and inspect the actual code."}
+{"line":"│ → forge_artifact read"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ → mcp__grove__outline"}
+{"line":"│ → mcp__grove__outline"}
+{"line":"│ ← mcp__grove__outline ok 1L"}
+{"line":"│ ← mcp__grove__outline ok 1L"}
+{"line":"│ ← forge_artifact ok 15L"}
+{"line":"│ ← forge_artifact ok 29L"}
+{"line":"╰ ⇉ batched 4 tool calls in turn 4"}
+{"line":"╭ [T5:00:12:42] » Now let me read the actual current `determine_surface`, `GroveConfig::load`, `Mode`, and the current explore config to verify the plan's feasibility against real code."}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ ⌕ read cli/src/mcp.rs"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ ← read ok 74L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"╰ ⇉ batched 5 tool calls in turn 5"}
+{"line":"╭ [T6:00:12:53] ✱ I'm verifying the plan against the actual code structure. The `GroveConfig` struct has the `explore` field as an `Option`, which aligns with step 3b. For the `active_mode` None case, `GroveConfig::load` returns the mode from the config, defaulting to Mcp on failure. Since `GroveConfig::load` already handles migration from legacy explore configs, a legacy mcp-llm project will load correctly with the Mcp mode.\n\nI'm also checking the mode branching logic — while there are other modes like Skill, Both, and Grammars, the `determine_surface` function treats anything that isn't McpLlm as Standard surface, which is reasonable for the serve command's scope. The key fix is that when `active_mode` is None, loading the config prioritizes the config.json file, so a stale explore.json won't interfere with the Mcp mode detection.\n\nNow I need to verify the lib.rs re-exports and check the existing integration test to ensure the changes fit properly."}
+{"line":"│ » The plan is well grounded in the actual code. Let me verify the lib.rs re-exports and the existing integration test the plan proposes to update."}
+{"line":"│ $ bash grep -n \"pub use\\|pub mod\\|GroveConfig\\|Mode\\|active_mode\\|ModeChoice\" core/src/lib.rs | head -40"}
+{"line":"│ $ bash grep -n \"explore_mode_unhealthy_provider_falls_back_to_standard_surface\\|determine_surface\\|serve\\|explore.json\\|config.json\\|mode\" cli/tests/cli.rs | head -40"}
+{"line":"│ ← bash ok 14L"}
+{"line":"│ ← bash ok 37L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 6"}
+{"line":"╭ [T7:00:12:58] ✱ I'm examining the existing integration test to understand what changes are needed—specifically updating a comment to reference T03 and adding a regression test for bug1."}
+{"line":"│ » Let me examine the existing integration test the plan touches to confirm the proposed regression test is consistent."}
+{"line":"│ ⌕ read cli/tests/cli.rs"}
+{"line":"│ ← read ok 72L"}
+{"line":"╭ [T8:00:13:06] ✱ I'm noticing a critical issue with this test: it only writes explore.json without a config.json, so when the new behavior calls `determine_surface` which triggers `active_mode(root, None)` and loads the config, it will migrate from the legacy explore format. I need to check what mode the migration function actually sets to understand if this test will still work as expected."}
+{"line":"│ » The existing unhealthy-fallback test writes only `explore.json` (no config.json). Under the new logic it hits `GroveConfig::load` → legacy migration. I need to confirm the migration produces `McpLlm` mode so the health probe still fires and the test's stderr assertion holds."}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ ⌕ read cli/tests/cli.rs"}
+{"line":"│ ← read ok 32L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 8"}
+{"line":"╭ [T9:00:13:44] ✱ The migration flow produces `Mode::McpLlm`, which triggers the explore branch when `determine_surface` finds only explore.json. This reloads the GroveConfig, sets the explore field, but then the health probe fails and falls back with the \"falling back\" message to stderr. The existing test still passes since it checks for both that message and the seven tools.\n\nThere's a subtle side effect though: migration writes config.json to disk and prints a deprecation warning to stderr, which doesn't break the test assertions. GroveConfig gets loaded twice—once in `active_mode` (which migrates and writes the file) and again in `determine_surface` (which reads the now-existing config.json with mode McpLlm). This redundancy is consistent and safe.\n\nFor the bug-1 regression case with config.json mode=mcp and stale explore.json, `active_mode` returns Mcp directly without touching explore.json, so `determine_surface` sees Mcp != McpLlm and returns Standard surface immediately with the seven tools. The plan holds up—it's feasible, preserves precedence, and the tests are reasonable. Importing `Mode` into cli/src/mcp.rs alongside the existing config imports is straightforward, and for non-MCP modes like Skill or Both, returning Standard surface from serve is acceptable behavior even if arguably a design question.\n\nOne edge case worth flagging: if config.json is malformed, `load()` returns an error and `active_mode` falls back to Mcp with a diagnostic, which is reasonable. Also, calling `active_mode` twice means the second call sees config.json already written from the first call's migration side effect—no double-migration, but it's mildly surprising that a read-only resolver like doctor would trigger migration as a side effect. That's consistent with existing load semantics though, so I'll note it as advisory.\n\nI'm confident this plan works. Time to write up the review."}
+{"line":"│ » Verification complete. Migration yields `Mode::McpLlm`, so the existing unhealthy-fallback test still routes through `health_probe` and keeps its \"falling back\" stderr assertion. The bug-1 regression path (config.json `mode=mcp` + stale explore.json) resolves to `Mcp` → Standard immediately, exactly as AC-3 requires. Precedence (`--standard` > `--explore` > declared) is preserved. The plan is grounded in the real code.\n\nNo Review Loop Context block was provided → standalone review. Writing the verdict."}
+{"line":"│ → forge_artifact write"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╭ [T10:00:13:57] » Now the status transition (task mode, Approved → plan-approved) and the summary sidecar."}
+{"line":"│ $ bash node .forge/tools/store-cli.cjs update-status task GROVE-S03-T03 status plan-approved"}
+{"line":"│ → forge_artifact write"}
+{"line":"│ ← bash ok 1L"}
+{"line":"│ ← forge_artifact ok 20L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 10"}
+{"line":"╭ [T11:00:14:08] ✱ I need to adjust the schema to use `key_changes` instead of `findings` since that's what the validator expects, so I'll rewrite this to match the required field name."}
+{"line":"│ » The validator requires `key_changes`. Let me rewrite with the correct field."}
+{"line":"│ → forge_artifact write"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╭ [T12:00:14:10] ⚙ forge_store set-summary"}
+{"line":"│ ← forge_store ok 3L"}
+{"line":"╭ [T13:00:14:14] » Item 3 (AC-4) exceeds 200 chars. Let me shorten it."}
+{"line":"│ ✎ edit engineering/sprints/GROVE-S03/GROVE-S03-T03/REVIEW-PLAN-SUMMARY.json"}
+{"line":"│ ← edit ok 1L"}
+{"line":"╭ [T14:00:14:16] ⚙ forge_store set-summary"}
+{"line":"│ ← forge_store ok 3L"}
+{"line":"╭ [T15:00:14:23] ✎ edit engineering/sprints/GROVE-S03/GROVE-S03-T03/REVIEW-PLAN-SUMMARY.json"}
+{"line":"│ ← edit ok 1L"}
+{"line":"╭ [T16:00:14:25] ⚙ forge_store set-summary"}
+{"line":"│ ← forge_store ok 1L"}
+{"line":"╭ [T17:00:14:35] » Review complete.\n\n## Summary\n\n**Task GROVE-S03-T03 — Review Plan: Approved** ✅\n\nI independently verified the plan against the actual source rather than trusting its narrative:\n\n- **AC-1/2**: `active_mode(root, ModeChoice) -> Mode` and the `determine_surface` rewrite are buildable from existing primitives — confirmed `Mode` (`config.rs:36`), `GroveConfig.explore: Option<ExploreConfig>` (:75), and current `determine_surface` (`mcp.rs:44`).\n- **AC-3 (bug-1)**: `GroveConfig::load` (:210) checks `config.json` *before* the legacy `explore.json` branch, so `mode=mcp` + stale explore.json → `Mcp` → Standard immediately. Fix is sound.\n- **AC-4 (critical verification)**: The existing `explore_mode_unhealthy_provider_falls_back_to_standard_surface` test writes *only* `explore.json`. Under the new path this migrates via `migrate_from_legacy_explore` (:157), which **hard-sets `Mode::McpLlm`** — so the health probe still fires and the `\"falling back\"` stderr assertion still holds. The plan's \"comment-only update\" for this test is correct; no behavioural test breakage.\n- Precedence (`--standard` > `--explore` > declared) preserved.\n\nThree non-blocking advisories flagged: `active_mode`'s legacy-path side effect (migration write), the benign double-load, and making the `!= McpLlm → Standard` branch an explicit catch-all for `Skill`/`Both`/`Grammars`.\n\n**Artifacts written:**\n- `PLAN_REVIEW.md` (verdict + independent verification)\n- `REVIEW-PLAN-SUMMARY.json` (verdict: approved)\n\n**Status transition:** `planned → plan-approved`."}

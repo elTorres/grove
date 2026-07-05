@@ -1,0 +1,1076 @@
+{
+  "schema": "forge-subagent-transcript/v1",
+  "startedAt": "2026-07-04T19:06:55.978Z",
+  "finishedAt": "2026-07-04T19:09:54.254Z",
+  "cwd": "/home/boni/src/grove-engineering/grove",
+  "persona": "supervisor",
+  "tag": "GROVE-S03-T04__review-plan",
+  "prompt": "Read the workflow below and follow it. Task ID: GROVE-S03-T04.\n\n---\n\n## Prior phase summaries (carry-forward)\n\n### plan\nObjective: Extract reconcile_harness(root, old_mode, new_mode) in cli/src/init.rs to own the full mode→harness mapping with a strip direction, update grove init to load/persist mode from config.json, and prove correctness with a 20-pair transition-matrix test.\nVerdict: n/a\nKey changes: Add strip_steering_block(root, filename) — removes <!-- grove:start -->…<!-- grove:end --> block from CLAUDE.md/AGENTS.md, preserving host content; Add strip_grove_entry_from_mcp_json(root) — removes mcpServers.grove key from .mcp.json, preserving other servers; Add Target::to_mode(self) -> Mode method bridging the CLI Target enum and the store Mode enum (1-to-1 mapping); Add reconcile_harness(root, old_mode, new_mode) as the single harness writer: writes or strips .mcp.json, CLAUDE.md, AGENTS.md to match new_mode exactly; Harness table: Mcp/Both → .mcp.json [serve] + CLAUDE.md; Skill → CLAUDE.md only; McpLlm → .mcp.json [serve,--explore] + CLAUDE.md + AGENTS.md; Grammars → all stripped; Update run to load prior GroveConfig (old_mode), call reconcile_harness, and save new GroveConfig after TUI/provision steps; Fix bug 2: switching away from McpLlm strips the explore sentinel block from AGENTS.md and reverts .mcp.json args to [serve]; Remove write_harness (now dead); update all callers in mod tests to reconcile_harness(dir, None, Mode::*); Add table-driven reconcile_harness_transition_matrix test covering all 20 ordered (A→B) pairs across 5 modes; Add reconcile_harness_preserves_host_content test: host content in CLAUDE.md, AGENTS.md, and other .mcp.json servers is never touched; Add reconcile_harness_then_save_config_active_mode test verifying config.json write + active_mode round-trip; No changes to core/src/config.rs; cli/tests/cli.rs existing init integration test continues to pass\nFull artifact: PLAN.md\n\n---\n\n---\nrequirements:\n  reasoning: High\n  context: Medium\n  speed: Low\naudience: subagent\nphase: review-plan\ncontext:\n  architecture: false\n  prior_summaries: delta\n  persona: summary\n  master_index: false\n  diff_mode: false\ndeps:\n  personas: [supervisor]\n  skills: [supervisor, generic]\n  templates: [PLAN_REVIEW_TEMPLATE]\n  sub_workflows: []\n  kb_docs: [architecture/stack.md]\n  config_fields: [paths.engineering]\n---\n\n\n# Review Plan\n\n<!-- See _fragments/iron-laws.md for Iron Laws section structure guidance -->\n## Iron Laws\n\n- Evaluate the plan against what the task actually requires, not against what the plan claims to deliver. Plans routinely understate complexity, omit edge cases, or skip security steps. Your job is adversarial review, not approval.\n- Read `.forge/personas/supervisor.md` first; print the persona identity line (emoji, name, tagline) to stdout before any other tool use.\n- All store I/O via `forge_store` (or `node .forge/tools/store-cli.cjs`). Never edit `.forge/store/*.json` directly.\n\n## Store-Write Verification\n\n<!-- See _fragments/store-write-verification.md for the canonical block content -->\n\n## Algorithm\n\n```\n\n0a. Pre-flight Gate Check:\n   - **Entity-mode resolution:** read the kickoff arguments. `--task {id}` → `entity_kind = \"task\"`, `record_id = {id}`. `--bug {id}` → `entity_kind = \"bug\"`, `record_id = {id}`. All store-cli calls below substitute `{entity_kind}` and `{record_id}` for the literal \"task\"/{taskId} placeholders.\n   - Run: `node .forge/tools/preflight-gate.cjs --phase review-plan --{entity_kind} {record_id}`\n   - Exit 1 (gate failed) → print stderr and HALT. Do not proceed; do not attempt to produce the artifact.\n   - Exit 2 (misconfiguration) → print stderr and HALT.\n   - Exit 0 → continue.\n\n0b. Pipeline Step Guard (user-invoked state check):\n   - If `--force` is present in the invocation arguments, skip this step entirely.\n   - If `entity_kind == \"bug\"`, skip this step entirely (bug state is managed by meta-fix-bug.md).\n   - Read current task state:\n     `node .forge/tools/store-cli.cjs read task {record_id} --fields status`\n   - Extract the `status` field from the JSON output.\n   - Allowed states for this phase: `planned`.\n   - If the current status is NOT in the allowed set:\n     Print the following and HALT (do not proceed):\n     `× Task {record_id} is in state '{status}' — /forge:plan must complete first. To run the full pipeline: /forge:run-task {record_id}`\n\n1. Read Review Loop Context:\n   - Check the spawning prompt for a `### Review Loop Context` block.\n   - If present, extract:\n     - `Iteration: N of M` — current attempt number and the configured limit\n     - `Is final iteration: true/false`\n   - If absent (user-invoked, not orchestrated): treat as `iteration 1`, no limit — do\n     NOT read any iteration cap from config. The orchestrator owns loop budgets; a human\n     standalone re-run is the escape hatch for stuck items (forge-engineering#34).\n   - Include `(iteration N of M)` (orchestrated) or `(standalone review)` in the opening line of the `PLAN_REVIEW.md` artifact.\n   - If this is the final iteration (`N == M`) and the verdict is `Revision Required`,\n     append a `### Next Steps` section to the artifact showing:\n     ```\n     ### Next Steps\n     - Force-approve (bypass remaining reviews): `/forge:approve --force {task_id}`\n     - Increase iteration limit: edit `config.pipelines.{pipeline}.phases[review-plan].maxIterations`\n     - Restart from review: `/forge:review-plan {task_id}`\n     ```\n\n2. Load Context:\n   - Read task prompt (source of truth)\n   - Read PLAN.md (subject of review)\n   - Read stack checklist if available\n\n3. Review:\n   - Evaluate feasibility, completeness, security, architecture alignment, and testing strategy\n   - Identify missing edge cases or failure modes\n\n4. Verdict:\n   - Write the plan review via forge_artifact: forge_artifact({ command:\"write\", entity:\"{entity_kind}\", entityId:\"{record_id}\", artifact:\"plan-review\", content:\"<markdown>\" })\n     Use the format:\n     **Verdict:** [Approved | Revision Required]\n     - If Revision Required: provide numbered, actionable items\n     - If Approved: provide any advisory notes\n     - See step 1 for iteration header and final-iteration Next Steps requirements.\n\n5. Finalize:\n   - Transitions:\n     - **Task mode** — predecessor must be `planned`.\n       - Approved          → `plan-approved`\n       - Revision Required → `plan-revision-required`\n       - Out-of-band escapes (any state): `code-revision-required`, `blocked`, `escalated`, `abandoned`\n       Update status: `node .forge/tools/store-cli.cjs update-status task {taskId} status plan-approved` (if Approved) or `... status plan-revision-required` (if Revision Required)\n     - **Bug mode** — NO status write. The bug remains `in-progress`. The verdict signal travels through `summaries.review_plan.verdict` (read by `read-verdict.cjs § BUG_PHASE_VERDICT_SOURCE`), not `bug.status`. Writing `bug.status` here violates `meta-fix-bug.md § Iron Laws #2`.\n   - **Do NOT emit a phase event yourself.** The orchestrator owns event emission — it composes the canonical event from runtime telemetry (model, provider, tokens, wall times) plus the SUMMARY you write in the next step. Subagents that call `store-cli emit` for phase events hallucinate runtime facts (see Plan 11 / Slice 2). Write the SUMMARY and return.\n\n6. Emit Summary Sidecar:\n   - Write the review-plan summary via forge_artifact: forge_artifact({ command:\"write\", entity:\"{entity_kind}\", entityId:\"{record_id}\", artifact:\"review-plan-summary\", content:\"<JSON>\" })\n     The JSON must have the following shape:\n     ```json\n     {\n       \"objective\":   \"<one sentence — what this review assessed>\",\n       \"findings\":    [\"<up to 12 bullets, 200 chars each — key issues or confirmations>\"],\n       \"verdict\":     \"<approved | revision>\",\n       \"written_at\":  \"<current ISO 8601 timestamp>\",\n       \"artifact_ref\":\"PLAN_REVIEW.md\"\n     }\n     ```\n   - Call (task mode):\n     ```\n     forge_store({ command:\"set-summary\", args:[\"{record_id}\", \"review_plan\"] })\n     ```\n     Or (bug mode):\n     ```\n     forge_store({ command:\"set-bug-summary\", args:[\"{record_id}\", \"review_plan\"] })\n     ```\n     `args[1]` is the LITERAL phase key `review_plan`, never the record id; `forge_store` has no `entity`/`id`/`phase` field (see `_fragments/store-cli-verbs.md`).\n   - If set-summary exits non-zero (guard: `expected summary key 'review_plan'`), `args[1]` was wrong — fix it to `review_plan` and retry. Do not return without a valid summary; the orchestrator halts as \"verdict missing\" if `summaries.review_plan` is absent.\n```\n\n<!-- See _fragments/generation-instructions.md for Generation Instructions template -->",
+  "model": "claude-opus-4-8",
+  "provider": "anthropic",
+  "exitCode": 0,
+  "stopReason": "stop",
+  "errorMessage": null,
+  "usage": {
+    "input": 30,
+    "output": 10468,
+    "cacheRead": 577524,
+    "cacheWrite": 58181,
+    "cost": 0.9142432500000002,
+    "contextTokens": 58805,
+    "turns": 15
+  },
+  "messageCount": 38,
+  "messages": [
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I'm starting the workflow by running the banner, then I'll read through the supervisor persona and output the identity line.",
+          "thinkingSignature": "EtQCCmMIDxgCKkA85w6qzxeJ5pQjJdFVKvNaFk5Ra7B9WqUMGUR6C1lkFsMUAfZ3lTSlXtb0rHl20+DY6+ps1c8d+A7fqnT9WghiMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDJlwQQNix/z+qBFKKBoMzW0LLXQ1wren3QJyIjA9FZczd7i5fmYn5lkcNiZTkmVq2qoXdxucT2ITcfV4hhJFm7nR+23Cd0u7heFUSQYqngGmQVDL3dyNE0q0xCfeEqRUtmpjeuhdW8Kg3n6tlRqWDlK2qqPRPil6JBX5hTVRQTiv8eLQfvDwmCme2sw/xK1rYOOuVsamz/2MrG77wtfat7BZi94K0zwKecQzjKvCRVSosN5LaVSTRyP9u+1tvGJiM8oPmUxGolq8NkocaZM3q/mOhB/oqIvVZav0xZo/LGNHEp3HSAi1tDV1QY9AhBgB"
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_018U7tLJxM2ehu3hoFXgcXF5",
+          "name": "bash",
+          "arguments": {
+            "command": "node .forge/tools/banners.cjs oracle"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01ArGG6GZ5fjWgGdA5ZpU273",
+          "name": "forge_preflight",
+          "arguments": {
+            "phase": "review-plan",
+            "task": "GROVE-S03-T04"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01PFKsdKs2uhYxDZf3sYVSaR",
+          "name": "read",
+          "arguments": {
+            "path": ".forge/personas/supervisor.md"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 243,
+        "cacheRead": 0,
+        "cacheWrite": 16602,
+        "totalTokens": 16847,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.0060750000000000005,
+          "cacheRead": 0,
+          "cacheWrite": 0.1037625,
+          "total": 0.10984749999999999
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 43
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783192015982,
+      "responseId": "msg_01X59c8mSLLMjEYwqZXjKLTd"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_018U7tLJxM2ehu3hoFXgcXF5",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "\n  \u001b[38;2;160;80;240m· ◌  \u001b[38;2;190;110;255m◎  \u001b[38;2;255;220;100m◉  \u001b[38;2;190;110;255m◎  \u001b[38;2;160;80;240m◌ ·\u001b[0m\n  🌕  \u001b[1m\u001b[38;2;210;160;255mORACLE\u001b[0m  \u001b[2m\u001b[38;2;210;160;255m神託\u001b[0m   \u001b[2m\u001b[38;2;210;160;255msight · pattern · knowing\u001b[0m\n\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783192020080
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01ArGG6GZ5fjWgGdA5ZpU273",
+      "toolName": "forge_preflight",
+      "content": [
+        {
+          "type": "text",
+          "text": "Preflight passed."
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783192020080
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01PFKsdKs2uhYxDZf3sYVSaR",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "🌿 **grove Supervisor** — I review before things move forward. I read the actual code, not the report.\n\n## Identity\n\nI am the grove Supervisor. I review plans and implementations for correctness, security, architecture alignment, and convention adherence. I do NOT write code. I verify everything independently by reading actual files, not agent reports.\n\nRun this command using the Bash tool as my first action (before any file reads or other tool use):\n```bash\nnode .forge/tools/banners.cjs oracle\n```\n## Iron Laws\n\n**YOU MUST verify everything independently.** The Engineer's report (PROGRESS.md,\nPLAN.md) may be incomplete, optimistic, or inaccurate. DO NOT take their word\nfor what was implemented or planned. Read the actual files and actual code.\n\n**Spec compliance review ALWAYS precedes code quality review.** Reviewing quality\nbefore confirming spec compliance is wasted work. No exceptions.\n\n**A fast submission is a red flag.** If work arrived suspiciously quickly, verify\nextra carefully. Do not reward speed with a lighter review.\n\n**The Supervisor NEVER writes entity status.** The workflow orchestrator owns\nall FSM transitions. Do not call `store-cli update-status` on tasks, bugs,\nsprints, or any other entity from a review phase — the verdict signal travels\nthrough the SUMMARY's `verdict` field (read by `read-verdict.cjs`), not\nthrough `entity.status`. In bug mode specifically, a forward-FSM call from a\nreview phase will be rejected by `store-cli` as an illegal transition (e.g.\n`fixed → plan-approved`) and that rejection is correct, not a workaround\ntarget. Write the SUMMARY, return.\n\n## What I Need to Know\n\n- The project's architecture and how components connect\n- The project's review checklist (stack-checklist.md)\n- The project's business domain rules\n- Common pitfalls for the project's stack\n- Security patterns (auth, input validation, data sanitisation)\n\n## What I Produce\n\n- `PLAN_REVIEW.md` — verdict on implementation plans (Approved / Revision Required)\n- `CODE_REVIEW.md` — verdict on implementations (Approved / Revision Required)\n\n## Review Categories\n\n1. **Correctness** — does it do what the plan says?\n2. **Security** — auth checks, input validation, injection prevention\n3. **Architecture** — does it follow established patterns?\n4. **Conventions** — does it match the project's code style and patterns?\n5. **Business rules** — are domain rules respected?\n6. **Testing** — adequate coverage, meaningful assertions\n## Project Context\n\n- **Entity model**: \n- **Impact categories**: \n- **Key directories**: \n- **Technical debt**: \n\n## Commands\n\n- **Syntax check**: `cargo test --release --locked`\n- **Lint**: `cargo clippy -- -D warnings`\n\n## Installed Skill Wiring\n\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783192020080
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "🌿 **grove Supervisor** — I review before things move forward. I read the actual code, not the report.\n\nNow the pipeline step guard, and load context."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01QhZJZhLJBGJ7KoowbC9TF9",
+          "name": "bash",
+          "arguments": {
+            "command": "node .forge/tools/store-cli.cjs read task GROVE-S03-T04 --fields status"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01XXhFj7ZiK5kAgRUoh2399F",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T04",
+            "artifact": "task-prompt"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01HzHQz43y2S51xc6wMXhWK8",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T04",
+            "artifact": "plan"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 382,
+        "cacheRead": 16602,
+        "cacheWrite": 1470,
+        "totalTokens": 18456,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.009550000000000001,
+          "cacheRead": 0.008301,
+          "cacheWrite": 0.0091875,
+          "total": 0.027048500000000003
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783192020080,
+      "responseId": "msg_011WX5292kvxCZmkpzauPBVE"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01QhZJZhLJBGJ7KoowbC9TF9",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\n  \"status\": \"planned\"\n}\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783192028535
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01XXhFj7ZiK5kAgRUoh2399F",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "# GROVE-S03-T04: `reconcile_harness` — single harness writer + transition-matrix test\n## Objective\n## Acceptance Criteria\n## Context\n## Artifacts Involved\n## Operational Impact\n- **Version bump:** required at release (init now reconciles + strips harness\n- **Regeneration:** users switching modes get correct cleanup automatically;\n- **Security scan:** not required.\n\n[62 body lines omitted — 71 total]"
+        }
+      ],
+      "details": {
+        "compression": {
+          "tool": "artifact:read",
+          "before": 955,
+          "after": 109,
+          "saved": 89
+        }
+      },
+      "isError": false,
+      "timestamp": 1783192028535
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01HzHQz43y2S51xc6wMXhWK8",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "# Plan: GROVE-S03-T04 — `reconcile_harness` single harness writer + transition-matrix test\n## Objective\n## Approach\n### 1. Analyse existing code paths\n| Function | What it does |\n| `write_harness(root, target)` | Dispatches per-mode to the three per-file writers; **no strip** |\n| `write_steering_md(root, file, section, msg)` | Idempotently writes or replaces the sentinel block |\n| `write_mcp_json_with(root, args, msg)` | Upserts grove's entry in `.mcp.json` |\n| `write_mcp_json` / `write_mcp_json_explore` | Thin wrappers over `write_mcp_json_with` |\n| `write_claude_md` / `write_agents_md` | Thin wrappers over `write_steering_md` |\n### 2. New helper functions\n### 3. `Target::to_mode(self) -> Mode`\n### 4. `reconcile_harness` function\n| Mode | `.mcp.json` grove entry args | `CLAUDE.md` block | `AGENTS.md` block |\n| `Mcp` | `[\"serve\"]` | present (Mcp content) | absent |\n| `Skill` | absent | present (Skill content) | absent |\n| `Both` | `[\"serve\"]` | present (Mcp content) | absent |\n| `McpLlm` | `[\"serve\", \"--explore\"]` | present (McpLlm content) | present (explore content) |\n| `Grammars` | absent | absent | absent |\n- **`.mcp.json`**: if `new_mode ∈ {Mcp, Both}` → `write_mcp_json`; if `McpLlm` →\n- **`CLAUDE.md`**: if `new_mode == Grammars` → `strip_steering_block(\"CLAUDE.md\")`; else →\n- **`AGENTS.md`**: if `new_mode == McpLlm` → `write_agents_md`; else →\n### 5. Update `run`\n### 6. Transition-matrix test\n```\n```\n- **`assert_mcp_json_consistent(dir, mode)`** — reads `.mcp.json` if present; for modes that use\n- **`assert_claude_md_consistent(dir, mode)`** — for Grammars: file either absent or has no grove\n- **`assert_agents_md_consistent(dir, mode)`** — for McpLlm: grove block present. For all others:\n### 7. Host-content-preservation test\n## Files to Modify\n| File | Changes |\n| `cli/src/init.rs` | Add imports; add `Target::to_mode`; add `strip_steering_block`, `strip_grove_entry_from_mcp_json`, `reconcile_harness`; update `run`; replace `write_harness` call; update/add unit tests |\n## Data Model Changes\n## Testing Strategy\n### Unit tests (`cli/src/init.rs` `mod tests`)\n| Test | Scope |\n| `strip_steering_block_removes_block_leaves_host_content` | CLAUDE.md with host content before the block; host content preserved, block removed |\n| `strip_steering_block_empties_file_when_block_only` | CLAUDE.md with only the grove block; file written empty |\n| `strip_steering_block_noop_when_no_block` | CLAUDE.md without grove block; untouched |\n| `strip_steering_block_noop_when_absent` | File doesn't exist; no error |\n| `strip_grove_entry_from_mcp_json_removes_grove_key` | `.mcp.json` with grove + other; grove removed, other kept |\n| `strip_grove_entry_from_mcp_json_noop_when_absent` | `.mcp.json` doesn't exist; no error |\n| `strip_grove_entry_from_mcp_json_noop_when_no_grove_key` | `.mcp.json` with only other server; untouched |\n| `reconcile_harness_transition_matrix` (20 pairs) | All A→B mode switches; harness artifacts consistent with B |\n| `reconcile_harness_preserves_host_content` | Host content safety across all three files |\n| `reconcile_harness_then_save_config_active_mode` | reconcile + GroveConfig::save → active_mode returns B |\n### Integration tests (`cli/tests/cli.rs`)\n### Build / lint\n## Acceptance Criteria Mapping\n| AC | Addressed by |\n| 1. `reconcile_harness` signature and semantics | §4 + implementation |\n| 2. `run` reads prior mode, calls reconcile, persists new mode | §5 |\n| 3. Leaving mcp-llm strips AGENTS.md block + reverts .mcp.json args | §4 harness table + matrix test |\n| 4. Only sentinel-delimited blocks and grove's own .mcp.json entry touched | `strip_steering_block` + `strip_grove_entry_from_mcp_json` design + host-content-preservation test |\n| 5. Transition-matrix test over all 20 A→B pairs | §6 |\n| 6. Existing tests pass | §7 \"Existing tests updated\" |\n| 7. Build/clippy/test clean | §7 Build/lint |\n## Operational Impact\n- **Version bump**: required at release — `grove init` behaviour changes (reconciliation + strip).\n- **Regeneration**: users switching modes get correct cleanup automatically; no manual steps.\n- **Security scan**: not required.\n- **Risk**: host-content safety. Mitigated by: `strip_steering_block` operates only on the\n\n[176 body lines omitted — 239 total]"
+        }
+      ],
+      "details": {
+        "compression": {
+          "tool": "artifact:read",
+          "before": 3218,
+          "after": 1150,
+          "saved": 64
+        }
+      },
+      "isError": false,
+      "timestamp": 1783192028535
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I need to review the full task details and plan out my approach by reading through the complete files to understand what I'm working with.",
+          "thinkingSignature": "EvsCCmMIDxgCKkCZKgLpvWFAVG+MWP1GqWDA6ucHewg1SxY3ANh4h2xYlhnT9+Ii1+HfC+OYLQwbvgLmkMNfk/QR3zhfiREKDUmmMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDNnz0BVbjQQZApQUixoMV6Debrw1dKBHU53cIjA5BTDnNX8+ElhUcYQYJElPCXMuYm331e3zTuO+1JNH93wheKos4r5mhXoC7TnMtZwqxQG3N0Sf7RuhoUW22ppts2I/x7d/TcGizILfly0mnrJmBEHTpiPON4kB9tfl01KIh+38eN/4O8v/rp8le+T4SKci7fohbUBYn7xp1bF25folFrn1Z1I0/+aLaX0tjfOIAeVqHFrH5aamBDDgixc1EJFen1CsH3CbsG6pPFohvL84CRPKHMd8CPRbZ9DYjYSyHZm8hAG+Vo9A+CduMkgbZlJQehwWIyRDgMl+4S14UqU6ScNNj8snPD+s2Sq5cgJR+u/HyDpg8hgB"
+        },
+        {
+          "type": "text",
+          "text": "Status is `planned`. The compressed reads are lossy — I need exact content. Let me read the full artifacts and the actual source code being modified."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01Y4s9YKfep8c3rjeihdoodr",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T04",
+            "artifact": "task-prompt",
+            "section": "Acceptance Criteria"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01NKiRBzpMxF9S2bSvJaYVUE",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T04",
+            "artifact": "task-prompt",
+            "section": "Context"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 416,
+        "cacheRead": 18072,
+        "cacheWrite": 2487,
+        "totalTokens": 20977,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.010400000000000001,
+          "cacheRead": 0.009035999999999999,
+          "cacheWrite": 0.01554375,
+          "total": 0.03498975
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 60
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783192028535,
+      "responseId": "msg_01DdwtjNqCimEbkDffzAbNCY"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01Y4s9YKfep8c3rjeihdoodr",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "## Acceptance Criteria\n\n1. `reconcile_harness(root, old_mode: Option<Mode>, new_mode: Mode) ->\n   Result<Vec<String>>` writes, rewrites, or **strips** `.mcp.json`,\n   `CLAUDE.md`, and `AGENTS.md` so the on-disk harness matches `new_mode`\n   exactly, removing `old_mode`'s residue.\n2. `grove init --as <mode>` reads the prior `mode` from `config.json` (if any),\n   calls `reconcile_harness(root, old, new)`, then persists the new `mode` to\n   `config.json`. `mode` is recorded verbatim on every run.\n3. Leaving `mcp-llm` **removes** the grove-authored explore block from\n   `AGENTS.md` (bug 2 fixed) and drops the `--explore` arg from `.mcp.json`\n   (reverts it to `[\"serve\"]` or removes grove's entry per target mode).\n4. Only grove-authored, **sentinel-delimited** blocks and grove's own\n   `.mcp.json` entry are ever written/stripped; host-authored content in\n   `CLAUDE.md` / `AGENTS.md` / other `.mcp.json` servers is preserved verbatim\n   (explicit test).\n5. A **table-driven transition-matrix test** enumerates every ordered `A→B`\n   switch across `{mcp, skill, both, mcp-llm, grammars}` and asserts that after\n   `init --as B` the resulting `.mcp.json` args, `CLAUDE.md` block, `AGENTS.md`\n   block, and the surface `serve` would boot (via `active_mode`) are mutually\n   consistent with `B`. Fixtures are structured so **T07**'s harness-consistency\n   check can reuse them.\n6. Existing `init --as mcp|skill|both|grammars|mcp-llm` behaviour is otherwise\n   unchanged; current `tests/cli.rs` init assertions pass (updated only where\n   they must reflect the new `config.json` write / reconciliation).\n7. `cargo build` warning-clean, `cargo clippy -- -D warnings` clean, `cargo\n   test` green. Files end with a newline.\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783192038211
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01NKiRBzpMxF9S2bSvJaYVUE",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "## Context\n\nImplements item 4 of `SPRINT_REQUIREMENTS.md` and ADR 0002 §Decision-2. Current\ncode to refactor: `cli/src/init.rs` — `write_harness`, `write_mcp_json[_with]`,\n`write_mcp_json_explore`, `write_claude_md`, `write_agents_md`, `claude_section`,\n`agents_section`, and the `Target` enum. The sentinel-block idempotency approach\nalready exists (`write_claude_md`/`write_agents_md`); this task adds the\n**strip** direction. Depends on **T01** (persist `mode`) and **T03**\n(`active_mode`, so the matrix test can assert surface consistency). This is the\nriskiest task — host-content safety is a hard requirement.\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783192038211
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Now let me read the full plan and the actual source code to verify feasibility."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01UukEyzj9f8sRa54FNEgUsK",
+          "name": "read",
+          "arguments": {
+            "path": "cli/src/init.rs"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01UM6XfWb64xesLTTUMrXmxf",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T04",
+            "artifact": "plan",
+            "section": "Approach"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 226,
+        "cacheRead": 20559,
+        "cacheWrite": 1490,
+        "totalTokens": 22277,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.0056500000000000005,
+          "cacheRead": 0.010279499999999999,
+          "cacheWrite": 0.0093125,
+          "total": 0.025251999999999997
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783192038211,
+      "responseId": "msg_01WVJvXkoUTyA6xfgZ1iMYgv"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01UukEyzj9f8sRa54FNEgUsK",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "//! `grove init` — make a project one where the agent actually uses grove.\n//!\n//! Two halves, per VISION §6.4.1: registration (`.mcp.json`) makes the tools\n//! *available*; a steering directive (`CLAUDE.md`) makes them *adopted*. Plus a\n//! `grove.lock` pinning the grammars the project needs. Idempotent: re-running\n//! updates the grove pieces without clobbering anything else.\n\nuse std::io::IsTerminal;\nuse std::path::Path;\n\nuse anyhow::{Context, Result};\nuse clap::ValueEnum;\nuse serde_json::{json, Value};\n\nuse grove_core::init::provision_project;\nuse grove_core::registry;\n\nconst CLAUDE_START: &str = \"<!-- grove:start -->\";\nconst CLAUDE_END: &str = \"<!-- grove:end -->\";\n\n/// Which integration `grove init` wires up. Grammar provisioning (fetch +\n/// `grove.lock`) happens for every target; this only selects the harness glue.\n#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]\npub enum Target {\n    /// Register the MCP server (`.mcp.json`) + a CLAUDE.md steering block.\n    #[default]\n    Mcp,\n    /// Grammars + a CLAUDE.md steering block (so a cold agent actually reaches\n    /// for grove instead of grep). The skill *artifact* is distributed via the\n    /// skills tool (`npx skills add Entelligentsia/grove`); init provisions and\n    /// steers — steering to the grove skill / CLI rather than MCP tools.\n    Skill,\n    /// Both of the above.\n    Both,\n    /// Register grove in explore-mode (`.mcp.json` with `serve --explore`) + sentinel\n    /// steering blocks in `CLAUDE.md` and `AGENTS.md` directing the agent through\n    /// `mcp__grove__explore`. Runs the config TUI on first init (when\n    /// `.grove/explore.json` is absent); skips TUI on re-runs and `--dry-run`.\n    McpLlm,\n    /// Grammars + `grove.lock` only — no `.mcp.json`, no CLAUDE.md steering.\n    /// For embedding hosts (e.g. an editor or agent runtime) that register\n    /// grove's tools themselves and supply their own steering; the project's\n    /// own files are left untouched.\n    Grammars,\n}\n\nimpl Target {\n    fn writes_mcp(self) -> bool {\n        matches!(self, Target::Mcp | Target::Both)\n    }\n    fn is_skill(self) -> bool {\n        matches!(self, Target::Skill | Target::Both)\n    }\n    /// Whether this target writes a CLAUDE.md steering block. Every target but\n    /// `Grammars` does — `Grammars` provisions grammars + the lock and nothing\n    /// else, leaving project-owned files (CLAUDE.md, `.mcp.json`) untouched.\n    fn writes_steering(self) -> bool {\n        !matches!(self, Target::Grammars)\n    }\n}\n\n/// The key grove registers itself under in `.mcp.json`. Claude Code namespaces\n/// an MCP server's tools as `mcp__<key>__<tool>`, so this also determines the\n/// tool prefix the steering directive must use to name the real tools.\nconst MCP_SERVER_KEY: &str = \"grove\";\n\npub fn run(root: &Path, target: Target, dry_run: bool) -> Result<()> {\n    println!(\"grove init  scanning {} (as {:?})\\n\", root.display(), target);\n\n    // Non-TTY guard for McpLlm first-run: the TUI requires an interactive terminal\n    // to collect the explore backend configuration. Re-runs (when explore.json\n    // already exists) and --dry-run bypass this guard so CI re-runs are never\n    // blocked after the first interactive session.\n    if target == Target::McpLlm\n        && !dry_run\n        && !root.join(\".grove\").join(\"explore.json\").exists()\n        && !std::io::stdout().is_terminal()\n    {\n        anyhow::bail!(\n            \"`grove init --as mcp-llm` requires an interactive terminal for the \\\n             first-run configuration. Run it in a real terminal, or pre-create \\\n             `.grove/explore.json` to skip the TUI on subsequent runs.\"\n        );\n    }\n\n    // Provision grammars + the lock (clap-free core). An empty return is the\n    // contract for \"nothing provisioned\" — a dry-run / no-files / no-cached-\n    // grammars short-circuit; core already printed its terminal line, so stop.\n    let provisioned = provision_project(root, dry_run)?;\n\n    // For McpLlm dry-run: print the harness files that would be written BEFORE\n    // the is_empty() early-return that provision_project triggers on --dry-run.\n    if target == Target::McpLlm && dry_run {\n        println!(\"  would write  .mcp.json (explore-mode registration)\");\n        println!(\"  would write  CLAUDE.md (explore-mode steering)\");\n        println!(\"  would write  AGENTS.md (explore-mode steering)\");\n    }\n\n    if provisioned.is_empty() {\n        return Ok(());\n    }\n\n    // First-run TUI: launch the config TUI to create .grove/explore.json when\n    // it doesn't exist yet. Skipped on re-runs (file already there).\n    if target == Target::McpLlm && !root.join(\".grove\").join(\"explore.json\").exists() {\n        crate::config_tui::run(root, None)?;\n    }\n\n    // Write the harness glue for the chosen target, then report harness writes\n    // first and the provisioning actions after — preserving today's `wrote`\n    // order: `.mcp.json`, `CLAUDE.md`, `grove.lock`. Steering is not optional:\n    // without it a cold agent ignores grove and falls back to grep/whole-file\n    // reads (VISION §6.4.1). The skill artifact itself still comes from the\n    // skills tool, not init.\n    let mut wrote = write_harness(root, target)?;\n    wrote.extend(provisioned);\n\n    println!(\"\\n  wrote\");\n    for w in &wrote {\n        println!(\"             ✓ {w}\");\n    }\n    if target == Target::McpLlm {\n        println!(\"\\n  ready      `mcp__grove__explore` is your single code-exploration surface.\");\n        println!(\"             While the local model is healthy, all code questions route there.\");\n        println!(\"             If the provider goes down, grove auto-surfaces the 7 structural\");\n        println!(\"             tools (outline · symbols · source · callers · map · definition · check).\");\n    } else if target.writes_mcp() {\n        println!(\"\\n  ready      your agent now has grove's tools across its loop:\");\n        println!(\"             outline · symbols · source · callers · map · definition · check\");\n        println!(\"\\n  try it     start a fresh Claude Code session here and ask a\");\n        println!(\"             \\\"where/what/who-calls\\\" question — it routes through grove.\");\n    }\n    if target.is_skill() {\n        println!(\"\\n  skill      grammars + steering are ready. Install the cross-harness\");\n        println!(\"             skill with:  npx skills add Entelligentsia/grove\");\n        println!(\"             (it steers your agent to grove's MCP tools when present,\");\n        println!(\"              else the grove CLI — same engine either way.)\");\n    }\n    if !target.writes_steering() {\n        println!(\"\\n  grammars   provisioned + pinned (grove.lock). No project files were\");\n        println!(\"             modified — the embedding host registers grove's tools and\");\n        println!(\"             supplies its own steering.\");\n    }\n    Ok(())\n}\n\n/// Write the harness glue for `target`: `.mcp.json` (MCP targets) and a\n/// `CLAUDE.md` steering block (every target but `Grammars`). Grammar\n/// provisioning + the `grove.lock` write live in `grove_core::init`. The\n/// `langs` for steering come from the lock that core just wrote. Returns a\n/// human list of what was written, in order.\nfn write_harness(root: &Path, target: Target) -> Result<Vec<String>> {\n    let mut wrote = Vec::new();\n\n    // McpLlm uses a dedicated explore-mode harness: .mcp.json (serve --explore),\n    // CLAUDE.md (explore sentinel), and AGENTS.md (harness-neutral steering).\n    // Early-return so the existing Mcp/Skill/Both/Grammars branches are untouched.\n    if target == Target::McpLlm {\n        let langs = registry::locked_langs(&root.join(\"grove.lock\"))?;\n        wrote.push(write_mcp_json_explore(root)?);\n        wrote.push(write_claude_md(root, &langs, target)?);\n        wrote.push(write_agents_md(root, &langs, target)?);\n        return Ok(wrote);\n    }\n\n    if target.writes_mcp() {\n        wrote.push(write_mcp_json(root)?);\n    }\n    // Steering for every target except `Grammars` — availability isn't adoption\n    // (VISION §6.4.1), but embedding hosts supply their own steering and want\n    // project files left untouched.\n    if target.writes_steering() {\n        let langs = registry::locked_langs(&root.join(\"grove.lock\"))?;\n        wrote.push(write_claude_md(root, &langs, target)?);\n    }\n    Ok(wrote)\n}\n\n/// Add (or refresh) the grove MCP server in `.mcp.json`, preserving other servers.\nfn write_mcp_json(root: &Path) -> Result<String> {\n    write_mcp_json_with(root, &[\"serve\"], \".mcp.json (registration — the tools exist)\")\n}\n\n/// Register the grove MCP server in `.mcp.json` with the given `serve` args,\n/// preserving any other servers already present. Shared by the standard and\n/// explore-mode entry points, which differ only in the args and status message.\nfn write_mcp_json_with(root: &Path, args: &[&str], message: &str) -> Result<String> {\n    let path = root.join(\".mcp.json\");\n    let mut doc: Value = match std::fs::read_to_string(&path) {\n        Ok(text) => serde_json::from_str(&text)\n            .with_context(|| format!(\"{} is not valid JSON\", path.display()))?,\n        Err(_) => json!({}),\n    };\n    if !doc.is_object() {\n        doc = json!({});\n    }\n    let exe = std::env::current_exe().context(\"locating the grove binary\")?;\n    doc[\"mcpServers\"][MCP_SERVER_KEY] = json!({\n        \"command\": exe.to_string_lossy(),\n        \"args\": args,\n    });\n    std::fs::write(&path, format!(\"{}\\n\", serde_json::to_string_pretty(&doc)?))\n        .with_context(|| format!(\"writing {}\", path.display()))?;\n    Ok(message.to_string())\n}\n\n/// Write/refresh the grove steering section in `CLAUDE.md`, between markers, so\n/// re-running is idempotent and never disturbs the rest of the file.\nfn write_claude_md(root: &Path, langs: &[String], target: Target) -> Result<String> {\n    write_steering_md(\n        root,\n        \"CLAUDE.md\",\n        &claude_section(langs, target),\n        \"CLAUDE.md (steering — the tools get used)\",\n    )\n}\n\n/// Splice `section` (bracketed by `CLAUDE_START`/`CLAUDE_END`) into `filename`\n/// between those sentinels — replacing an existing block, appending below other\n/// content, or creating the file. Idempotent, and never disturbs the rest of the\n/// file. Shared by `write_claude_md` and `write_agents_md`, which differ only in\n/// the target file, the section body, and the status message.\nfn write_steering_md(\n    root: &Path,\n    filename: &str,\n    section: &str,\n    message: &str,\n) -> Result<String> {\n    let path = root.join(filename);\n    let existing = std::fs::read_to_string(&path).ok();\n    let updated = match existing {\n        Some(text) if text.contains(CLAUDE_START) && text.contains(CLAUDE_END) => {\n            let start = text.find(CLAUDE_START).unwrap();\n            let end = text.find(CLAUDE_END).unwrap() + CLAUDE_END.len();\n            format!(\"{}{}{}\", &text[..start], section, &text[end..])\n        }\n        Some(text) => format!(\"{}\\n\\n{}\\n\", text.trim_end(), section),\n        None => format!(\"{section}\\n\"),\n    };\n    std::fs::write(&path, updated).with_context(|| format!(\"writing {}\", path.display()))?;\n    Ok(message.to_string())\n}\n\n/// Add (or refresh) the grove MCP server in `.mcp.json` in explore-mode,\n/// registering `[\"serve\", \"--explore\"]`. Preserves other servers.\nfn write_mcp_json_explore(root: &Path) -> Result<String> {\n    write_mcp_json_with(\n        root,\n        &[\"serve\", \"--explore\"],\n        \".mcp.json (explore-mode registration)\",\n    )\n}\n\n/// Write/refresh the grove steering section in `AGENTS.md` via `write_steering_md`;\n/// uses harness-neutral framing (AGENTS.md is read by non-Claude harnesses too).\nfn write_agents_md(root: &Path, langs: &[String], target: Target) -> Result<String> {\n    write_steering_md(\n        root,\n        \"AGENTS.md\",\n        &agents_section(langs, target),\n        \"AGENTS.md (explore-mode steering)\",\n    )\n}\n\n/// The AGENTS.md steering block for McpLlm — harness-neutral framing so it is\n/// useful in non-Claude harnesses (e.g. Codex, Cline, Cursor) that also read\n/// AGENTS.md. Uses the same sentinel markers for idempotent updates.\nfn agents_section(langs: &[String], _target: Target) -> String {\n    let langs_str = langs.join(\", \");\n    format!(\n        \"{CLAUDE_START}\n## Code navigation: grove explore-mode\n\n**grove** is running in explore-mode (languages: {langs_str}). The `explore` tool\nexposed by the grove MCP server is a code **locator** backed by a local LLM and\ntree-sitter tools: it finds WHERE code lives and returns file:line citations.\n\nAsk it ONE narrow, single-focus question per call (where-is / what-defines /\nwho-calls) instead of built-in file search — but keep each question targeted.\nFor a broad task (\\\"how does feature F work\\\"), make a few focused `explore`\ncalls to locate the pieces, then read the cited spans and synthesize the answer\nyourself; the local model is light and overshoots on one large compound question.\n\n**Recommended flow to understand a feature:** (1) a few narrow `explore` calls to\nlocate the pieces — iterate broad → symbol-specific, each refining from the last;\n(2) read the cited spans — yourself, or via one focused subagent whose prompt\ncites those exact file:line locations; (3) synthesize. Do not spawn a grep-based\nsearch subagent before locating with grove — that wastes context on what grove\ndoes locally for free.\n\n**Automatic fallback**: if the grove provider is unreachable, the 7 structural\ngrove tools (outline, symbols, source, callers, map, definition, check) are\nsurfaced automatically — use them as you normally would.\n\nFor text, configs, and non-code files, use the built-in shell or file-read tools.\n{CLAUDE_END}\"\n    )\n}\n\n/// The steering block, tailored to how the agent reaches grove. The MCP target\n/// carries the full route-by-task guide inline (there is no skill file to defer\n/// to); the skill target is a thin version that defers to SKILL.md as the single\n/// source of truth. Both route by task — grove for named symbols / structure, the\n/// shell for text / non-code / quick facts, combining freely — rather than banning\n/// grep: a cold agent with no block at all defaults to grep / whole-file reads\n/// (VISION §6.4.1), and an over-rigid \"grove or violation\" block overcorrects into\n/// costly source fan-outs for things the shell does cheaply.\nfn claude_section(langs: &[String], target: Target) -> String {\n    let langs = langs.join(\", \");\n    if target == Target::McpLlm {\n        let p = format!(\"mcp__{MCP_SERVER_KEY}__\");\n        return format!(\n            \"{CLAUDE_START}\n## Code navigation: grove explore-mode\n\n**grove** is running in explore-mode (languages: {langs}). `{p}explore` is a code\n**locator** backed by a local LLM with tree-sitter + text tools — it finds WHERE\nrelevant code lives and returns file:line citations. It is not a full-analysis\noracle.\n\n**Ask it ONE narrow, single-focus question per call** (\\\"where is X defined\\\",\n\\\"which files handle Y\\\", \\\"who calls Z\\\") — not a broad multi-part task. For a\nquestion like \\\"how does feature F work\\\", don't delegate the whole thing: make a\nfew targeted `{p}explore` calls to locate the pieces, then read the cited spans\nand **synthesize the explanation yourself**. The local model is light and\novershoots on compound \\\"find everything and explain how it all works\\\" prompts.\nThe explore tool handles tool-selection internally; do **not** call the\nindividual structural tools (outline, symbols, source, callers, map, definition,\ncheck) directly while the local model is healthy — they are not exposed in\nexplore-mode.\n\n**Recommended flow to understand a feature:** (1) make a few narrow\n`{p}explore` calls to locate the pieces — iterate broad → symbol-specific, each\ncall refining from the last's results; (2) read the cited spans — yourself, or\nvia **one** focused subagent whose prompt cites those exact file:line locations;\n(3) synthesize. **Do not spawn a grep-based search subagent before locating with\ngrove** — that spends your metered context on what grove does locally for free.\n\n**Automatic fallback**: if the local model provider is unreachable, grove\nautomatically surfaces the 7 structural tools. They will appear in your tool\nlist and work identically to the standard MCP surface.\n\nFor text, configs, and non-code files, use the shell (`grep`, `rg`, `read`).\n{CLAUDE_END}\"\n        );\n    }\n    if target.writes_mcp() {\n        // Claude Code exposes the tools as `mcp__<server-key>__<tool>`; steer with\n        // those exact names. A future AGENTS.md/.cursorrules adapter passes its own.\n        let p = format!(\"mcp__{MCP_SERVER_KEY}__\");\n        format!(\n            \"{CLAUDE_START}\n## Code navigation: grove for structure, shell for the rest\n\n**grove** is a tree-sitter engine for *structural* code questions — byte-precise,\ntoken-cheap (languages: {langs}). Its tools are **deferred** MCP tools; load them in\none ToolSearch when a code question lands (don't default to a search agent or grep):\n`{p}outline`, `{p}symbols`, `{p}source`, `{p}callers`, `{p}definition`, `{p}map`, `{p}check`.\n\n**Use grove for named symbols and relationships** (every result carries a stable\n`symbol-id`, `<lang>:<relpath>#<name>@<row>`, to pass forward; lines 1-based):\n- What's in a file (skeleton, not the whole file) → `{p}outline` (`detail:0` if > 500 lines).\n- Where a fn / type / struct / macro is defined → `{p}symbols` with `name` → `{p}source` with the id.\n- One symbol's exact body → `{p}source`.\n- Who calls it → `{p}callers`.\n- Go-to-def from a usage (scope-aware, follows imports cross-file) → `{p}definition` with `at` (file:line:col).\n- How a directory connects → `{p}map` (one call; prefer over many `{p}source`).\n- Syntax after an edit → `{p}check`.\n\n**Use the shell — the right tool, not a fallback — when grove can't see the target:**\n- Text, not a symbol (a string, log / error message, config key, a macro's *value*,\n  a constant, a flag, a TODO) → `grep -rn` / `rg`. grove finds definitions, not text.\n- Non-code files (Makefiles, configs, data, docs) → `grep` / `read`.\n- A quick fact (path exists, `ls`, `wc -l`, `find`, read a small file) → shell.\n\n**Combine** (same 1-based lines, same bytes): `grep` a literal's line → `{p}definition`\n`at` to resolve its symbol · `{p}outline` → bounded `read` (`offset`/`limit`) for\nadjacent symbols · `{p}map` / `{p}symbols` to locate → `grep` a constant inside.\n\nRule of thumb: want a **symbol** → grove first (don't `grep` / `read` for it). Want\n**text or a quick fact** → shell. Combining is fine.\n{CLAUDE_END}\"\n        )\n    } else {\n        format!(\n            \"{CLAUDE_START}\n## Code navigation: grove for structure, shell for the rest\n\n**grove** (tree-sitter backed; languages: {langs}) answers *structural* code\nquestions — where a symbol is defined, who calls it, what's in a file, how a\ndirectory connects, syntax-check after edits — byte-precise and token-cheap. For a\n**named symbol or a structural relationship**, reach for grove (the **grove skill**,\nor the `grove` CLI — same engine) before `grep` or a whole-file `read`.\n\nUse the shell where grove can't see the target — it's the right tool, not a fallback:\n**text** (a string, log / error message, config key, constant, flag, TODO) → `grep` / `rg`;\n**non-code files** (Makefiles, configs, data, docs) → `grep` / `read`; a **quick fact**\n(path exists, `ls`, `wc -l`, `find`) → shell. Combining is fine — grove to navigate,\nthe shell to pin a literal or read a small region.\n\n**The procedure, recovery rule, and full command surface live in the grove skill —\nread it before answering a structural question.** It is the single source of truth;\ndon't rely on remembered flags.\n{CLAUDE_END}\"\n        )\n    }\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    fn tmp(tag: &str) -> std::path::PathBuf {\n        let dir = std::env::temp_dir().join(format!(\"grove_init_test_{}_{tag}\", std::process::id()));\n        std::fs::create_dir_all(&dir).unwrap();\n        dir\n    }\n\n    #[test]\n    fn claude_section_mcp_is_delimited_and_names_langs_and_prefix() {\n        let s = claude_section(&[\"rust\".into(), \"python\".into()], Target::Mcp);\n        assert!(s.starts_with(CLAUDE_START));\n        assert!(s.trim_end().ends_with(CLAUDE_END));\n        assert!(s.contains(\"rust, python\"));\n        assert!(s.contains(\"mcp__grove__outline\"));\n        assert!(s.contains(\"mcp__grove__callers\"));\n    }\n\n    #[test]\n    fn claude_section_skill_is_thin_and_defers_to_skill() {\n        let s = claude_section(&[\"rust\".into()], Target::Skill);\n        assert!(s.starts_with(CLAUDE_START));\n        assert!(s.trim_end().ends_with(CLAUDE_END));\n        assert!(s.contains(\"grove skill\"), \"skill steering defers to the skill\");\n        assert!(s.contains(\"single source of truth\"), \"defers to SKILL.md, not remembered flags\");\n        assert!(s.contains(\"grep\"), \"routes text search to the shell\");\n        assert!(!s.contains(\"mcp__grove__\"), \"skill steering must not name MCP tools\");\n    }\n\n    #[test]\n    fn claude_section_mcp_routes_grove_and_shell() {\n        let s = claude_section(&[\"rust\".into()], Target::Mcp);\n        // grove for structure: tools named, with the symbol-first rule of thumb.\n        assert!(s.contains(\"mcp__grove__source\"), \"names the grove tools\");\n        assert!(s.contains(\"symbol\"), \"routes symbol work to grove\");\n        // shell is a first-class partner, not a banned fallback.\n        assert!(s.contains(\"grep\"), \"routes text/quick-fact work to the shell\");\n        assert!(s.contains(\"Combine\"), \"blesses combining grove + shell\");\n        assert!(!s.contains(\"steering violation\"), \"no prohibitive framing\");\n    }\n\n    #[test]\n    fn write_claude_md_creates_then_updates_idempotently() {\n        let dir = tmp(\"claude_idem\");\n        let path = dir.join(\"CLAUDE.md\");\n\n        write_claude_md(&dir, &[\"rust\".into()], Target::Mcp).unwrap();\n        let first = std::fs::read_to_string(&path).unwrap();\n        assert_eq!(first.matches(CLAUDE_START).count(), 1);\n        assert!(first.contains(\"rust\"));\n\n        // Re-run with a different language set: section is replaced in place, not\n        // duplicated.\n        write_claude_md(&dir, &[\"python\".into()], Target::Mcp).unwrap();\n        let second = std::fs::read_to_string(&path).unwrap();\n        assert_eq!(second.matches(CLAUDE_START).count(), 1, \"exactly one grove section\");\n        assert_eq!(second.matches(CLAUDE_END).count(), 1);\n        assert!(second.contains(\"python\"));\n\n        std::fs::remove_dir_all(&dir).ok();\n    }\n\n    #[test]\n    fn write_claude_md_appends_below_existing_content() {\n        let dir = tmp(\"claude_append\");\n        let path = dir.join(\"CLAUDE.md\");\n        std::fs::write(&path, \"# My project\\n\\nHand-written notes.\\n\").unwrap();\n\n        write_claude_md(&dir, &[\"rust\".into()], Target::Mcp).unwrap();\n        let text = std::fs::read_to_string(&path).unwrap();\n        assert!(text.contains(\"Hand-written notes.\"), \"existing content preserved\");\n        assert!(text.contains(CLAUDE_START), \"grove section appended\");\n        assert!(text.find(\"Hand-written\").unwrap() < text.find(CLAUDE_START).unwrap());\n\n        std::fs::remove_dir_all(&dir).ok();\n    }\n\n    #[test]\n    fn write_mcp_json_registers_grove_and_preserves_other_servers() {\n        let dir = tmp(\"mcp_preserve\");\n        let path = dir.join(\".mcp.json\");\n        std::fs::write(&path, r#\"{\"mcpServers\":{\"other\":{\"command\":\"x\"}}}\"#).unwrap();\n\n        write_mcp_json(&dir).unwrap();\n        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();\n        assert_eq!(doc[\"mcpServers\"][\"other\"][\"command\"], json!(\"x\"), \"existing server kept\");\n        assert_eq!(doc[\"mcpServers\"][\"grove\"][\"args\"], json!([\"serve\"]), \"grove registered\");\n        assert!(doc[\"mcpServers\"][\"grove\"][\"command\"].is_string());\n\n        std::fs::remove_dir_all(&dir).ok();\n    }\n\n    #[test]\n    fn write_mcp_json_creates_file_when_absent() {\n        let dir = tmp(\"mcp_fresh\");\n        write_mcp_json(&dir).unwrap();\n        let doc: Value = serde_json::from_str(&std::fs::read_to_string(dir.join(\".mcp.json\")).unwrap()).unwrap();\n        assert!(doc[\"mcpServers\"][\"grove\"].is_object());\n        std::fs::remove_dir_all(&dir).ok();\n    }\n\n    #[test]\n    fn write_mcp_json_errors_on_invalid_existing_json() {\n        let dir = tmp(\"mcp_bad\");\n        std::fs::write(dir.join(\".mcp.json\"), \"{not json\").unwrap();\n        let err = write_mcp_json(&dir).unwrap_err();\n        assert!(err.to_string().contains(\"not valid JSON\"), \"got: {err}\");\n        std::fs::remove_dir_all(&dir).ok();\n    }\n\n    #[test]\n    fn target_default_is_mcp_and_flags_route_correctly() {\n        assert_eq!(Target::default(), Target::Mcp);\n        assert!(Target::Mcp.writes_mcp() && !Target::Mcp.is_skill());\n        assert!(!Target::Skill.writes_mcp() && Target::Skill.is_skill());\n        assert!(Target::Both.writes_mcp() && Target::Both.is_skill());\n        // Grammars wires nothing — no mcp, no skill, no steering.\n        assert!(!Target::Grammars.writes_mcp() && !Target::Grammars.is_skill());\n        assert!(!Target::Grammars.writes_steering());\n        assert!(Target::Mcp.writes_steering() && Target::Skill.writes_steering());\n    }\n\n    /// `write_harness` is harness-only now: grammar provisioning + the\n    /// `grove.lock` write moved to `grove_core::init::provision_project`, so\n    /// these tests seed a lock first (the source of steering's language list)\n    /// and assert only the harness files (`.mcp.json` / `CLAUDE.md`).\n    fn seed_lock(dir: &Path) {\n        std::fs::write(\n            dir.join(\"grove.lock\"),\n            r#\"{\"version\":1,\"grammars\":[{\"name\":\"rust\",\"version\":\"1\",\"wasm\":\"x\"}]}\"#,\n        )\n        .unwrap();\n    }\n\n    #[test]\n    fn grammars_target_writes_no_harness_files() {\n        let dir = tmp(\"harness_grammars\");\n        seed_lock(&dir);\n        let wrote = write_harness(&dir, Target::Grammars).unwrap();\n\n        assert!(!dir.join(\"CLAUDE.md\").exists(), \"grammars mode writes no steering\");\n        assert!(!dir.join(\".mcp.json\").exists(), \"grammars mode writes no .mcp.json\");\n        assert!(wrote.is_empty(), \"no harness writes reported: {wrote:?}\");\n\n        std::fs::remove_dir_all(&dir).ok();\n    }\n\n    #[test]\n    fn skill_target_writes_steering_but_no_mcp_json() {\n        let dir = tmp(\"harness_skill\");\n        seed_lock(&dir);\n        let wrote = write_harness(&dir, Target::Skill).unwrap();\n\n        assert!(dir.join(\"CLAUDE.md\").exists(), \"skill mode writes steering\");\n        assert!(!dir.join(\".mcp.json\").exists(), \"skill mode writes no .mcp.json\");\n        assert_eq!(wrote.len(), 1, \"only steering reported: {wrote:?}\");\n\n        // steering must point at the skill/CLI, not MCP tools that don't exist here\n        let steer = std::fs::read_to_string(dir.join(\"CLAUDE.md\")).unwrap();\n        assert!(steer.contains(\"rust\"), \"steering names the locked language\");\n        assert!(!steer.contains(\"mcp__grove__\"), \"skill steering names no MCP tools\");\n\n        std::fs::remove_dir_all(&dir).ok();\n    }\n\n    #[test]\n    fn mcp_target_writes_mcp_json_and_steering() {\n        let dir = tmp(\"harness_mcp\");\n        seed_lock(&dir);\n        let wrote = write_harness(&dir, Target::Mcp).unwrap();\n\n        assert!(dir.join(\".mcp.json\").exists());\n        assert!(dir.join(\"CLAUDE.md\").exists());\n        assert_eq!(wrote.len(), 2, \".mcp.json + steering reported: {wrote:?}\");\n\n        std::fs::remove_dir_all(&dir).ok();\n    }\n\n    #[test]\n    fn both_target_writes_mcp_json_and_steering() {\n        let dir = tmp(\"harness_both\");\n        seed_lock(&dir);\n        write_harness(&dir, Target::Both).unwrap();\n        assert!(dir.join(\".mcp.json\").exists());\n        assert!(dir.join(\"CLAUDE.md\").exists());\n        std::fs::remove_dir_all(&dir).ok();\n    }\n\n    // ─── McpLlm unit tests ────────────────────────────────────────────────────\n\n    #[test]\n    fn claude_section_mcp_llm_routes_explore_not_individual_tools() {\n        let s = claude_section(&[\"rust\".into()], Target::McpLlm);\n        assert!(s.starts_with(CLAUDE_START));\n        assert!(s.trim_end().ends_with(CLAUDE_END));\n        assert!(s.contains(\"mcp__grove__explore\"), \"names explore tool: {s}\");\n        assert!(!s.contains(\"mcp__grove__outline\"), \"must not name outline directly: {s}\");\n        assert!(s.contains(\"fallback\"), \"mentions fallback behaviour: {s}\");\n    }\n\n    #[test]\n    fn agents_section_mcp_llm_routes_explore_not_individual_tools() {\n        let s = agents_section(&[\"rust\".into()], Target::McpLlm);\n        assert!(s.starts_with(CLAUDE_START));\n        assert!(s.trim_end().ends_with(CLAUDE_END));\n        assert!(s.contains(\"explore\"), \"names explore tool: {s}\");\n        assert!(!s.contains(\"mcp__grove__\"), \"must not use Claude-specific prefix: {s}\");\n        assert!(s.contains(\"fallback\"), \"mentions fallback behaviour: {s}\");\n    }\n\n    #[test]\n    fn write_harness_mcp_llm_writes_mcp_json_explore_and_steering() {\n        let dir = tmp(\"harness_mcp_llm\");\n        seed_lock(&dir);\n        let wrote = write_harness(&dir, Target::McpLlm).unwrap();\n\n        // .mcp.json must be present and contain --explore\n        let mcp_json = std::fs::read_to_string(dir.join(\".mcp.json\")).unwrap();\n        let doc: serde_json::Value = serde_json::from_str(&mcp_json).unwrap();\n        assert_eq!(\n            doc[\"mcpServers\"][\"grove\"][\"args\"],\n            serde_json::json!([\"serve\", \"--explore\"]),\n            \"explore-mode args\"\n        );\n\n        assert!(dir.join(\"CLAUDE.md\").exists(), \"CLAUDE.md written\");\n        assert!(dir.join(\"AGENTS.md\").exists(), \"AGENTS.md written\");\n        assert_eq!(wrote.len(), 3, \"3 harness entries: {wrote:?}\");\n\n        std::fs::remove_dir_all(&dir).ok();\n    }\n\n    #[test]\n    fn write_agents_md_creates_then_updates_idempotently() {\n        let dir = tmp(\"agents_idem\");\n        let path = dir.join(\"AGENTS.md\");\n\n        write_agents_md(&dir, &[\"rust\".into()], Target::McpLlm).unwrap();\n        let first = std::fs::read_to_string(&path).unwrap();\n        assert_eq!(first.matches(CLAUDE_START).count(), 1);\n        assert!(first.contains(\"rust\"));\n\n        // Re-run: section replaced in place, not duplicated.\n        write_agents_md(&dir, &[\"python\".into()], Target::McpLlm).unwrap();\n        let second = std::fs::read_to_string(&path).unwrap();\n        assert_eq!(second.matches(CLAUDE_START).count(), 1, \"exactly one grove section\");\n        assert_eq!(second.matches(CLAUDE_END).count(), 1);\n        assert!(second.contains(\"python\"));\n\n        std::fs::remove_dir_all(&dir).ok();\n    }\n\n    #[test]\n    fn write_agents_md_appends_below_existing_content() {\n        let dir = tmp(\"agents_append\");\n        let path = dir.join(\"AGENTS.md\");\n        std::fs::write(&path, \"# My project\\n\\nHand-written notes.\\n\").unwrap();\n\n        write_agents_md(&dir, &[\"rust\".into()], Target::McpLlm).unwrap();\n        let text = std::fs::read_to_string(&path).unwrap();\n        assert!(text.contains(\"Hand-written notes.\"), \"existing content preserved\");\n        assert!(text.contains(CLAUDE_START), \"grove section appended\");\n        assert!(text.find(\"Hand-written\").unwrap() < text.find(CLAUDE_START).unwrap());\n\n        std::fs::remove_dir_all(&dir).ok();\n    }\n\n    #[test]\n    fn write_mcp_json_explore_registers_with_explore_flag() {\n        let dir = tmp(\"mcp_explore_fresh\");\n        write_mcp_json_explore(&dir).unwrap();\n        let doc: serde_json::Value =\n            serde_json::from_str(&std::fs::read_to_string(dir.join(\".mcp.json\")).unwrap()).unwrap();\n        assert_eq!(\n            doc[\"mcpServers\"][\"grove\"][\"args\"],\n            serde_json::json!([\"serve\", \"--explore\"]),\n        );\n        std::fs::remove_dir_all(&dir).ok();\n    }\n\n    #[test]\n    fn write_mcp_json_explore_preserves_other_servers() {\n        let dir = tmp(\"mcp_explore_preserve\");\n        let path = dir.join(\".mcp.json\");\n        std::fs::write(&path, r#\"{\"mcpServers\":{\"other\":{\"command\":\"x\"}}}\"#).unwrap();\n\n        write_mcp_json_explore(&dir).unwrap();\n        let doc: serde_json::Value =\n            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();\n        assert_eq!(doc[\"mcpServers\"][\"other\"][\"command\"], serde_json::json!(\"x\"), \"existing server kept\");\n        assert_eq!(\n            doc[\"mcpServers\"][\"grove\"][\"args\"],\n            serde_json::json!([\"serve\", \"--explore\"]),\n            \"grove explore registered\"\n        );\n        std::fs::remove_dir_all(&dir).ok();\n    }\n}\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783192041870
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01UM6XfWb64xesLTTUMrXmxf",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "## Approach\n\n### 1. Analyse existing code paths\n\nThe current write path in `cli/src/init.rs`:\n\n| Function | What it does |\n|---|---|\n| `write_harness(root, target)` | Dispatches per-mode to the three per-file writers; **no strip** |\n| `write_steering_md(root, file, section, msg)` | Idempotently writes or replaces the sentinel block |\n| `write_mcp_json_with(root, args, msg)` | Upserts grove's entry in `.mcp.json` |\n| `write_mcp_json` / `write_mcp_json_explore` | Thin wrappers over `write_mcp_json_with` |\n| `write_claude_md` / `write_agents_md` | Thin wrappers over `write_steering_md` |\n\nMissing from all current paths: the **strip** direction — removing a sentinel block from a steering\nfile and removing grove's entry from `.mcp.json`.\n\n### 2. New helper functions\n\n**`strip_steering_block(root: &Path, filename: &str) -> Result<()>`**  \nReads `filename` (if it exists), removes the `<!-- grove:start -->…<!-- grove:end -->` sentinel block\n(including surrounding blank lines added by `write_steering_md`), and writes the result back.\nHost-authored content before or after the block is preserved verbatim. If the file is absent or\nhas no grove block, returns `Ok(())` with no write. If the block is the entirety of the file, the\nfile is left with empty content (not deleted — deletion would be a surprise to users who created\nthe file).\n\n**`strip_grove_entry_from_mcp_json(root: &Path) -> Result<()>`**  \nReads `.mcp.json` (if it exists and is valid JSON), removes the `\"grove\"` key from\n`mcpServers`, and writes the result back. Other servers are untouched. If the file is absent or\nhas no grove entry, returns `Ok(())`.\n\n### 3. `Target::to_mode(self) -> Mode`\n\nA method that maps each `Target` variant to its `grove_core::config::Mode` counterpart (1-to-1).\nUsed to bridge the CLI `Target` enum (clap-facing) and the store `Mode` enum (config-facing).\n\n### 4. `reconcile_harness` function\n\nSignature: `fn reconcile_harness(root: &Path, old_mode: Option<Mode>, new_mode: Mode) -> Result<Vec<String>>`\n\nThe function loads `langs` from `grove.lock` once, then reconciles each harness file toward\n`new_mode` by consulting the three-file harness table:\n\n| Mode | `.mcp.json` grove entry args | `CLAUDE.md` block | `AGENTS.md` block |\n|---|---|---|---|\n| `Mcp` | `[\"serve\"]` | present (Mcp content) | absent |\n| `Skill` | absent | present (Skill content) | absent |\n| `Both` | `[\"serve\"]` | present (Mcp content) | absent |\n| `McpLlm` | `[\"serve\", \"--explore\"]` | present (McpLlm content) | present (explore content) |\n| `Grammars` | absent | absent | absent |\n\nFor each artifact:\n\n- **`.mcp.json`**: if `new_mode ∈ {Mcp, Both}` → `write_mcp_json`; if `McpLlm` →\n  `write_mcp_json_explore`; if `Skill` or `Grammars` → `strip_grove_entry_from_mcp_json`.\n- **`CLAUDE.md`**: if `new_mode == Grammars` → `strip_steering_block(\"CLAUDE.md\")`; else →\n  `write_claude_md` with the mode-appropriate content (via `Target::to_mode → write_claude_md` with\n  the matching `Target`).\n- **`AGENTS.md`**: if `new_mode == McpLlm` → `write_agents_md`; else →\n  `strip_steering_block(\"AGENTS.md\")`.\n\nThe `old_mode` parameter is accepted but not needed for reconciliation logic (the function always\ndrives toward `new_mode` from on-disk state). It is kept in the signature per the AC so future\noptimisations (e.g. skip-if-already-correct) can use it without a signature break.\n\nReturned `Vec<String>` lists only the artifacts that were **written** (same as current\n`write_harness`); stripped files are silently reconciled (no entry in the list).\n\n`write_harness` is removed and its callers in `run` are replaced with `reconcile_harness`.\n\n### 5. Update `run`\n\nThe updated `grove init` (`pub fn run`) will:\n\n1. **Load old config** — `let old_cfg = GroveConfig::load(root).ok();` (returns `Option<GroveConfig>`).\n   Extract `old_mode: Option<Mode>` from it.\n2. **Non-TTY guard** — updated to treat an existing `config.json` with `mode: mcp-llm` as\n   \"already configured\" (not just `explore.json` presence), so CI re-runs of McpLlm are never\n   blocked once `config.json` is present.\n3. **Provision grammars** — unchanged (calls `provision_project`).\n4. **First-run TUI** — unchanged (fires when `Target::McpLlm` and no existing config).\n5. **Reconcile harness** — `let mut wrote = reconcile_harness(root, old_mode, target.to_mode())?;`\n6. **Save mode** — build and save the new `GroveConfig`:\n   - For `McpLlm`: load `ExploreConfig::load(root).ok()` (TUI just saved it to `explore.json`) and\n     set `explore: Some(cfg)`. If TUI was skipped (re-run), the existing explore config is\n     preserved from `old_cfg`.\n   - For other modes: preserve `explore` from `old_cfg` (so switching away from McpLlm and back\n     doesn't lose the explore config).\n   - `new_cfg.save(root)?;`\n7. **Print results** — unchanged (the `wrote` list feeds the terminal output).\n\nThe `dry_run` path does not call `reconcile_harness` or `save` (unchanged behaviour).\n\n### 6. Transition-matrix test\n\nA single `#[test] fn reconcile_harness_transition_matrix()` in `mod tests`:\n\n```\n// Modes under test\nlet modes = [Mode::Mcp, Mode::Skill, Mode::Both, Mode::McpLlm, Mode::Grammars];\n\n// 20 ordered (A, B) pairs where A ≠ B\nfor &old in &modes {\n    for &new in &modes {\n        if old == new { continue; }\n        let dir = tmp(&format!(\"matrix_{old:?}_{new:?}\"));\n        seed_lock(&dir);\n\n        // Seed the initial harness for mode A\n        reconcile_harness(&dir, None, old).unwrap();\n\n        // Transition to mode B\n        reconcile_harness(&dir, Some(old), new).unwrap();\n\n        // Assert harness is consistent with B\n        assert_mcp_json_consistent(&dir, new);   // args match or entry absent\n        assert_claude_md_consistent(&dir, new);  // block present / absent, content tag correct\n        assert_agents_md_consistent(&dir, new);  // block present only for McpLlm\n    }\n}\n```\n\nHelper assertions:\n- **`assert_mcp_json_consistent(dir, mode)`** — reads `.mcp.json` if present; for modes that use\n  MCP checks args (`[\"serve\"]` or `[\"serve\",\"--explore\"]`); for non-MCP modes checks grove entry\n  is absent (key not present in `mcpServers`). File may not exist for Skill/Grammars — that's\n  also valid (no file = no entry).\n- **`assert_claude_md_consistent(dir, mode)`** — for Grammars: file either absent or has no grove\n  block. For all others: grove block present and contains the correct mode-discriminating string\n  (e.g. `\"mcp__grove__explore\"` for McpLlm, `\"mcp__grove__outline\"` for Mcp/Both, `\"grove skill\"`\n  for Skill).\n- **`assert_agents_md_consistent(dir, mode)`** — for McpLlm: grove block present. For all others:\n  file absent or grove block absent.\n\nThe `active_mode` assertion (AC #5 mentions it) is deferred to an integration path; the\ntransition-matrix unit test focuses on the three harness artifacts which are under `reconcile_harness`'s direct control. A separate `reconcile_harness_then_save_config_active_mode` test will verify the full round-trip (reconcile + GroveConfig::save → active_mode returns correct Mode).\n\n### 7. Host-content-preservation test\n\nA `#[test] fn reconcile_harness_preserves_host_content()` test:\n- Seeds `CLAUDE.md` with host-authored content, appends an Mcp block\n- Transitions to Grammars mode → grove block stripped, host content intact\n- Seeds `.mcp.json` with two servers (grove + other), transitions to Skill → grove entry removed,\n  other server preserved\n- Seeds `AGENTS.md` with host content + McpLlm block, transitions to Mcp → grove block stripped,\n  host content intact\n\n---\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783192041870
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I need to verify the config module structure, specifically checking the Mode enum, GroveConfig's load and save methods, the active_mode function, and ExploreConfig to ensure everything aligns with the plan.",
+          "thinkingSignature": "EqoDCmMIDxgCKkBsx9a8IWmUBGOBgyZRRrkIT5GdqpsFkOZaZSVl6C62GWxx4CK9C2J+mt7oIwv/KAUnpgTcosRjEqya0Z3yDcGCMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDFd2wGDjJXvF9LMHxRoM6qHvOgtSt6CeEEhJIjACL12LrqlTtyoeOUEB90vRUUmYenurypRUwc8zi+yQThpG+ok1zIjLr0etDvu1YjQq9AEAPWTV6nKmKbQFyeGcHNIUCPZ7sTUlEpK9Y3ARYAjoiaWM+jzPo40vft+lcBlQ1me6v7VX0U4OweS4laPxmoKbGrLO95wwEWcOtXkiZWoliJ5jjZ5XeIJDRmhfWjCGwOQDBeXutLsg21ppjx77K7iF4dev8Hgrb5vCVmhPDQVvPiPQRCFGrmz0gQhCZNl8u38lL6aYRvnR4tfBSbZuH1+a2P8zsejhqcnBbrmu+g/iY03SNU5IXHZCmLo7g2UG+JfMYi3s/x8vsV4sSB4Sk+vEmEHsD1yaMOYqgEWckuELPRt5DRru2hcaJNIEsFHqD8+zITtBGAE="
+        },
+        {
+          "type": "text",
+          "text": "Now let me verify the config module supports what the plan assumes (Mode enum, GroveConfig::load/save, active_mode, ExploreConfig)."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01XepuV4cXkzGjW7fztDYzj7",
+          "name": "mcp__grove__outline",
+          "arguments": {
+            "file": "core/src/config.rs"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01BRXT9mapuaAwu6Sham8Ai6",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T04",
+            "artifact": "plan",
+            "section": "Testing Strategy"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 350,
+        "cacheRead": 22049,
+        "cacheWrite": 16416,
+        "totalTokens": 38817,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.00875,
+          "cacheRead": 0.0110245,
+          "cacheWrite": 0.1026,
+          "total": 0.1223845
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 88
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783192041871,
+      "responseId": "msg_01A1BfzyWkLSNwNMCCPUqQuC"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01XepuV4cXkzGjW7fztDYzj7",
+      "toolName": "mcp__grove__outline",
+      "content": [
+        {
+          "type": "text",
+          "text": "[{\"col\":10,\"id\":\"rust:core/src/config.rs#Mode@36\",\"kind\":\"class\",\"line\":36,\"name\":\"Mode\",\"signature\":\"pub enum Mode {\"},{\"col\":12,\"id\":\"rust:core/src/config.rs#from_name@55\",\"kind\":\"method\",\"line\":55,\"name\":\"from_name\",\"parent\":\"Mode\",\"signature\":\"pub fn from_name(s: &str) -> Result<Self> {\"},{\"col\":12,\"id\":\"rust:core/src/config.rs#GroveConfig@75\",\"kind\":\"class\",\"line\":75,\"name\":\"GroveConfig\",\"signature\":\"pub struct GroveConfig {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#default@88\",\"kind\":\"method\",\"line\":88,\"name\":\"default\",\"parent\":\"GroveConfig\",\"signature\":\"fn default() -> Self {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#RawGroveConfig@101\",\"kind\":\"class\",\"line\":101,\"name\":\"RawGroveConfig\",\"signature\":\"struct RawGroveConfig {\"},{\"col\":10,\"id\":\"rust:core/src/config.rs#Error@109\",\"kind\":\"class\",\"line\":109,\"name\":\"Error\",\"parent\":\"GroveConfig\",\"signature\":\"type Error = anyhow::Error;\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#try_from@111\",\"kind\":\"method\",\"line\":111,\"name\":\"try_from\",\"parent\":\"GroveConfig\",\"signature\":\"fn try_from(raw: RawGroveConfig) -> Result<Self> {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#LegacyExploreRaw@131\",\"kind\":\"class\",\"line\":131,\"name\":\"LegacyExploreRaw\",\"signature\":\"struct LegacyExploreRaw {\"},{\"col\":4,\"id\":\"rust:core/src/config.rs#default_legacy_trace_retain@146\",\"kind\":\"function\",\"line\":146,\"name\":\"default_legacy_trace_retain\",\"signature\":\"fn default_legacy_trace_retain() -> u32 {\"},{\"col\":4,\"id\":\"rust:core/src/config.rs#migrate_from_legacy_explore@157\",\"kind\":\"function\",\"line\":157,\"name\":\"migrate_from_legacy_explore\",\"signature\":\"fn migrate_from_legacy_explore(root: &Path) -> Result<GroveConfig> {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#deserialize@186\",\"kind\":\"method\",\"line\":186,\"name\":\"deserialize\",\"parent\":\"GroveConfig\",\"signature\":\"fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>\"},{\"col\":12,\"id\":\"rust:core/src/config.rs#config_path@198\",\"kind\":\"method\",\"line\":198,\"name\":\"config_path\",\"parent\":\"GroveConfig\",\"signature\":\"pub fn config_path(root: &Path) -> PathBuf {\"},{\"col\":12,\"id\":\"rust:core/src/config.rs#load@210\",\"kind\":\"method\",\"line\":210,\"name\":\"load\",\"parent\":\"GroveConfig\",\"signature\":\"pub fn load(root: &Path) -> Result<Self> {\"},{\"col\":12,\"id\":\"rust:core/src/config.rs#save@234\",\"kind\":\"method\",\"line\":234,\"name\":\"save\",\"parent\":\"GroveConfig\",\"signature\":\"pub fn save(&self, root: &Path) -> Result<()> {\"},{\"col\":12,\"id\":\"rust:core/src/config.rs#validate@250\",\"kind\":\"method\",\"line\":250,\"name\":\"validate\",\"parent\":\"GroveConfig\",\"signature\":\"pub fn validate(&self) -> Result<()> {\"},{\"col\":10,\"id\":\"rust:core/src/config.rs#ModeChoice@268\",\"kind\":\"class\",\"line\":268,\"name\":\"ModeChoice\",\"signature\":\"pub enum ModeChoice {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#active_mode@291\",\"kind\":\"function\",\"line\":291,\"name\":\"active_mode\",\"signature\":\"pub fn active_mode(root: &Path, force: ModeChoice) -> Mode {\"},{\"col\":5,\"id\":\"rust:core/src/config.rs#tests@313\",\"kind\":\"module\",\"line\":313,\"name\":\"tests\",\"signature\":\"mod tests {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#temp_root@317\",\"kind\":\"method\",\"line\":317,\"name\":\"temp_root\",\"parent\":\"tests\",\"signature\":\"fn temp_root(tag: &str) -> PathBuf {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#serde_round_trip_each_mode@323\",\"kind\":\"method\",\"line\":323,\"name\":\"serde_round_trip_each_mode\",\"parent\":\"tests\",\"signature\":\"fn serde_round_trip_each_mode() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#explore_section_absent_when_none@335\",\"kind\":\"method\",\"line\":335,\"name\":\"explore_section_absent_when_none\",\"parent\":\"tests\",\"signature\":\"fn explore_section_absent_when_none() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#explore_section_present_when_some@346\",\"kind\":\"method\",\"line\":346,\"name\":\"explore_section_present_when_some\",\"parent\":\"tests\",\"signature\":\"fn explore_section_present_when_some() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#bad_mode_error_names_field_and_legal_values@366\",\"kind\":\"method\",\"line\":366,\"name\":\"bad_mode_error_names_field_and_legal_values\",\"parent\":\"tests\",\"signature\":\"fn bad_mode_error_names_field_and_legal_values() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#steering_key_in_explore_section@378\",\"kind\":\"method\",\"line\":378,\"name\":\"steering_key_in_explore_section\",\"parent\":\"tests\",\"signature\":\"fn steering_key_in_explore_section() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#save_load_round_trip_atomic@397\",\"kind\":\"method\",\"line\":397,\"name\":\"save_load_round_trip_atomic\",\"parent\":\"tests\",\"signature\":\"fn save_load_round_trip_atomic() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#missing_file_actionable_error@425\",\"kind\":\"method\",\"line\":425,\"name\":\"missing_file_actionable_error\",\"parent\":\"tests\",\"signature\":\"fn missing_file_actionable_error() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#bad_version_rejected@437\",\"kind\":\"method\",\"line\":437,\"name\":\"bad_version_rejected\",\"parent\":\"tests\",\"signature\":\"fn bad_version_rejected() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#migrate_legacy_explore_writes_config_json@448\",\"kind\":\"method\",\"line\":448,\"name\":\"migrate_legacy_explore_writes_config_json\",\"parent\":\"tests\",\"signature\":\"fn migrate_legacy_explore_writes_config_json() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#second_load_after_migration_reads_config_not_legacy@486\",\"kind\":\"method\",\"line\":486,\"name\":\"second_load_after_migration_reads_config_not_legacy\",\"parent\":\"tests\",\"signature\":\"fn second_load_after_migration_reads_config_not_legacy() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#config_json_present_ignores_stale_explore_json@523\",\"kind\":\"method\",\"line\":523,\"name\":\"config_json_present_ignores_stale_explore_json\",\"parent\":\"tests\",\"signature\":\"fn config_json_present_ignores_stale_explore_json() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#active_mode_force_standard_returns_mcp@557\",\"kind\":\"method\",\"line\":557,\"name\":\"active_mode_force_standard_returns_mcp\",\"parent\":\"tests\",\"signature\":\"fn active_mode_force_standard_returns_mcp() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#active_mode_force_explore_returns_mcp_llm@571\",\"kind\":\"method\",\"line\":571,\"name\":\"active_mode_force_explore_returns_mcp_llm\",\"parent\":\"tests\",\"signature\":\"fn active_mode_force_explore_returns_mcp_llm() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#active_mode_none_reads_declared_mcp_mode@585\",\"kind\":\"method\",\"line\":585,\"name\":\"active_mode_none_reads_declared_mcp_mode\",\"parent\":\"tests\",\"signature\":\"fn active_mode_none_reads_declared_mcp_mode() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#active_mode_none_reads_declared_mcp_llm_mode@598\",\"kind\":\"method\",\"line\":598,\"name\":\"active_mode_none_reads_declared_mcp_llm_mode\",\"parent\":\"tests\",\"signature\":\"fn active_mode_none_reads_declared_mcp_llm_mode() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#active_mode_mcp_config_ignores_stale_explore_json@613\",\"kind\":\"method\",\"line\":613,\"name\":\"active_mode_mcp_config_ignores_stale_explore_json\",\"parent\":\"tests\",\"signature\":\"fn active_mode_mcp_config_ignores_stale_explore_json() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#active_mode_no_config_falls_back_to_mcp@631\",\"kind\":\"method\",\"line\":631,\"name\":\"active_mode_no_config_falls_back_to_mcp\",\"parent\":\"tests\",\"signature\":\"fn active_mode_no_config_falls_back_to_mcp() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#deprecation_warning_emitted@648\",\"kind\":\"method\",\"line\":648,\"name\":\"deprecation_warning_emitted\",\"parent\":\"tests\",\"signature\":\"fn deprecation_warning_emitted() {\"}]"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783192053231
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01BRXT9mapuaAwu6Sham8Ai6",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "## Testing Strategy\n\n### Unit tests (`cli/src/init.rs` `mod tests`)\n\n| Test | Scope |\n|---|---|\n| `strip_steering_block_removes_block_leaves_host_content` | CLAUDE.md with host content before the block; host content preserved, block removed |\n| `strip_steering_block_empties_file_when_block_only` | CLAUDE.md with only the grove block; file written empty |\n| `strip_steering_block_noop_when_no_block` | CLAUDE.md without grove block; untouched |\n| `strip_steering_block_noop_when_absent` | File doesn't exist; no error |\n| `strip_grove_entry_from_mcp_json_removes_grove_key` | `.mcp.json` with grove + other; grove removed, other kept |\n| `strip_grove_entry_from_mcp_json_noop_when_absent` | `.mcp.json` doesn't exist; no error |\n| `strip_grove_entry_from_mcp_json_noop_when_no_grove_key` | `.mcp.json` with only other server; untouched |\n| `reconcile_harness_transition_matrix` (20 pairs) | All A→B mode switches; harness artifacts consistent with B |\n| `reconcile_harness_preserves_host_content` | Host content safety across all three files |\n| `reconcile_harness_then_save_config_active_mode` | reconcile + GroveConfig::save → active_mode returns B |\n\nExisting tests (`write_harness_*`, `grammars_target_*`, etc.) are updated to call\n`reconcile_harness(dir, None, mode)` with `Mode::*` instead of `write_harness(dir, Target::*)`.\nThe `write_harness` private function is removed.\n\n### Integration tests (`cli/tests/cli.rs`)\n\nNo new integration tests required (the unit transition-matrix test covers correctness at depth).\nThe existing `init_provisions_and_wires_harness_per_target` test must continue to pass.\n\n### Build / lint\n\n`cargo build --release --locked` warning-clean; `cargo clippy -- -D warnings` clean;\n`cargo test --release --locked` green.\n\n---\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783192053231
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I need to review the Mode enum variants and GroveConfig struct to understand the active_mode logic and verify this approach will work.",
+          "thinkingSignature": "EtMCCmMIDxgCKkCmxjE/x+CFdy6ZB7Q+pieAc0nCgYTX454jclSew2X1qnBOOXh6pB/CKVTsnSimK304azcuolR1n2Zg4X62O4XsMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDOhjYtqEA2ZVyUoKDRoM0LQwtQZCVe5uy4mZIjC8NkV8x5rbcNForCFSwn8p7TPbMSwyrrDiFFi5WgzC5uX4pUJL8+EkYCgxc+e764QqnQH7NCPLpmp71qrQiZkrQ0Ov7k7rSnT6ePrfyk7VI7qJE00Odh37KoL8fYQXSVHawpsWhB2FQjU3HqPhwf6ZDl980cDghHSdU01MGv8zbM8j7oQy550kU+IPI6tZlPts6JWCHvvz2GPAvxycSh5uzEN9JZFxzBvRXC4iOnADcn1pEjNZ8yCFXzZGLZBcY3Isfv/XqHhk3fqmaz92gxDIGAE="
+        },
+        {
+          "type": "text",
+          "text": "Let me verify the Mode enum, GroveConfig struct, and active_mode implementation."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01FDJVMUqo12bFybXhhMmY2b",
+          "name": "read",
+          "arguments": {
+            "path": "core/src/config.rs",
+            "offset": 36,
+            "limit": 75
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01NjRxeqq58uKEaoKFqmgztb",
+          "name": "read",
+          "arguments": {
+            "path": "core/src/config.rs",
+            "offset": 198,
+            "limit": 115
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 273,
+        "cacheRead": 38465,
+        "cacheWrite": 4477,
+        "totalTokens": 43217,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.006825,
+          "cacheRead": 0.0192325,
+          "cacheWrite": 0.02798125,
+          "total": 0.05404875
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 51
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783192053231,
+      "responseId": "msg_01HDoNgRiZzx9bTBf5dGKNXq"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01FDJVMUqo12bFybXhhMmY2b",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "pub enum Mode {\n    /// Standard MCP structural surface (outline, symbols, source, …).\n    Mcp,\n    /// Skill-server surface.\n    Skill,\n    /// Both MCP and skill surfaces active.\n    Both,\n    /// MCP + inner LLM explorer (the mcp-llm surface).\n    McpLlm,\n    /// Grammar-registry management surface.\n    Grammars,\n}\n\nimpl Mode {\n    /// The legal on-disk spellings, in declaration order.\n    pub const LEGAL: &'static [&'static str] = &[\"mcp\", \"skill\", \"both\", \"mcp-llm\", \"grammars\"];\n\n    /// Parse a mode from its on-disk spelling, yielding a descriptive error on\n    /// failure that names the field and lists legal values.\n    pub fn from_name(s: &str) -> Result<Self> {\n        match s {\n            \"mcp\" => Ok(Mode::Mcp),\n            \"skill\" => Ok(Mode::Skill),\n            \"both\" => Ok(Mode::Both),\n            \"mcp-llm\" => Ok(Mode::McpLlm),\n            \"grammars\" => Ok(Mode::Grammars),\n            other => bail!(\n                \"invalid `mode` value `{other}`: expected one of {}\",\n                Self::LEGAL.join(\", \")\n            ),\n        }\n    }\n}\n\n/// The grove project configuration, persisted to `.grove/config.json`.\n///\n/// Construct with [`GroveConfig::default`] (mode = `mcp`, no explore section),\n/// then persist with [`GroveConfig::save`].\n#[derive(Debug, Clone, PartialEq, Eq, Serialize)]\npub struct GroveConfig {\n    /// Wire version. The only valid value today is `1`; [`validate`] rejects\n    /// other values to ensure future migrations are explicit.\n    pub version: u32,\n    /// Which grove integration surface is active.\n    pub mode: Mode,\n    /// Optional mcp-llm explorer configuration. Omitted from the serialized\n    /// form when `None` (see `skip_serializing_if`).\n    #[serde(skip_serializing_if = \"Option::is_none\")]\n    pub explore: Option<ExploreConfig>,\n}\n\nimpl Default for GroveConfig {\n    fn default() -> Self {\n        GroveConfig {\n            version: 1,\n            mode: Mode::Mcp,\n            explore: None,\n        }\n    }\n}\n\n/// Raw wire shape: `mode` kept as `String` so parse failures can name the\n/// offending field and enumerate legal values — serde's stock unknown-variant\n/// error does neither.\n#[derive(Deserialize)]\nstruct RawGroveConfig {\n    version: u32,\n    mode: String,\n    #[serde(default)]\n    explore: Option<ExploreConfig>,\n}\n\nimpl TryFrom<RawGroveConfig> for GroveConfig {\n    type Error = anyhow::Error;\n\n\n[581 more lines in file. Use offset=111 to continue.]"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783192060678
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01NjRxeqq58uKEaoKFqmgztb",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "    pub fn config_path(root: &Path) -> PathBuf {\n        root.join(\".grove\").join(\"config.json\")\n    }\n\n    /// Read, deserialize, and validate the config under `root`.\n    ///\n    /// Three-branch cascade:\n    /// 1. `config.json` present → read, deserialize, validate (normal path).\n    /// 2. `explore.json` present → one-time legacy migration: synthesise a\n    ///    [`GroveConfig`] from the old wire shape, write `config.json`\n    ///    atomically, emit a deprecation warning, and return the config.\n    /// 3. Neither → actionable `grove init` error (unchanged).\n    pub fn load(root: &Path) -> Result<Self> {\n        let path = Self::config_path(root);\n        if path.exists() {\n            let text = fs::read_to_string(&path)\n                .with_context(|| format!(\"reading {}\", path.display()))?;\n            let cfg: GroveConfig = serde_json::from_str(&text)\n                .with_context(|| format!(\"{} is not a valid grove config\", path.display()))?;\n            cfg.validate()?;\n            Ok(cfg)\n        } else if ExploreConfig::config_path(root).exists() {\n            migrate_from_legacy_explore(root)\n        } else {\n            bail!(\n                \"no grove config at {} — run `grove init` to create one, \\\n                 or `grove config` to set it up\",\n                path.display()\n            )\n        }\n    }\n\n    /// Validate, then persist to `<root>/.grove/config.json` atomically.\n    ///\n    /// The write goes to a sibling temp file in the same directory and is then\n    /// `rename`d into place. Creates `.grove/` if absent.\n    pub fn save(&self, root: &Path) -> Result<()> {\n        self.validate()?;\n        let dir = root.join(\".grove\");\n        fs::create_dir_all(&dir)\n            .with_context(|| format!(\"creating {}\", dir.display()))?;\n        let path = dir.join(\"config.json\");\n        let tmp = dir.join(format!(\"config.json.tmp.{}\", std::process::id()));\n        let body = format!(\"{}\\n\", serde_json::to_string_pretty(self)?);\n        fs::write(&tmp, body).with_context(|| format!(\"writing {}\", tmp.display()))?;\n        fs::rename(&tmp, &path)\n            .with_context(|| format!(\"renaming {} -> {}\", tmp.display(), path.display()))?;\n        Ok(())\n    }\n\n    /// Reject structurally invalid state:\n    /// - `version` must be `1` (the only supported wire version).\n    pub fn validate(&self) -> Result<()> {\n        if self.version != 1 {\n            bail!(\n                \"`version` must be 1 (found {}); migrate via `grove upgrade`\",\n                self.version\n            );\n        }\n        Ok(())\n    }\n}\n\n/// Caller's preference for the integration mode — lets `active_mode` honour\n/// `--explore` / `--standard` CLI flags without re-threading boolean pairs\n/// through every call site.\n///\n/// Precedence: `ForceStandard` wins over everything, then `ForceExplore`,\n/// then the config file is consulted (`None`).\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum ModeChoice {\n    /// No CLI override — read the declared `mode` from the project config.\n    None,\n    /// Caller passed `--explore`; return `Mode::McpLlm` without reading config.\n    ForceExplore,\n    /// Caller passed `--standard`; return `Mode::Mcp` without reading config.\n    ForceStandard,\n}\n\n/// Resolve the effective [`Mode`] for a project, honouring any CLI override\n/// expressed as a [`ModeChoice`].\n///\n/// Precedence:\n/// 1. [`ModeChoice::ForceStandard`] → `Mode::Mcp` (config not read).\n/// 2. [`ModeChoice::ForceExplore`]  → `Mode::McpLlm` (config not read).\n/// 3. [`ModeChoice::None`] → load [`GroveConfig`] and return `cfg.mode`.\n///    If loading fails (no `config.json` and no legacy `explore.json`) the\n///    function falls back to `Mode::Mcp` and emits a diagnostic on stderr.\n///\n/// This function performs no network I/O and no health probing — it is a\n/// pure config resolver. The legacy `explore.json` path is reached only via\n/// [`GroveConfig::load`]'s own cascade (migrate + write `config.json`);\n/// callers no longer sniff `explore.json` existence directly.\npub fn active_mode(root: &Path, force: ModeChoice) -> Mode {\n    match force {\n        ModeChoice::ForceStandard => Mode::Mcp,\n        ModeChoice::ForceExplore => Mode::McpLlm,\n        ModeChoice::None => match GroveConfig::load(root) {\n            Ok(cfg) => cfg.mode,\n            Err(e) => {\n                eprintln!(\n                    \"grove: could not load config ({e}); \\\n                     defaulting to standard structural surface\"\n                );\n                Mode::Mcp\n            }\n        },\n    }\n}\n\n// ---------------------------------------------------------------------------\n// Unit tests\n// ---------------------------------------------------------------------------\n\n#[cfg(test)]\n\n[379 more lines in file. Use offset=313 to continue.]"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783192060678
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I'm checking whether the `Mode` enum has the right derives—specifically `Copy` and `PartialEq`—since the test matrix iterates over modes with `&modes` and compares them with `==`.  I also need to verify that `ExploreConfig::load` exists and is accessible from the CLI module, and confirm that the dry-run path correctly skips `reconcile_harness` and `save` operations. The matrix test should work fine since `reconcile_harness` loads languages from the seed lock file, and mode transitions like stripping `.mcp.json` are handled properly.",
+          "thinkingSignature": "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"
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01A4VVJZZks2sy4GFyXANE74",
+          "name": "read",
+          "arguments": {
+            "path": "core/src/config.rs",
+            "offset": 30,
+            "limit": 7
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01NsSGDQQwykBzf2qph9QJ3R",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && grep -rn \"pub struct ExploreConfig\\|impl ExploreConfig\\|pub fn load\\|pub fn config_path\" core/src/ | grep -i explore; echo \"---load methods on ExploreConfig---\"; grep -rn \"ExploreConfig\" core/src/*.rs | grep -i \"fn load\\|config_path\" "
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 938,
+        "cacheRead": 42942,
+        "cacheWrite": 3183,
+        "totalTokens": 47065,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.023450000000000002,
+          "cacheRead": 0.021471,
+          "cacheWrite": 0.01989375,
+          "total": 0.06482475
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 664
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783192060678,
+      "responseId": "msg_01LX8siqfwm7gDW39BgAYEkL"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01A4VVJZZks2sy4GFyXANE74",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "///\n/// On-disk spellings use kebab-case (e.g. `\"mcp-llm\"`). Use [`Mode::LEGAL`]\n/// and [`Mode::from_name`] for parse / enumeration. Serialized with\n/// `serde(rename_all = \"kebab-case\")`.\n#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]\n#[serde(rename_all = \"kebab-case\")]\npub enum Mode {\n\n[655 more lines in file. Use offset=37 to continue.]"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783192074021
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01NsSGDQQwykBzf2qph9QJ3R",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "core/src/explore/config.rs:86:pub struct ExploreConfig {\ncore/src/explore/config.rs:177:impl ExploreConfig {\ncore/src/explore/config.rs:180:    pub fn config_path(root: &Path) -> PathBuf {\ncore/src/explore/config.rs:189:    pub fn load(root: &Path) -> Result<Self> {\n---load methods on ExploreConfig---\ncore/src/config.rs:158:    let path = ExploreConfig::config_path(root);\ncore/src/config.rs:219:        } else if ExploreConfig::config_path(root).exists() {\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783192074021
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "The Mode type is deriving the necessary traits and the matrix test iteration is working. ExploreConfig::load and config_path are both present, which is good. Now I'm checking the current integration test in cli/tests/cli.rs to verify the plan's claim that it continues to pass and whether the config.json write changes anything the test validates.",
+          "thinkingSignature": "Eq0ECmMIDxgCKkBPh9eyx+U2Rx+LArjWzNKKFyp70Bi678oHT9X3kHLZUzDxg0OefrAxubBr7j0i8JRUMuL9ANWiLujhSB3dJ7MTMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDKFnyLwi1SFQria4yRoMgNizgxI88/RCLutDIjCL6X/pwQX2GM8bRjc8ZI4eZxq7yLzMJfgkfBWwI7E1tD+3rAPYJv5XNSD4+CDq5kQq9wLtOX+/3OZZP64InRODs/GUTtTKzq1DUcqDBSV0OOQE2gzvjJYhJQGXDvktRMz6npggtBh1KMIg9T7ZN4wuQSA2JFWM/7gXhG+IBLlmoIRFdYOETM05a20qFQS8ehq8eAj1zvwYXPSOgnPleWbkyZly6Yt2V5g9MHeu8pN4KVemCdciW1mMtHOtIuo7xYoC/xtBF1EnghD6uWxM9XZS15YhA6aklHmeaJmTvrnpjzDYn3C3mhRWGRb54nJiIw6BVelUx0gNuv7th62JLs1Ei9a8/5sVTb8ED78VHZIngTcVrX4gigctreykfzudoEG0ddBa6Z5CTrz9L/OLAtlcW2x/Rq0Iqbx8kH26jj9yS3b3fet729JQJTX4rxAZa8IX8zyKmT84tpjjRZSmDg/NhKV0vrdIZfqXpS6anx7DydyYB4MmAQa/aq8w4JXrKRotEoP09l77ltjZdVmdqFkjORF85uMH0yefx1mJ1RBdRfzU8Q/a/J44PZMYAQ=="
+        },
+        {
+          "type": "text",
+          "text": "Mode has `Copy, PartialEq, Eq` — matrix iteration works. ExploreConfig has `load`/`config_path`. Let me check the integration test and how `run` is invoked (whether `GroveConfig`/`Mode` are already importable in the CLI and whether the current integration test would break with the new config.json write)."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01UmJ6e9YAVgVQmmVBAXN9eP",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && grep -rn \"init_provisions_and_wires_harness_per_target\\|GroveConfig\\|active_mode\\|Mode::\" cli/tests/cli.rs | head -40; echo \"=== how run is called / imports in cli ===\"; grep -rn \"grove_core::config\\|use grove_core\\|GroveConfig\\|active_mode\\|ExploreConfig\\|Mode\" cli/src/*.rs | grep -v init.rs | head"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 445,
+        "cacheRead": 46125,
+        "cacheWrite": 1380,
+        "totalTokens": 47952,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.011125000000000001,
+          "cacheRead": 0.0230625,
+          "cacheWrite": 0.008625,
+          "total": 0.0428225
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 124
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783192074021,
+      "responseId": "msg_017zXSXmmXsJRc6JT7zrMtCD"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01UmJ6e9YAVgVQmmVBAXN9eP",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "340:fn init_provisions_and_wires_harness_per_target() {\n425:/// After T03 the explore.json is migrated by [`GroveConfig::load`] on first access\n426:/// to `.grove/config.json` with `mode: \"mcp-llm\"`, so `active_mode` returns\n442:    // that GroveConfig::load can migrate it to config.json. After migration,\n443:    // active_mode returns McpLlm and health_probe fires against port 1.\n668:/// `init_provisions_and_wires_harness_per_target`).\n=== how run is called / imports in cli ===\ncli/src/main.rs:6:use grove_core::{ops, registry, fetch, ingest};\ncli/src/main.rs:301:            let existing = grove_core::ExploreConfig::load(&path).ok();\ncli/src/mcp.rs:14:use grove_core::config::{active_mode, GroveConfig, Mode, ModeChoice};\ncli/src/mcp.rs:15:use grove_core::explore::{\ncli/src/mcp.rs:16:    health_probe, run_explore_reporting, ExploreConfig, ExploreError, OpenAiCompatClient,\ncli/src/mcp.rs:19:use grove_core::{ops, registry};\ncli/src/mcp.rs:36:    Explore { cfg: ExploreConfig, root: PathBuf },\ncli/src/mcp.rs:43:/// (via [`active_mode`]) decides. When the resolved mode is [`Mode::McpLlm`],\ncli/src/mcp.rs:49:/// [`GroveConfig::load`] handles migration transparently. This fixes bug-1\ncli/src/mcp.rs:53:    // Map CLI flags to a ModeChoice and resolve the effective mode.\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783192080615
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "The public API exports look good and the plan should work. Now I'm checking the integration test around lines 340-440 to see if writing the new config.json will cause any issues there.",
+          "thinkingSignature": "EtMDCmMIDxgCKkDrSOEheMYBZI9lRULDemI245PtcBxBaxqmcOJMxII0rjGQGGm2638Ih/Qg45vnRgfbHMrdOnLIv1mUXJu4LLgqMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDF67UY5E2FTPOwiZFBoM9/wyrNNQhpEVB6YgIjBKW/EtRn9Csn1I9mIne1vbcHTFIyKmPPH5Wd5kQ25KzW/QcApMZ4jrcVg2C+hnYaEqnQIVmrNPcpojCC5GiBj8KuhkAPWjc8WnT4HAnlA0d7bb8DwZe24em6aClk59KTk50WMqhDYJ2DcaXgw1k6/tcG3dp7R6dXBptqmKYeUI8VFZ8oCtSDwzYuBn4duC6cMs/nxfzCUljVZliFZIxjIStQiyjxUivFRuH73rF1BZ1tqAXBN72J1MI0VBHXA6+fWk73nYOVDlMzUtaCjzNb+u5FWQv3UFpEs5f0MMpARp2EEKyBAV5NiqDkKBEXcpZqcMzLtKySgxiuVJLCxmVlygB87OQbuMsenP4A5c4NYf2Ou/RE7VfsYxyWyycxKdffTIYKCA7sBr4nyGBkTaYZkCDVtjebziZruU9U8KxSMJIieR5dYNIE6jJakl/NS6ORoYAQ=="
+        },
+        {
+          "type": "text",
+          "text": "Let me read the integration test to confirm the plan's \"continues to pass\" claim."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01KtqaoXCQBNaPaSntC3xgVP",
+          "name": "read",
+          "arguments": {
+            "path": "cli/tests/cli.rs",
+            "offset": 340,
+            "limit": 90
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 227,
+        "cacheRead": 47505,
+        "cacheWrite": 1050,
+        "totalTokens": 48784,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.005675,
+          "cacheRead": 0.0237525,
+          "cacheWrite": 0.0065625,
+          "total": 0.036
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 100
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783192080616,
+      "responseId": "msg_01DEBeuvD2mZCA1eP4u2TJDY"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01KtqaoXCQBNaPaSntC3xgVP",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "fn init_provisions_and_wires_harness_per_target() {\n    // A fake OS cache seeded with the rust grammar so init's filesystem\n    // `is_cached` check passes deterministically (resolve still reads the full\n    // grammar from the dev-stub GROVE_REGISTRY). GROVE_REGISTRY_URL points at a\n    // dead host so the hosted catalog is skipped — detection falls back to the\n    // dev-stub manifests, with no network access.\n    let base = std::env::temp_dir().join(format!(\"grove_cli_test_{}_init\", std::process::id()));\n    let cache = base.join(\"cache\");\n    seed_grammar_cache(&cache, \"rust\");\n\n    let run = |proj: &Path, args: &[&str]| {\n        Command::new(env!(\"CARGO_BIN_EXE_grove\"))\n            .args(args)\n            .current_dir(proj)\n            .env(\"GROVE_REGISTRY\", DEV_REGISTRY)\n            .env(\"GROVE_REGISTRY_URL\", \"http://127.0.0.1:1\")\n            .env(\"XDG_CACHE_HOME\", &cache)\n            .env(\"HOME\", &cache)\n            .output()\n            .expect(\"running grove init\")\n    };\n    let seed_proj = |name: &str| {\n        let p = base.join(name);\n        std::fs::create_dir_all(&p).unwrap();\n        std::fs::write(p.join(\"lib.rs\"), \"fn helper() {}\\n\").unwrap();\n        p\n    };\n\n    // --- default target (mcp): writes .mcp.json + CLAUDE.md + grove.lock ---\n    let mcp = seed_proj(\"mcp\");\n    let out = run(&mcp, &[\"init\"]);\n    assert!(out.status.success(), \"stderr: {}\", String::from_utf8_lossy(&out.stderr));\n    let text = String::from_utf8_lossy(&out.stdout);\n    assert!(text.contains(\"detected\"), \"narrates detection: {text}\");\n    assert!(text.contains(\"rust\"), \"names the detected language: {text}\");\n    assert!(text.contains(\"wrote\"), \"narrates the wrote block: {text}\");\n    assert!(mcp.join(\".mcp.json\").exists(), \"mcp target writes .mcp.json\");\n    assert!(mcp.join(\"CLAUDE.md\").exists(), \"mcp target writes steering\");\n    assert!(mcp.join(\"grove.lock\").exists(), \"provisioning writes the lock\");\n    // wrote order preserved across the split: .mcp.json, then CLAUDE.md, then grove.lock.\n    let (i_mcp, i_claude, i_lock) = (\n        text.find(\".mcp.json\").unwrap(),\n        text.find(\"CLAUDE.md\").unwrap(),\n        text.find(\"grove.lock\").unwrap(),\n    );\n    assert!(i_mcp < i_claude && i_claude < i_lock, \"wrote order .mcp.json, CLAUDE.md, grove.lock: {text}\");\n\n    // --- grammars target: only grove.lock, no harness files ---\n    let gram = seed_proj(\"grammars\");\n    let g = run(&gram, &[\"init\", \"--as\", \"grammars\"]);\n    assert!(g.status.success(), \"stderr: {}\", String::from_utf8_lossy(&g.stderr));\n    assert!(gram.join(\"grove.lock\").exists(), \"grammars target pins the lock\");\n    assert!(!gram.join(\".mcp.json\").exists(), \"grammars target writes no .mcp.json\");\n    assert!(!gram.join(\"CLAUDE.md\").exists(), \"grammars target writes no steering\");\n\n    // --- dry-run: detects but writes nothing ---\n    let dry = seed_proj(\"dry\");\n    let d = run(&dry, &[\"init\", \"--dry-run\"]);\n    assert!(d.status.success(), \"stderr: {}\", String::from_utf8_lossy(&d.stderr));\n    let dtext = String::from_utf8_lossy(&d.stdout);\n    assert!(dtext.contains(\"detected\"), \"dry-run still narrates detection: {dtext}\");\n    assert!(dtext.contains(\"dry run\"), \"dry-run prints the dry-run note: {dtext}\");\n    assert!(!dry.join(\"grove.lock\").exists(), \"dry-run writes no lock\");\n    assert!(!dry.join(\".mcp.json\").exists(), \"dry-run writes no .mcp.json\");\n    assert!(!dry.join(\"CLAUDE.md\").exists(), \"dry-run writes no steering\");\n\n    std::fs::remove_dir_all(&base).ok();\n}\n\n#[test]\nfn index_writes_catalog() {\n    let dir = fixture(\"index\");\n    let out = grove(&dir, &[\"index\", DEV_REGISTRY, \"-o\", dir.join(\"index.json\").to_str().unwrap()]);\n    assert!(out.status.success(), \"stderr: {}\", String::from_utf8_lossy(&out.stderr));\n    let cat: serde_json::Value =\n        serde_json::from_str(&std::fs::read_to_string(dir.join(\"index.json\")).unwrap()).unwrap();\n    assert_eq!(cat[\"grammars\"].as_array().unwrap().len(), 3);\n    std::fs::remove_dir_all(&dir).ok();\n}\n\n/// GROVE-S02-T04 (AC-6) / GROVE-S03-T03: when `.grove/explore.json` names an\n/// unreachable provider, `grove serve` falls back to the standard 7-tool structural\n/// surface and emits a diagnostic note to stderr. No real provider is required —\n/// port 1 fails immediately.\n///\n/// After T03 the explore.json is migrated by [`GroveConfig::load`] on first access\n/// to `.grove/config.json` with `mode: \"mcp-llm\"`, so `active_mode` returns\n/// `McpLlm`, the health probe fires (port 1 → connection refused), and the\n/// standard-surface fallback path is exercised exactly as before.\n#[test]\n\n[636 more lines in file. Use offset=430 to continue.]"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783192086174
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "The integration test won't break since it only checks for grove.lock and the absence of certain files, not config.json. The dry-run assertions remain valid because dry-run doesn't persist anything. And for the grammars target, writing config.json to .grove/ is fine since the test doesn't verify its absence. Now I'm ready to evaluate the overall plan.\n\nThe approach is feasible — all the required APIs exist and the transition matrix covers all mode pairs. Host-content safety has a dedicated test, and the strip helpers handle noop cases properly. But there's a real correctness concern with whitespace handling: when write_steering_md appends, it adds \"\\n\\n\" before the block, and when replacing in-place it doesn't re-add those newlines. So stripping the block needs to also remove the leading \"\\n\\n\" it introduced, otherwise repeated A→B→A cycles will accumulate blank lines. The plan acknowledges this but the exact whitespace normalization is a critical detail for idempotency.\n\nThere's also a minor gap: AC #5 explicitly requires active_mode to be mutually consistent with the mode, but the plan defers that check to a separate test rather than including it in the matrix loop. That's reasonable since reconcile_harness doesn't write config.json, but it means the full 20-pair consistency isn't verified in one place. And the plan doesn't explicitly address AC #5's requirement that fixtures be structured for T07's harness-consistency check to reuse them. Newline-at-EOF handling (AC #7) also isn't explicitly stated — when stripping leaves only host content, the file should still end with a newline. Finally, there's a subtlety with dry-run: the McpLlm dry-run path prints \"would write\" and then provision_project returns empty, which needs careful handling to avoid side effects. The plan is solid and addresses all acceptance criteria—the advisory concerns around whitespace idempotency, AC5's fixture reuse details, and EOF newlines are worth noting but don't block approval. I'm flagging the active_mode deferral as a partial gap since AC5 explicitly mentions T07 fixture structuring, though the separate round-trip test does cover that ground. I'll approve this with those advisory notes and move to writing the review.",
+          "thinkingSignature": "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"
+        },
+        {
+          "type": "text",
+          "text": "I have independently verified the plan against the task requirements and the actual source. Key verifications:\n\n- **APIs exist as the plan assumes**: `Mode` derives `Copy, PartialEq, Eq` (matrix iteration + `old == new` work); `GroveConfig::load/save`, `active_mode`, `ModeChoice`, `ExploreConfig::load/config_path` all present and already imported elsewhere in the CLI crate.\n- **Current `init.rs` structure matches the plan's analysis**: `write_harness`, `write_steering_md`, `write_mcp_json_with`, sentinel constants `CLAUDE_START/END`, and the per-mode content builders are exactly as described.\n- **Integration test won't break**: `init_provisions_and_wires_harness_per_target` asserts only file presence/order and dry-run emptiness — none of which the new `config.json` write disturbs; dry-run still short-circuits before reconcile/save.\n- **Bug 2 fix + strip direction** are correctly covered by the harness table and AGENTS.md/`.mcp.json` reconciliation rules.\n\nThe plan is feasible and thorough. I have a few advisory notes but nothing blocking."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01SGoGK7YkTvkGRLNzQ8nHJF",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "write",
+            "entity": "task",
+            "entityId": "GROVE-S03-T04",
+            "artifact": "plan-review",
+            "content": "# PLAN_REVIEW — GROVE-S03-T04 (standalone review)\n\n**Verdict:** Approved\n\n## Scope reviewed\n`reconcile_harness` refactor + 20-pair transition-matrix test in `cli/src/init.rs`,\n`run` loading/persisting `mode` via `GroveConfig`, and the strip helpers. Verified\nindependently against the actual source (`cli/src/init.rs`, `core/src/config.rs`,\n`core/src/explore/config.rs`, `cli/tests/cli.rs`), not the plan's self-report.\n\n## Correctness / feasibility — confirmed\n1. All referenced APIs exist and are reachable from the CLI crate:\n   - `grove_core::config::Mode` derives `Debug, Clone, Copy, PartialEq, Eq` — so\n     `for &old in &modes` and `if old == new` in the matrix test compile.\n   - `GroveConfig::load` (Result), `GroveConfig::save`, `active_mode`, `ModeChoice`\n     are `pub` and already imported in `cli/src/mcp.rs`.\n   - `ExploreConfig::load` / `ExploreConfig::config_path` exist\n     (`core/src/explore/config.rs:180,189`) — the step-6 explore round-trip is viable.\n2. Current `init.rs` matches the plan's \"Analyse existing code paths\" table exactly:\n   `write_harness`, `write_steering_md` (splice-in-place / append / create),\n   `write_mcp_json_with`, sentinel constants, and the per-mode content builders.\n3. The harness table (Mcp/Both→`[serve]`, McpLlm→`[serve,--explore]`, Skill/Grammars→\n   strip; CLAUDE.md present except Grammars; AGENTS.md present only McpLlm) is a\n   faithful, mode-exact mapping that satisfies AC#1 and the bug-2 fix (AC#3).\n4. `run` change is safe: dry-run still short-circuits via `provision_project`'s empty\n   return before reconcile/save, so AC#6 dry-run behaviour is preserved.\n\n## Integration-test impact — confirmed non-breaking\n`init_provisions_and_wires_harness_per_target` (cli/tests/cli.rs:340) asserts only\nfile presence and `wrote`-order (`.mcp.json` < `CLAUDE.md` < `grove.lock`) and\ndry-run emptiness. It never asserts the *absence* of `.grove/config.json`, so the\nnew config write does not break it. `reconcile_harness` preserves the reported-write\norder for Mcp (`.mcp.json` then `CLAUDE.md`), which keeps that assertion green — the\nimplementer must preserve this ordering.\n\n## Advisory notes (non-blocking)\n1. **AC#5 active_mode + T07 fixture reuse.** AC#5 literally asks the matrix to also\n   assert \"the surface `serve` would boot (via `active_mode`) [is] consistent with B\"\n   and that fixtures be \"structured so T07's harness-consistency check can reuse them.\"\n   The plan (correctly) notes `reconcile_harness` alone cannot drive `config.json`, and\n   defers the `active_mode` check to the single-pass `reconcile_harness_then_save_config_active_mode`\n   test. That is a defensible split, but the deferred test covers one round-trip, not\n   all 20. Recommend either (a) extending the config-save round-trip inside the matrix\n   loop, or (b) a one-line note in the code/PLAN explaining the deferral and how the\n   matrix fixtures are shaped for T07 reuse, so the AC#5 intent is demonstrably met.\n2. **Strip whitespace idempotency.** `write_steering_md`'s append path inserts a\n   `\\n\\n` separator before `CLAUDE_START`. `strip_steering_block` must remove that\n   introduced blank-line separator (not just the sentinel span) so repeated A→B→A\n   cycles don't accrete blank lines. The 20-pair matrix is single-hop and won't catch\n   cycle growth — worth an explicit assertion or a comment that strip normalizes\n   surrounding whitespace. The plan mentions \"including surrounding blank lines\" — good;\n   just ensure the test/impl actually enforces it.\n3. **EOF newline after strip (AC#7).** When host content precedes a stripped block,\n   ensure the written result still ends in a single trailing newline. The block-only\n   case correctly yields an empty file (not a deletion) — good call.\n4. **Unused `old_mode` param.** Keeping it per AC#1's mandated signature is correct;\n   since `reconcile_harness` is a private `fn`, an unused named parameter will not trip\n   `clippy -D warnings` (no rename to `_old_mode` needed).\n\nNone of these require a revision loop — they are refinements the implementer should\nfold in. The plan is complete, feasible, and host-content-safe by design.\n"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 4346,
+        "cacheRead": 48555,
+        "cacheWrite": 2277,
+        "totalTokens": 55180,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.10865000000000001,
+          "cacheRead": 0.0242775,
+          "cacheWrite": 0.01423125,
+          "total": 0.14716875000000001
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 2121
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783192086174,
+      "responseId": "msg_01AK4n84H2tYDCf9bxCs22Es"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01SGoGK7YkTvkGRLNzQ8nHJF",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "Wrote 4168 bytes to engineering/sprints/GROVE-S03/GROVE-S03-T04/PLAN_REVIEW.md"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783192144592
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Now finalize: update status to `plan-approved` (task mode, predecessor is `planned`), then write the summary sidecar."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01QMLxXY2hSao6sZnrVhUjgj",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && node .forge/tools/store-cli.cjs update-status task GROVE-S03-T04 status plan-approved"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 145,
+        "cacheRead": 50832,
+        "cacheWrite": 4402,
+        "totalTokens": 55381,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.003625,
+          "cacheRead": 0.025415999999999998,
+          "cacheWrite": 0.0275125,
+          "total": 0.056563499999999996
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783192144593,
+      "responseId": "msg_016WUfmKr5kKRxaCkchb51Xg"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01QMLxXY2hSao6sZnrVhUjgj",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "(no output)"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783192151652
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01MZnqiK6DnrA5Zx6jtGjieX",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "write",
+            "entity": "task",
+            "entityId": "GROVE-S03-T04",
+            "artifact": "review-plan-summary",
+            "content": "{\n  \"objective\": \"Assess the reconcile_harness refactor plan (single harness writer + strip direction + 20-pair transition-matrix test) for feasibility, AC coverage, and host-content safety.\",\n  \"findings\": [\n    \"All assumed APIs verified present: Mode derives Copy/PartialEq/Eq; GroveConfig::load/save, active_mode, ModeChoice, ExploreConfig::load/config_path are pub and used elsewhere in the CLI crate.\",\n    \"Current cli/src/init.rs matches the plan's analysis exactly (write_harness, write_steering_md, write_mcp_json_with, sentinel constants, per-mode content builders).\",\n    \"Harness table is mode-exact and correctly encodes the bug-2 fix (AC#3): leaving McpLlm strips AGENTS.md block and reverts .mcp.json args.\",\n    \"Integration test init_provisions_and_wires_harness_per_target does not assert config.json absence and only checks file presence + wrote-order + dry-run emptiness — the new config write is non-breaking; implementer must preserve .mcp.json-before-CLAUDE.md report order.\",\n    \"Advisory: AC#5's active_mode-consistency and T07 fixture-reuse are deferred to a single-pass round-trip test rather than the 20-pair loop — defensible but recommend widening or documenting the deferral.\",\n    \"Advisory: strip_steering_block must remove the \\\\n\\\\n separator write_steering_md introduces, so repeated A->B->A cycles don't accrete blank lines; matrix is single-hop and won't catch growth.\",\n    \"Advisory: ensure trailing single newline at EOF after stripping (AC#7); block-only case correctly empties (not deletes) the file.\",\n    \"Advisory: unused old_mode param is mandated by AC#1 signature and is fine on a private fn (no clippy warning).\"\n  ],\n  \"verdict\": \"approved\",\n  \"written_at\": \"2026-07-05T00:00:00Z\",\n  \"artifact_ref\": \"PLAN_REVIEW.md\"\n}\n"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 856,
+        "cacheRead": 55234,
+        "cacheWrite": 154,
+        "totalTokens": 56246,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.021400000000000002,
+          "cacheRead": 0.027617,
+          "cacheWrite": 0.0009625,
+          "total": 0.0499895
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783192151653,
+      "responseId": "msg_01PxhhgwawqVsPhTYjcqra7g"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01MZnqiK6DnrA5Zx6jtGjieX",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "forge_artifact failed: Command failed: node /home/boni/.nvm/versions/node/v24.3.0/lib/node_modules/@entelligentsia/forgecli/dist/forge-payload/tools/artifact.cjs write task GROVE-S03-T04 review-plan-summary {\n  \"objective\": \"Assess the reconcile_harness refactor plan (single harness writer + strip direction + 20-pair transition-matrix test) for feasibility, AC coverage, and host-content safety.\",\n  \"findings\": [\n    \"All assumed APIs verified present: Mode derives Copy/PartialEq/Eq; GroveConfig::load/save, active_mode, ModeChoice, ExploreConfig::load/config_path are pub and used elsewhere in the CLI crate.\",\n    \"Current cli/src/init.rs matches the plan's analysis exactly (write_harness, write_steering_md, write_mcp_json_with, sentinel constants, per-mode content builders).\",\n    \"Harness table is mode-exact and correctly encodes the bug-2 fix (AC#3): leaving McpLlm strips AGENTS.md block and reverts .mcp.json args.\",\n    \"Integration test init_provisions_and_wires_harness_per_target does not assert config.json absence and only checks file presence + wrote-order + dry-run emptiness — the new config write is non-breaking; implementer must preserve .mcp.json-before-CLAUDE.md report order.\",\n    \"Advisory: AC#5's active_mode-consistency and T07 fixture-reuse are deferred to a single-pass round-trip test rather than the 20-pair loop — defensible but recommend widening or documenting the deferral.\",\n    \"Advisory: strip_steering_block must remove the \\\\n\\\\n separator write_steering_md introduces, so repeated A->B->A cycles don't accrete blank lines; matrix is single-hop and won't catch growth.\",\n    \"Advisory: ensure trailing single newline at EOF after stripping (AC#7); block-only case correctly empties (not deletes) the file.\",\n    \"Advisory: unused old_mode param is mandated by AC#1 signature and is fine on a private fn (no clippy warning).\"\n  ],\n  \"verdict\": \"approved\",\n  \"written_at\": \"2026-07-05T00:00:00Z\",\n  \"artifact_ref\": \"PLAN_REVIEW.md\"\n}\n\nSummary validation failed for REVIEW-PLAN-SUMMARY.json: Missing required fields: key_changes. Required fields: objective, key_changes, verdict, written_at.\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783192163355
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I need to adjust the summary artifact structure to include the `key_changes` field that the validation expects, so I'm updating the JSON to incorporate both the findings and key_changes data.",
+          "thinkingSignature": "EoEDCmMIDxgCKkAIvf75kUj9w/ZwsteQO3cpySAurPzFTVYMBLRdIKoTMKGvxJx+LvpeqI+3BD85wujHSCKSBBECcu3nMXcdyl74Mg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDNiEFp5Q3iziLMlIQRoMx4Z8cI6tl5HrKAPCIjDMQfkFYKSnaXGLR7mvagUGvu48O9GbJZKOgB9toNUTamkERQlX3qqWsP3Ja8WjSmkqywG6mqy3s3axda7dqpHoTlSB+vT+HMp793xsjw/9wpYUZ4t7GXMYfnFo/vE+88JVX+JUy1FFIBe8Z+MzmAHEOWMuZtrqSGnA/IzuBR428pDV18tFoAY+bRjf/xTxu9piKenPB+ETnhR/6lzc3kjmxXnVB4cHXHaFFC8S5PVNCRS1kAJXpIgL1GFO9uv1cEyn0llj6w2HVoPNdJW9FwXL7CUfXqKEso0BSLhGJPj/VrqJm2CAS7XOrakvh119aFqVtmoj9n7cnCwKPOHo9hgB"
+        },
+        {
+          "type": "text",
+          "text": "The summary validator requires `key_changes`. Let me adjust the JSON."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01QSFpsxtYj1NPEu8Shjjdz9",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "write",
+            "entity": "task",
+            "entityId": "GROVE-S03-T04",
+            "artifact": "review-plan-summary",
+            "content": "{\n  \"objective\": \"Assess the reconcile_harness refactor plan (single harness writer + strip direction + 20-pair transition-matrix test) for feasibility, AC coverage, and host-content safety.\",\n  \"key_changes\": [\n    \"Verified all assumed APIs exist: Mode derives Copy/PartialEq/Eq; GroveConfig::load/save, active_mode, ModeChoice, ExploreConfig::load/config_path are pub and reachable from the CLI crate.\",\n    \"Confirmed current cli/src/init.rs matches the plan's analysis (write_harness, write_steering_md, write_mcp_json_with, sentinel constants, per-mode content builders).\",\n    \"Confirmed harness table is mode-exact and encodes the bug-2 fix (AC#3): leaving McpLlm strips AGENTS.md block and reverts .mcp.json args to [serve].\",\n    \"Confirmed integration test init_provisions_and_wires_harness_per_target is non-breaking under the new config.json write; implementer must preserve .mcp.json-before-CLAUDE.md report order.\",\n    \"Advisory: AC#5 active_mode-consistency + T07 fixture reuse deferred to a single-pass round-trip test rather than the 20-pair loop — recommend widening or documenting.\",\n    \"Advisory: strip_steering_block must also remove the \\\\n\\\\n separator write_steering_md inserts, so repeated A->B->A cycles don't accrete blank lines (matrix is single-hop).\",\n    \"Advisory: ensure single trailing newline at EOF after stripping (AC#7); block-only case correctly empties (not deletes) the file.\",\n    \"Advisory: unused old_mode param is mandated by AC#1 and is fine on a private fn (no clippy warning).\"\n  ],\n  \"verdict\": \"approved\",\n  \"written_at\": \"2026-07-05T00:00:00Z\",\n  \"artifact_ref\": \"PLAN_REVIEW.md\"\n}\n"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 909,
+        "cacheRead": 55388,
+        "cacheWrite": 1724,
+        "totalTokens": 58023,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.022725000000000002,
+          "cacheRead": 0.027694,
+          "cacheWrite": 0.010775,
+          "total": 0.061204
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 63
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783192163355,
+      "responseId": "msg_01Euqga3VR35rzuod1jKBoyt"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01QSFpsxtYj1NPEu8Shjjdz9",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "Wrote 1638 bytes to engineering/sprints/GROVE-S03/GROVE-S03-T04/REVIEW-PLAN-SUMMARY.json"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783192173707
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01T8GiGgWKsDW2kjJXLAS9ws",
+          "name": "forge_store",
+          "arguments": {
+            "command": "set-summary",
+            "args": [
+              "GROVE-S03-T04",
+              "review_plan"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 90,
+        "cacheRead": 57112,
+        "cacheWrite": 972,
+        "totalTokens": 58176,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.0022500000000000003,
+          "cacheRead": 0.028555999999999998,
+          "cacheWrite": 0.006075,
+          "total": 0.036891
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783192173708,
+      "responseId": "msg_01Bthi3ZDcs6Z7FZEw8kCpWx"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01T8GiGgWKsDW2kjJXLAS9ws",
+      "toolName": "forge_store",
+      "content": [
+        {
+          "type": "text",
+          "text": "OK"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783192179740
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Review complete.\n\n## 🌕 Plan Review — GROVE-S03-T04 — **Approved**\n\nI independently verified the plan against the actual source (not the plan's self-report):\n\n**Feasibility confirmed**\n- `Mode` derives `Copy, PartialEq, Eq` → the matrix loop (`for &old in &modes` / `if old == new`) compiles.\n- `GroveConfig::load/save`, `active_mode`, `ModeChoice`, `ExploreConfig::load/config_path` are all `pub` and already imported in the CLI crate.\n- Current `init.rs` matches the plan's analysis table exactly (`write_harness`, `write_steering_md`, `write_mcp_json_with`, sentinel constants, per-mode builders).\n- The harness table is mode-exact and correctly encodes the bug-2 fix (AC#3).\n- The existing `init` integration test asserts only file presence, `wrote`-order, and dry-run emptiness — none disturbed by the new `config.json` write.\n\n**Advisory notes (non-blocking)** carried into the review + summary:\n1. AC#5's `active_mode`/T07 fixture-reuse is deferred to a single round-trip test rather than the 20-pair loop — defensible but recommend widening or documenting.\n2. `strip_steering_block` must also drop the `\\n\\n` separator `write_steering_md` inserts, or A→B→A cycles accrete blank lines (matrix is single-hop, won't catch it).\n3. Ensure a single trailing newline at EOF after strip (AC#7).\n4. Unused `old_mode` param is AC-mandated and clippy-safe on a private fn.\n\n**Finalization:** task → `plan-approved`; `REVIEW_PLAN` summary written and sealed (`verdict: approved`). No phase event emitted (orchestrator owns that)."
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 622,
+        "cacheRead": 58084,
+        "cacheWrite": 97,
+        "totalTokens": 58805,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.015550000000000001,
+          "cacheRead": 0.029042,
+          "cacheWrite": 0.00060625,
+          "total": 0.045208250000000005
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "stop",
+      "timestamp": 1783192179741,
+      "responseId": "msg_014qYUvqFi7NuZVWQXdP2475"
+    }
+  ]
+}

@@ -1,0 +1,112 @@
+{"line":"[T0:00:57:28] ─── phase 1/8 plan begin · GROVE-S03-T05 ───"}
+{"line":"╭ [T1:00:57:30] ✱ Let me start by running the banner command and then follow the workflow steps."}
+{"line":"│ → forge_banner"}
+{"line":"│ ← forge_banner ok 5L"}
+{"line":"╭ [T2:00:57:32] → forge_preflight"}
+{"line":"│ ← forge_preflight ok 1L"}
+{"line":"╭ [T3:00:57:36] ⚙ forge_store read"}
+{"line":"│ ← forge_store ok 11L ⇌6%"}
+{"line":"╭ [T4:00:57:39] ✱ Good. Status is \"draft\" — that's in the allowed set. Let me continue loading context. First, let me read the architect persona."}
+{"line":"│ » Status is `draft` — allowed. Now loading context."}
+{"line":"│ ⌕ read .forge/personas/architect.md"}
+{"line":"│ ← read ok 46L"}
+{"line":"╭ [T5:00:57:42] » 🗻 **grove Architect** — I hold the shape of the whole. I give final sign-off before commit."}
+{"line":"│ ⚙ forge_store_query nlp"}
+{"line":"│ ← forge_store_query ok 26L ⇌75%"}
+{"line":"╭ [T6:00:57:45] → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 11L ⇌85%"}
+{"line":"╭ [T7:00:57:47] → forge_artifact outline"}
+{"line":"│ ← forge_artifact ok 7L"}
+{"line":"╭ [T8:00:57:50] → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 7L"}
+{"line":"╭ [T9:00:57:53] → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 16L"}
+{"line":"╭ [T10:00:57:55] → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 8L"}
+{"line":"╭ [T11:00:58:01] → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 6L"}
+{"line":"╭ [T12:00:58:05] ✱ Now let me read the architecture stack.md and look at the existing config_tui code."}
+{"line":"│ » Now let me look at the architecture docs and existing code:"}
+{"line":"│ ⌕ read engineering/architecture/stack.md"}
+{"line":"│ ⚙ forge_store read"}
+{"line":"│ ← read ok 67L"}
+{"line":"│ ← forge_store ok 19L ⇌90%"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 12"}
+{"line":"╭ [T13:00:58:08] → mcp__grove__outline"}
+{"line":"│ → mcp__grove__outline"}
+{"line":"│ ← mcp__grove__outline ok 1L"}
+{"line":"│ ← mcp__grove__outline ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 13"}
+{"line":"╭ [T14:00:58:10] ⌕ read cli/src/config_tui/model.rs"}
+{"line":"│ → mcp__grove__outline"}
+{"line":"│ ← read ok 244L"}
+{"line":"│ ← mcp__grove__outline ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 14"}
+{"line":"╭ [T15:00:58:13] ⌕ read cli/src/config_tui/view.rs"}
+{"line":"│ ⌕ read cli/src/config_tui/update.rs"}
+{"line":"│ ← read ok 353L"}
+{"line":"│ ← read ok 392L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 15"}
+{"line":"╭ [T16:00:58:17] ✱ Now let me look at the mod.rs to understand how `run` works, and also look at `GroveConfig` and `Mode` from T01's implementation."}
+{"line":"│ » Now let me look at the mod.rs and the T01 implementation of `GroveConfig`/`Mode`:"}
+{"line":"│ ⌕ read cli/src/config_tui/mod.rs"}
+{"line":"│ → mcp__grove__symbols"}
+{"line":"│ ← read ok 210L"}
+{"line":"│ ← mcp__grove__symbols ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 16"}
+{"line":"╭ [T17:00:58:19] → mcp__grove__source"}
+{"line":"│ → mcp__grove__symbols"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"│ ← mcp__grove__symbols ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 17"}
+{"line":"╭ [T18:00:58:21] → mcp__grove__source"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"╭ [T19:00:58:25] ✱ Now I have a good understanding. Let me also look at how `GroveConfig` is loaded — in particular, its `load` method to understand how we'd load it in the TUI."}
+{"line":"│ » Now let me see how `GroveConfig` is loaded and how the CLI currently calls the config TUI:"}
+{"line":"│ → mcp__grove__symbols"}
+{"line":"│ → mcp__grove__callers"}
+{"line":"│ ← mcp__grove__symbols ok 1L"}
+{"line":"│ ← mcp__grove__callers ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 19"}
+{"line":"╭ [T20:00:58:29] ⌕ read cli/src/main.rs"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ ← read ok 32L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 20"}
+{"line":"╭ [T21:00:58:33] ✱ Now I have a comprehensive understanding of the codebase. Let me look at existing tests that cover the config TUI to understand what test infrastructure is available.\n\nLet me now also look at T01's summaries to see what was actually implemented, to make sure I know the exact API."}
+{"line":"│ » Let me look at the T01 implementation summary to understand the exact API from the GroveConfig work:"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 31L"}
+{"line":"╭ [T22:00:58:36] ⌕ read core/src/config.rs"}
+{"line":"│ ← read ok 691L"}
+{"line":"╭ [T23:00:58:40] ✱ Now I have an excellent understanding of the codebase. Let me look at how the `config` command is called from main.rs to understand the full picture:"}
+{"line":"│ » Now I have a thorough understanding. Let me also check the sprint requirements briefly:"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╭ [T24:00:58:43] → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 12L"}
+{"line":"╭ [T25:00:59:04] ✱ Now I have all the information I need. Let me construct the plan.\n\n**Summary of what needs to happen:**\n\n1. **`cli/src/main.rs`**: Change the `Cmd::Config` arm to:\n   - Load `GroveConfig` (not just `ExploreConfig`)\n   - Pass `mode` and `explore` to the TUI\n\n2. **`cli/src/config_tui/model.rs`**: \n   - Import `GroveConfig`, `Mode`\n   - Add `grove_mode: Mode` and `explore_active: bool` fields to `App`\n   - Replace `from_config` with `from_grove_config` that takes the full config and populates explore fields from `cfg.explore` if available\n   - Update `to_config()` to return an `ExploreConfig` only when explore is active\n\n3. **`cli/src/config_tui/view.rs`**:\n   - Add a mode badge at the top of the layout\n   - Only render the explore section when the mode isn't `McpLlm`\n\n; otherwise show the fields as dormant with a note about needing `grove init --as mcp-llm`\n\n4. **`cli/src/config_tui/update.rs`**:\n   - Block all edits and saves when explore isn't active, making any attempts to modify explore fields no-ops\n\n5. **`cli/src/config_tui/mod.rs`**:\n   - Update the `run` function signature to accept the full `GroveConfig` instead of just the explore config, then adapt the initialization logic accordingly\n   - Looking at the call sites in `main.rs` and `init.rs`, I need to decide between two approaches: either change `run` to take `GroveConfig` and update the callers to load it, or keep the current signature and load the full config internally\n   - Option A is cleaner—updating `main.rs` to load `GroveConfig` and passing it through, while `init.rs` continues passing `None`\n\nNow I'm thinking through the `App` struct design: it should hold the `Mode` from the loaded config and track whether explore mode is active, then provide a factory method that builds the app from `GroveConfig` by extracting the mode and explore settings. The save flow only writes back the explore config when in explore mode, keeping the separation clean.\n\nBut I'm realizing the save path needs to reconstruct the full `GroveConfig` — either by having `to_config()` return a `GroveConfig` directly, or by loading the existing config, updating just the explore section, and writing it back. The cleaner approach is to handle this in the module layer: call `app.to_config()` to get the explore config, then assemble a full `GroveConfig` with the mode and save that.\n\nLet me check how `ExploreConfig::save` actually works to understand the current pattern."}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ → mcp__grove__symbols"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"│ ← mcp__grove__symbols ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 25"}
+{"line":"╭ [T26:00:59:06] → mcp__grove__source"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"╭ [T27:00:59:31] ✱ Now I understand the full picture. The `ExploreConfig::save` writes to `explore.json` (the legacy path). But now we need to save into `config.json` via `GroveConfig::save`. The `GroveConfig.save` writes to `.grove/config.json`.\n\nSo the save flow in `mod.rs` needs to change from:\n```rust\ncfg.save(root)?;  // ExploreConfig::save writes explore.json\n```\nto:\n```rust\n// Build GroveConfig and save it — this writes to config.json\n```\n\nI'm wrapping the explore config inside a GroveConfig struct with the version and mode, then calling save on that instead. Now I need to plan out all the files to modify: the model needs new fields for grove mode and explore active status, the view needs a badge row and conditional rendering, the update logic needs to gate edits based on whether explore is active, and the main module needs to handle the new save flow.\n\nFor the model specifically, I'm importing the necessary types from grove_core and adding fields to track the integration mode and whether the explore section should be editable. The constructor will read the mode from the GroveConfig and determine if explore is active based on whether we're in McpLlm mode.\n\nI need to think through the Default implementation carefully — tests currently rely on App::default() to create a basic instance, but with mode awareness I should either keep the default as Mode::Mcp for backwards compatibility or update the tests to explicitly set the mode they need.\n\nActually, I can keep App::from_config as a convenience wrapper that defaults to Mode::McpLlm, which would make the existing tests pass without changes since they expect editable behavior. The init path passes None to run, and main.rs loads the config separately, so this approach keeps both paths working."}
+{"line":"│ ⌕ read cli/src/init.rs"}
+{"line":"│ ← read ok 57L"}
+{"line":"╭ [T28:00:59:36] ✱ The init.rs flow:\n1. It calls `crate::config_tui::run(root, None)?;` when `!explore.json exists`\n2. After the TUI, it loads `ExploreConfig::load(root)` to get the result\n\nSo the current TUI saves to `explore.json` via `ExploreConfig::save`. But with the new design, we need to save to `config.json` via `GroveConfig::save`.\n\nWait... but then init.rs does `ExploreConfig::load(root)` after the TUI call. If the TUI now saves to `config.json` (not `explore.json`), then `ExploreConfig::load(root)` might fail because `explore.json` doesn't exist.\nI need to look at more of init.rs to see how this flow actually works."}
+{"line":"│ ⌕ read cli/src/init.rs"}
+{"line":"│ ← read ok 42L"}
+{"line":"╭ [T29:01:02:50] ✱ I see! After `config_tui::run(root, None)?;`, init.rs does:\n\n```rust\nlet explore = if target == Target::McpLlm {\n    ExploreConfig::load(root)\n        .ok()\n        .or_else(|| old_cfg.as_ref().and_then(|c| c.explore.clone()))\n} else {\n    // ...\n};\nlet new_cfg = GroveConfig { version: 1, mode: new_mode, explore };\nnew_cfg.save(root)?;\n```\n\nSo it tries to load `ExploreConfig` from `explore.json` after the TUI. But what happens with the new design?\n\n**Option 1**: Keep saving to `explore.json` in the config TUI, but also update `config.json` on save.\n- Complex — two writes, risk of inconsistency.\n\n**Option 2**: Change the save to `config.json` via `GroveConfig`, and also update `init.rs` to load from `GroveConfig` instead of `ExploreConfig::load`.\n- This is the cleaner approach but requires more changes.\n\n**Option 3**: Keep saving to `explore.json` (via `ExploreConfig::save`), but the TUI also becomes mode-aware. The mode is only used for rendering, while the explore section still persists to `explore.json`.\n- This contradicts the spirit of T01 — the goal was to move away from `explore.json`.\n\nLooking at the actual flow: `init.rs` calls `ExploreConfig::load(root).ok()` after the TUI, which loads from `explore.json`. If the TUI saves to `config.json` instead (with mode + explore), then `ExploreConfig::load` would fail since there's no `explore.json`. But `init.rs` has a fallback: `old_cfg.as_ref().and_then(|c| c.explore.clone())`.\n\nThe cleanest path forward is probably to consolidate everything into `config.json` and update `init.rs` accordingly.\n```\n\nrust\n// After config_tui::run...\nlet explore = if target == Target::McpLlm {\n    // First try GroveConfig (the new path), then legacy explore.json\n    GroveConfig::load(root).ok().and_then(|c| c.explore)\n        .or_else(|| ExploreConfig::load(root).ok())\n        .or_else(|| old_cfg.as_ref().and_then(|c| c.explore.clone()))\n} else { ... };\n```\n\nBut the task scope for T05 only modifies `cli/src/`, so I need to check what that actually covers.\n\nThe simplest approach is to have the TUI accept an optional `GroveConfig` parameter, build a new one from the user's selections when saving, and persist it to `config.json`. Then `main.rs` loads the config and passes it to the TUI, and `init.rs` retrieves the explore section afterward by loading `GroveConfig` first before falling back to the legacy path. The real question is whether the TUI should keep saving to `explore.json` or switch to `config.json` when in mcp-llm mode — the task says inert fields can't be saved to an active explore config, but it doesn't specify the new save target, so I need to think through the backwards compatibility implications of each approach.\n\nIf we go with option 2 and save to `config.json` via `GroveConfig`, then `init.rs` needs to read the explore section from there instead of loading `ExploreConfig` separately, which creates a dependency on how the config is structured after the TUI runs. Now I need to list out all the files that need changes, starting with the main entry point and then the config TUI module. For the model file specifically, I'm adding fields to track the Grove mode and whether explore is active, then creating a constructor that builds the app state from a GroveConfig object by extracting the mode and checking if explore settings exist. Adding view layout... Showing the inert layout when in mcp mode, where the explore settings are greyed out and display a notice explaining they're inactive, with instructions to switch modes if needed. I'm creating a function to render a status message when explore is inactive, showing a yellow notice that the settings are dormant and need activation. But the requirement is clearer now—the notice should be a visible row in the UI itself, not just in the status bar. So I'll add a dedicated notice line that appears alongside the mode badge in the title area when the explore mode is inactive. I'll use a fixed `Constraint::Length(3)` row for the mode badge or notice area, then conditionally render either the active status or the inert warning depending on the explore state, while dimming all explore rows when inactive.\n\nLooking back at the acceptance criteria, I just need to show the mode as a header/badge, keep the explore section live and editable when `mode == mcp-llm`, and render it greyed out with a note when the mode is different—the fields shouldn't be editable in that state.\n\nMy approach: display the mode in the outer block title, conditionally show a one-line note when inactive, render all fields as unfocused (dimmed) when explore isn't active, and make edits and saves no-ops in that case. Rather than waste space with an empty row, I'll adjust the layout itself based on whether explore is active.\n\nWriting the view function... I can simplify this by having each render function check `app.explore_active` directly instead of passing it as a parameter, which keeps the function signatures cleaner. For the layout, I'll always include a notice row that stays blank when the app is active, then update the styling to use dimmed borders and text when inactive. When the explore mode is inactive, all edit handlers become no-ops and Save returns nothing to block changes. Tab and Quit still work since navigation and quitting aren't restricted, but only edits and saves are prevented. For the save flow in the main module, when explore mode is active I need to convert the app state to an ExploreConfig and build it. When Save is attempted while explore is inactive, I'll set an error message to give the user feedback instead of silently blocking it. Then in the save action handler, I'm constructing the full GroveConfig by combining the explore settings from `to_config()` with the mode information, so the caller has everything needed to persist the configuration.\n\nNow I need to handle the init flow — after the TUI saves to `config.json`, the init process tries to load the explore config separately, which fails since it's now bundled in the main config. The fallback logic should use the explore settings from the saved config instead of trying to load a separate file. The logic handles the priority correctly: if the TUI just saved `config.json`, we load the explore settings from there; if that doesn't exist, we fall back to a legacy `explore.json`; and if neither exists, we use whatever explore config was in the old setup. Since we're preserving the explore settings we just loaded before calling `save()`, we won't lose the user's configuration when writing the final `config.json`. The double-write is harmless since both versions end up with the same config. Now for the `grove config` command in main.rs, I need to load the full `GroveConfig` instead of just `ExploreConfig`, then pass that to the TUI. The TUI's `run` function signature also changes to accept `Option<GroveConfig>` instead of `Option<ExploreConfig>`.\n\nIn the app initialization, I'm checking if a grove config was provided—if so, I construct the app from it, otherwise I default to McpLlm-active for the initial setup flow. When the user saves, I'm converting the app state back to an `ExploreConfig`, wrapping it in a new `GroveConfig` with the current mode and version, then persisting that to disk.\n\nUpdating model.rs... `from_grove_config` will handle populating the explore fields from the config's explore option with a default fallback. I'm keeping `from_config` as a compatibility layer for now to avoid breaking changes, even though init.rs doesn't directly call it. Now I need to outline the file changes: updating `cli/src/config_tui/model.rs` to import the grove types, add the new fields to `App`, and implement the `from_grove_config` constructor.\n\nIn `cli/src/config_tui/view.rs`, I'll update the outer block title to display a mode badge and add a notice row that shows when explore settings are inactive, instructing users to run the init command. All render functions will check both that explore is active and that the focus matches the field. Finally, in `cli/src/config_tui/update.rs`, I'll block edits and the Save action when explore is inactive, while keeping navigation and quit actions unrestricted.\n\nFor the remaining modules, I need to update `cli/src/config_tui/mod.rs` to accept an optional `GroveConfig` parameter, modify the Save action to persist the config, and update `cli/src/main.rs` to load `GroveConfig` instead of the old explore config. In `cli/src/init.rs`, I'll adjust the post-TUI loading to try the new config format first.\n\nOn the testing side, since `App::default()` now initializes with `Mode::McpLlm` and explore active, the existing tests should continue to work without changes.\n\nI'm planning four new test cases: one verifying the badge reflects the mode correctly, another ensuring edits are ignored when explore isn't active, a third confirming Save is blocked in that state, and a fourth allowing Save when the mode supports it. I also need to add a `display_name` method to Mode so the badge can show \"mcp\", \"skill\", or \"both\" appropriately. just use a match statement to get the display name directly. Now I'm thinking through the layout constraints for the view—I'm adding a notice row which brings the total to 9 rows, with the Tools section using a minimum constraint to handle flexibility. This keeps the layout reasonable without breaking the existing structure.\n\nWhen explore mode is inactive, the notice row displays styled content; when it's active, it renders as just a blank line. Let me map out the implementation plan."}
+{"line":"│ » Now I have all the context I need. Let me write the plan:"}
+{"line":"│ → forge_artifact write"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╭ [T30:01:02:53] ⚙ forge_store update-status"}
+{"line":"│ ← forge_store ok 1L"}
+{"line":"╭ [T31:01:03:11] → forge_artifact write"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╭ [T32:01:03:14] ⚙ forge_store set-summary"}
+{"line":"│ ← forge_store ok 1L"}
+{"line":"╭ [T33:01:03:31] » Plan complete. Here's a summary of what was produced:\n\n---\n\n## GROVE-S03-T05 Plan — `config` TUI mode badge + inert explore-section rendering\n\n**Status:** `draft → planned`\n\n### What the plan covers\n\n**6 files** touched across the Elm-style layers:\n\n| Layer | File | Key change |\n|-------|------|-----------|\n| Model | `config_tui/model.rs` | Add `grove_mode: Mode` + `explore_active: bool` to `App`; new `from_grove_config` constructor; `Default` stays McpLlm-active so all 14 existing tests pass unmodified |\n| Update | `config_tui/update.rs` | Gate every explore-edit `Msg` variant on `explore_active`; `Save` returns `None` + sets `last_error` when inactive; Tab/Quit always pass through |\n| View | `config_tui/view.rs` | Mode badge in outer block title; leading 1-line notice row (yellow when inactive, blank when active); all render functions derive `focused` from `app.explore_active && app.focus == Field::X` — existing DIM style handles greying automatically |\n| Wiring | `config_tui/mod.rs` | `run(root, Option<GroveConfig>)`; save builds `GroveConfig{mode, explore}` and calls `grove_cfg.save` (writes `config.json`, not `explore.json`) |\n| CLI | `main.rs` | `Cmd::Config` loads `GroveConfig` instead of `ExploreConfig` |\n| Init | `init.rs` | After TUI returns, prefer `GroveConfig::load` for the explore section over legacy `ExploreConfig::load` (fallback chain preserves backward compat) |\n\n### New tests (5)\n`badge_reflects_grove_mode`, `explore_inert_blocks_all_edits`, `save_blocked_when_inert`, `save_allowed_when_mcp_llm`, `tab_and_quit_always_work`\n\n### Design highlights\n- No layout branching needed for greying — the existing `DIM` focus-off style already handles it once `focused = false`\n- `init.rs` fallback chain `GroveConfig::load → ExploreConfig::load → old_cfg.explore` covers new, legacy, and re-run cases safely\n- No new dependencies; `GroveConfig`/`Mode` already exported by `grove_core` (T01)"}

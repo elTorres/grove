@@ -1,0 +1,108 @@
+{"line":"[T0:23:26:58] ─── phase 1/8 plan begin · GROVE-S03-T01 ───"}
+{"line":"╭ [T1:23:27:01] ✱ Let me start by running the banner and then follow the workflow algorithm step by step."}
+{"line":"│ → forge_banner"}
+{"line":"│ ← forge_banner ok 5L"}
+{"line":"╭ [T2:23:27:05] ✱ Now let me run the preflight gate check for the task."}
+{"line":"│ » ## Step 0a — Pre-flight Gate Check"}
+{"line":"│ → forge_preflight"}
+{"line":"│ ← forge_preflight ok 1L"}
+{"line":"╭ [T3:23:27:08] » ## Step 0b — Pipeline State Guard"}
+{"line":"│ ⚙ forge_store read"}
+{"line":"│ ← forge_store ok 8L ⇌19%"}
+{"line":"╭ [T4:23:27:10] ✱ Status is \"draft\" — allowed. Continue.\n\n## Step 1 — Load Context\n\nFirst, read the architect persona."}
+{"line":"│ » Status is `draft` — allowed. Proceeding.\n\n## Step 1 — Load Context"}
+{"line":"│ ⌕ read .forge/personas/architect.md"}
+{"line":"│ ← read ok 46L"}
+{"line":"╭ [T5:23:27:15] » 🗻 **grove Architect** — I hold the shape of the whole. I give final sign-off before commit.\n\nNow let me load the task prompt and related context:"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ ⚙ forge_store read"}
+{"line":"│ ← forge_store ok 16L ⇌83%"}
+{"line":"│ ← forge_artifact ok 11L ⇌91%"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 5"}
+{"line":"╭ [T6:23:27:17] → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 10L"}
+{"line":"╭ [T7:23:27:20] → forge_artifact outline"}
+{"line":"│ ← forge_artifact ok 7L"}
+{"line":"╭ [T8:23:27:23] → forge_artifact read"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 31L"}
+{"line":"│ ← forge_artifact ok 10L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 8"}
+{"line":"╭ [T9:23:27:26] → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 9L"}
+{"line":"╭ [T10:23:27:29] ✱ Now let me look at the architecture stack and the existing code to understand the patterns."}
+{"line":"│ » Now let me read the architecture docs and explore the existing code:"}
+{"line":"│ ⌕ read engineering/architecture/stack.md"}
+{"line":"│ → mcp__grove__outline"}
+{"line":"│ ← read ok 67L"}
+{"line":"│ ← mcp__grove__outline ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 10"}
+{"line":"╭ [T11:23:27:32] ⌕ read core/src/explore/config.rs"}
+{"line":"│ → mcp__grove__outline"}
+{"line":"│ ← read ok 368L"}
+{"line":"│ ← mcp__grove__outline ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 11"}
+{"line":"╭ [T12:23:27:37] ✱ Now let me understand the call sites of `Mode` in the explore context - particularly in `agent.rs`, `steering.rs`, `toolset.rs`, `mcp.rs`, and `config_tui/`."}
+{"line":"│ » Now let me find all callers/references to the `Mode` enum from `explore/config.rs`:"}
+{"line":"│ → mcp__grove__callers"}
+{"line":"│ $ bash find core/src -name \"*.rs\" | sort | head -30 && echo \"---\" && ls core/src/explore/"}
+{"line":"│ ← bash ok 26L"}
+{"line":"│ ← mcp__grove__callers ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 12"}
+{"line":"╭ [T13:23:27:41] $ bash grep -rn \"Mode\\|mode\" core/src/explore/toolset.rs | head -20 && echo \"---\" && grep -rn \"Mode\\|mode\" core/src/explore/mcp.rs 2>/dev/null | head -10 && echo \"---\" && ls cli/src/ 2>/dev/null || echo \"no cli/src\""}
+{"line":"│ ← bash ok 20L"}
+{"line":"╭ [T14:23:27:45] $ bash grep -rn \"Mode\\|mode\" cli/src/mcp.rs | grep -v \"output_mode\\|\\\"mode\\\"\" | head -20 && echo \"---cli/main.rs---\" && grep -rn \"Mode\\|mode\" cli/src/main.rs | grep -v \"output_mode\" | head -20"}
+{"line":"│ ← bash ok 26L"}
+{"line":"╭ [T15:23:27:49] $ bash grep -rn \"\\.mode\\b\\|Mode::\" cli/src/ | grep -v \"output_mode\\|both_modes\\|\\\"mode\\\"\\|// \" | head -30"}
+{"line":"│ ← bash ok 20L"}
+{"line":"╭ [T16:23:27:51] $ bash cat cli/src/config_tui/model.rs"}
+{"line":"│ ← bash ok 244L"}
+{"line":"╭ [T17:23:27:54] ✱ Now I have a thorough understanding of what needs to be done. Let me also check `core/src/lib.rs` more carefully to understand the public exports."}
+{"line":"│ ⌕ read core/src/lib.rs"}
+{"line":"│ $ bash cat core/src/explore/mod.rs"}
+{"line":"│ ← read ok 66L"}
+{"line":"│ ← bash ok 27L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 17"}
+{"line":"╭ [T18:23:27:57] ✱ Now I have a thorough picture of the codebase. Let me also look at the sprint requirements to understand D2 more broadly:"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 54L ⇌67%"}
+{"line":"╭ [T19:23:28:27] ✱ Now I have a comprehensive understanding of what needs to be done. Let me plan the implementation:\n\n## Summary of what needs to be built:\n\n### Task GROVE-S03-T01: `GroveConfig` core type + `explore` section demotion + `mode→steering` rename\n\n**Goal:** Pure type + serde + persistence work. No consumer rewiring (T03) and no legacy migration (T02) yet.\n\n### Key Changes:\n\n1. **New `core/src/config.rs`** — Add:\n   - Integration `Mode` enum: `mcp | skill | both | mcp-llm | grammars` (on-disk spellings like `\"mcp\"`, `\"mcp-llm\"`)\n   - `GroveConfig` struct with version, mode, and optional explore section\n   - Path resolution method pointing to `.grove/config.json` under the root\n   - Load and save methods with atomic writes and fail-fast validation\n   - A raw wire type for custom deserialization to provide better error messages\n\n2. **Rename `Mode` → `Steering` in `core/src/explore/config.rs`**: updating the enum name, the JSON field from `mode` to `steering`, the `LEGAL` values, and all internal references throughout the config structures.\n\n3. **Update `core/src/explore/mod.rs`** to re-export `Steering` instead of `Mode`.\n\n4. **Update `core/src/lib.rs`** to re-export `Steering`, add the config module, and expose `GroveConfig` while keeping `Mode` for the integration mode enum.\n\n5. **Update all call sites** across the agent and steering modules to use the renamed `Steering` type.\n\n6. **Update `cli/src/config_tui/model.rs`** and `cli/src/mcp.rs`** to reference `Steering` instead of `Mode`.\n\n7. **Add unit tests** in `core/src/config.rs` to verify the serialization and deserialization.\n\nNow I'm thinking through the data model structure — `GroveConfig` has a `version` field, an integration `mode` enum with variants like `mcp`, `skill`, `both`, `mcp-llm`, and `grammars`, plus an optional `ExploreConfig` section that contains its own `steering` field.\n\nFor serialization, the integration mode variants map to string keys like `\"mcp\"`, `\"skill\"`, `\"both\"`, `\"mcp-llm\"`, and `\"grammars\"`. The `explore` section uses `#[serde(skip_serializing_if = \"Option::is_none\")]` to omit it when absent. In `ExploreConfig`, I need to rename the `mode` field to `steering` with the JSON key changing accordingly, and the same applies to `RawExploreConfig`.\n\nI'm mapping out the files that need updates across the codebase: renaming `Mode` to `Steering` in the explore module, updating field references from `mode` to `steering`, re-exporting the new types from `lib.rs`, and propagating these changes through the CLI config handling, TUI model, and related modules. I need to update all the remaining call sites where `Mode` is used as the steering enum across both the core and CLI modules to use `Steering` instead. There's a constraint here though — while the task says no consumer rewiring in T03, these updates to `ExploreConfig::mode` → `ExploreConfig::steering` and all the `Mode` → `Steering` type changes are actually required in T01 just to keep the code compiling, since we're renaming both the field and the type itself."}
+{"line":"│ » Now let me look at a few more call sites and the existing explore section wire details:"}
+{"line":"│ $ bash grep -rn \"Mode\\|mode\" core/src/explore/agent.rs | grep -v \"output_mode\\|\\\"mode\\\"\\|//\\|arm\\|argument\" | head -20\necho \"---\"\ngrep -rn \"Mode\\|mode\" core/src/explore/steering.rs | grep -v \"output_mode\\|\\\"mode\\\"\\|// \" | head -20"}
+{"line":"│ ← bash ok 27L"}
+{"line":"╭ [T20:23:28:29] $ bash grep -n \"mode\\|Mode\" cli/src/config_tui/update.rs | head -20"}
+{"line":"│ ← bash ok 21L"}
+{"line":"╭ [T21:23:28:38] $ bash grep -n \"grove_core::Mode\\|Mode::\\|\\.mode\" cli/src/config_tui/update.rs | head -20"}
+{"line":"│ ← bash ok 21L"}
+{"line":"╭ [T22:23:28:41] $ bash grep -n \"Mode\\|steering\" cli/src/config_tui/update.rs"}
+{"line":"│ ← bash ok 33L"}
+{"line":"╭ [T23:23:28:43] $ bash sed -n '360,395p' cli/src/config_tui/update.rs"}
+{"line":"│ ← bash ok 33L"}
+{"line":"╭ [T24:23:29:14] ✱ Now I have a full picture of what needs to be done. Let me now write the PLAN.md.\n\n### Summary of all files to change:\n\n1. **CREATE `core/src/config.rs`** — New module with:\n   - `Mode` enum (integration mode: `mcp`, `skill`, `both`, `mcp-llm`, `grammars`)\n   - `RawGroveConfig` struct for deserialization with custom enum error\n   - `GroveConfig` struct: `version: u32, mode: Mode, explore: Option<ExploreConfig>`\n   - Methods for loading, saving, and validating the config, plus unit tests\n\n2. **MODIFY `core/src/explore/config.rs`** — Rename the `Mode` struct to `Steering` throughout, updating the corresponding field on `ExploreConfig` and `RawExploreConfig`, and adjusting error messages and test references accordingly.\n\n3. **MODIFY `core/src/explore/mod.rs`** — Export `Steering` instead of `Mode`.\n\n4.\n\n5. **MODIFY `core/src/explore/agent.rs`** — Update the import to use `Steering`, replace all references to `cfg.mode` with `cfg.steering`, and swap out `Mode::` prefixes for `Steering::` in variant names and function signatures.\n\n6. **MODIFY `core/src/explore/steering.rs`** — Update the import and function signatures to use `Steering` instead of `Mode`.\n\n7. **MODIFY `core/src/lib.rs`** — Add the config module export and update the re-exports to use `Steering` instead of `Mode`.\n\n8. **MODIFY `cli/src/config_tui/model.rs`** — Update imports and all `Mode::` references to use `Steering::`.\n\n9. **MODIFY `cli/src/config_tui/update.rs`** — Change the mode field assignment to use `steering` with `Steering::Aggressive`.\n\n10. **MODIFY `cli/src/mcp.rs`** — Update the config reference from `cfg.mode` to `cfg.steering`.\n\nNow I'm checking whether this schema change to the `.grove/` config file requires a version bump. The task notes this is an unreleased experimental surface, so versioning isn't required, but I should verify the operational impact of renaming the JSON key from `mode` to `steering`.\n\nLet me also scan the broader codebase to see if there are other places calling `Mode` that I might have missed."}
+{"line":"│ $ bash grep -rn \"grove_core::Mode\\b\" cli/src/ && echo \"---\" && grep -rn \"\\bMode\\b\" cli/src/config_tui/ | grep -v \"output_mode\\|model_\\|\\\"mode\\\"\\|ModelMode\\|mode_\\|// \\|comment\""}
+{"line":"│ ← bash ok 21L"}
+{"line":"╭ [T25:23:29:17] $ bash grep -n \"Mode\\b\" cli/src/config_tui/update.rs | grep -v \"Model\\|output_mode\""}
+{"line":"│ ← bash ok 5L"}
+{"line":"╭ [T26:23:29:19] $ bash grep -n \"ExploreConfig\\b\" cli/src/config_tui/update.rs | head -10"}
+{"line":"│ ← bash ok 4L"}
+{"line":"╭ [T27:23:30:18] » Good. Now I have a complete picture of all changes needed. Let me write the PLAN:\n\n## Step 3 — Write the Plan"}
+{"line":"│ → forge_artifact write"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╭ [T28:23:30:21] » ## Step 5 — Update Task Status"}
+{"line":"│ ⚙ forge_store update-status"}
+{"line":"│ ← forge_store ok 1L"}
+{"line":"╭ [T29:23:30:36] » ## Step 6 — Emit Plan Summary Sidecar"}
+{"line":"│ → forge_artifact write"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╭ [T30:23:30:39] ⚙ forge_store set-summary"}
+{"line":"│ ← forge_store ok 4L"}
+{"line":"╭ [T31:23:30:47] → forge_artifact write"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╭ [T32:23:30:49] ⚙ forge_store set-summary"}
+{"line":"│ ← forge_store ok 1L"}
+{"line":"╭ [T33:23:30:52] » ## Step 7 — Post-Phase Output Guard\n\nLet me verify the outputs:"}
+{"line":"│ → forge_artifact exists"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╭ [T34:23:30:55] ⚙ forge_store read"}
+{"line":"│ ← forge_store ok 19L ⇌48%"}
+{"line":"╭ [T35:23:31:06] » All outputs satisfied. Here is a summary of what was planned:\n\n---\n\n## Plan Complete ✅\n\n**GROVE-S03-T01** has been planned and transitioned to `planned`.\n\n### What the plan covers\n\n**Objective:** Pure type + serde + persistence work. Introduces `.grove/config.json` and `GroveConfig` in `core/`; demotes `ExploreConfig` to an optional `explore` sub-section; renames the steering-level `Mode` enum to `Steering` (and its JSON key from `\"mode\"` to `\"steering\"`) across all core and CLI call sites.\n\n**9 files touched:**\n\n| File | Change |\n|------|--------|\n| `core/src/config.rs` | **NEW** — integration `Mode`, `GroveConfig`, atomic save/load, unit tests |\n| `core/src/explore/config.rs` | `Mode→Steering`, field `mode→steering`, fixture updates |\n| `core/src/explore/mod.rs` | Re-export `Steering` instead of `Mode` |\n| `core/src/explore/agent.rs` | All `Mode::`/`cfg.mode` → `Steering::`/`cfg.steering` |\n| `core/src/explore/steering.rs` | All `Mode::` → `Steering::`, signature update |\n| `core/src/lib.rs` | Add `pub mod config`; re-export `GroveConfig` + integration `Mode`; swap `Steering` |\n| `cli/src/config_tui/model.rs` | `Mode→Steering`; `cfg.mode→cfg.steering`; struct literal field |\n| `cli/src/config_tui/update.rs` | Struct literal `mode:→steering:`, `Mode::→Steering::` |\n| `cli/src/mcp.rs` | `cfg.mode→cfg.steering` |\n\n**Key design decisions:**\n- `GroveConfig` follows the exact `ExploreConfig` idiom: raw wire-shape struct → `TryFrom` → custom `Deserialize`, `validate()`, atomic `save()`, actionable `load()` errors\n- Integration `Mode` enum variants: `mcp`, `skill`, `both`, `mcp-llm`, `grammars` — kebab-case on disk\n- `explore` field is `Option<ExploreConfig>` with `skip_serializing_if = \"is_none\"` — absent from JSON when not set\n- No consumer rewiring (T03) and no legacy migration (T02) — this task is type + serde only"}
