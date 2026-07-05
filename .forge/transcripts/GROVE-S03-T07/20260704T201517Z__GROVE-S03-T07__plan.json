@@ -1,0 +1,1723 @@
+{
+  "schema": "forge-subagent-transcript/v1",
+  "startedAt": "2026-07-04T20:15:17.567Z",
+  "finishedAt": "2026-07-04T20:19:40.003Z",
+  "cwd": "/home/boni/src/grove-engineering/grove",
+  "persona": "engineer",
+  "tag": "GROVE-S03-T07__plan",
+  "prompt": "Read the workflow below and follow it. Task ID: GROVE-S03-T07.\n\n---\n\n---\nrequirements:\n  reasoning: High\n  context: Medium\n  speed: Low\naudience: subagent\nphase: plan\ncontext:\n  architecture: true\n  prior_summaries: delta\n  persona: summary\n  master_index: false\n  diff_mode: false\ndeps:\n  personas: [architect]\n  skills: [architect, generic]\n  templates: [PLAN_TEMPLATE, TASK_PROMPT_TEMPLATE]\n  sub_workflows: [review_plan]\n  kb_docs: [architecture/stack.md]\n  config_fields: [commands.test, paths.engineering]\n---\n\n\n# Plan Task\n## Algorithm\n\n```\n\n0a. Pre-flight Gate Check:\n   - **Entity-mode resolution:** read the kickoff arguments. `--task {id}` → `entity_kind = \"task\"`, `record_id = {id}`. `--bug {id}` → `entity_kind = \"bug\"`, `record_id = {id}`. All store-cli calls below substitute `{entity_kind}` and `{record_id}` for the literal \"task\"/{taskId} placeholders.\n   - Run: `node .forge/tools/preflight-gate.cjs --phase plan --{entity_kind} {record_id}`\n   - Exit 1 (gate failed) → print stderr and HALT. Do not proceed; do not attempt to produce the artifact.\n   - Exit 2 (misconfiguration) → print stderr and HALT.\n   - Exit 0 → continue.\n\n0b. Pipeline Step Guard (user-invoked state check):\n   - If `--force` is present in the invocation arguments, skip this step entirely.\n   - If `entity_kind == \"bug\"`, skip this step entirely (bug state is managed by meta-fix-bug.md).\n   - Read current task state:\n     `node .forge/tools/store-cli.cjs read task {record_id} --fields status`\n   - Extract the `status` field from the JSON output.\n   - Allowed states for this phase: `draft`, `planned`, `plan-revision-required`.\n   - If the current status is NOT in the allowed set:\n     Print the following and HALT (do not proceed):\n     `× Task {record_id} is in state '{status}' — /forge:plan cannot run from this state; a reset or reassignment must complete first. To run the full pipeline: /forge:run-task {record_id}`\n\n1. Load Context:\n   - Read `.forge/personas/architect.md` first; print the persona identity line (emoji, name, tagline) to stdout before any other tool use.\n   - store-cli verbs: `read` | `list` | `write` | `emit` | `update-status` | `set-summary` | `describe` | `nlp` | `query` | `delete` — there is no `get`/`set`/`find`. See `_fragments/store-cli-verbs.md` for full notes; run `--help` before improvising.\n   - Read task prompt (source of truth)\n   - Query the store for this task and any related entities:\n     ```sh\n     node .forge/tools/store-cli.cjs nlp \"{taskId} with sprint with feature\"\n     ```\n     Use store results directly if they include title, status, sprint, and excerpt.\n   - Read the architecture summary from your injected context (if present).\n   - Read business domain docs relevant to the task\n   - Read stack checklist\n\n2. Research:\n   - Identify files for modification (Glob, Grep, Read)\n   - Map existing patterns in the target area\n   - Identify existing tests to be maintained or expanded\n   - Identify whether the change is **material** (triggers version bump) or not:\n     - Bug fixes to any command, hook, tool spec, or workflow → material\n     - Tool-spec changes that alter generated tool behaviour → material\n     - Command-file changes that alter behaviour → material\n     - Hook changes → material\n     - Schema changes to `.forge/store/` or `.forge/config.json` → material\n     - Docs-only changes → NOT material\n\n3. Plan:\n   - Write the plan via forge_artifact:\n     `forge_artifact({ command:\"write\", entity:\"{entity_kind}\", entityId:\"{record_id}\", artifact:\"plan\", content:\"<markdown>\" })`\n     where `<markdown>` follows the project plan template.\n   - Ensure inclusion of: Objective, Approach, Files to Modify, Data Model Changes, Testing Strategy, Acceptance Criteria, and Operational Impact\n\n4. Knowledge Writeback:\n   - If new patterns were discovered, update architecture or business domain docs\n\n5. Finalize:\n   - Transitions:\n     - **Task mode** — legal target from this step: `draft → planned`. Out-of-band escapes (any state): `plan-revision-required`, `code-revision-required`, `blocked`, `escalated`, `abandoned`.\n       Update status: `node .forge/tools/store-cli.cjs update-status task {taskId} status planned`\n     - **Bug mode** — NO status write. The bug remains `in-progress` until the commit phase transitions it to `fixed`. Writing `bug.status` here violates `meta-fix-bug.md § Iron Laws #2`.\n   - **Do NOT emit a phase event yourself.** The orchestrator owns event emission — it composes the canonical event from runtime telemetry (model, provider, tokens, wall times) plus the SUMMARY you write in the next step. Subagents that call `store-cli emit` for phase events hallucinate runtime facts (see Plan 11 / Slice 2). Write the SUMMARY and return.\n\n6. Emit Summary Sidecar:\n   - Write the plan summary via forge_artifact. Shape:\n     ```json\n     {\n       \"objective\":   \"<one sentence — what this plan sets out to build>\",\n       \"key_changes\": [\"<up to 12 bullets, 200 chars each>\"],\n       \"verdict\":     \"n/a\",\n       \"written_at\":  \"<current ISO 8601 timestamp>\",\n       \"artifact_ref\":\"PLAN.md\"\n     }\n     ```\n     Task mode:\n     `forge_artifact({ command:\"write\", entity:\"{entity_kind}\", entityId:\"{record_id}\", artifact:\"plan-summary\", content:\"<JSON>\" })`\n     Bug mode:\n     `forge_artifact({ command:\"write\", entity:\"{entity_kind}\", entityId:\"{record_id}\", artifact:\"plan-summary\", content:\"<JSON>\" })`\n   - Register the summary with the store (task mode):\n     `forge_store({ command:\"set-summary\", args:[\"{record_id}\", \"plan\"] })`\n     Or (bug mode):\n     `forge_store({ command:\"set-bug-summary\", args:[\"{record_id}\", \"plan\"] })`\n   - If the set-summary call exits non-zero, fix the sidecar JSON and retry. Do not proceed without a valid summary.\n\n7. Post-Phase Output Guard: satisfy the `outputs` block before returning.\n```\n\n```outputs phase=plan\nartifact {engineering}/{sprint}/{task}/PLAN.md min=200\nrequire summaries.plan.verdict == n/a\n```\n\n<!-- See _fragments/iron-laws.md for Iron Laws section structure guidance -->\n## Iron Laws\n\n- Follow the Algorithm step by step. No code, pseudocode, or implementation sketches in the plan.\n- Read `.forge/personas/architect.md` first; print the persona identity line (emoji, name, tagline) to stdout before any other tool use.\n- All store I/O via `forge_store` (or `node .forge/tools/store-cli.cjs`). Never edit `.forge/store/*.json` directly.\n\n## Store-Write Verification\n\n<!-- See _fragments/store-write-verification.md for the canonical block content -->\n\n## Friction Emit\nEmit `type:friction` `{workflow:plan-task, persona:architect, issue}` per `_fragments/friction-emit.md`.\n\n<!-- See _fragments/generation-instructions.md for Generation Instructions template -->",
+  "model": "claude-sonnet-4-6",
+  "provider": "anthropic",
+  "exitCode": 0,
+  "stopReason": "stop",
+  "errorMessage": null,
+  "usage": {
+    "input": 26,
+    "output": 13720,
+    "cacheRead": 751115,
+    "cacheWrite": 43083,
+    "cost": 0.5927737500000001,
+    "contextTokens": 52874,
+    "turns": 24
+  },
+  "messageCount": 61,
+  "messages": [
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Let me start by running the forge banner and then follow the workflow algorithm step by step.",
+          "thinkingSignature": "EqUCCmUIDxgCKkAYSUiNicakKDG+/KOYABUfcuMxVypZLZhegtvp/l0lC8zcV4RKPMTnGvwxI5SHy30RwbnFm5ik3v9LgRgWIX2tMhFjbGF1ZGUtc29ubmV0LTQtNjgAQgh0aGlua2luZxIMwCQ5OLFJFZ/BK3nkGgy/raKJiLaWaWSSot8iMAgJ4kxr7r5clgDozlP39/bDHa0obMTcdo2athl77tD1vBHMFidDSiGtd4HMjguitCpuVkH78Ubl7a/8445FVEOf3tLs8LH0k8n9WQO1OzxZHef0fgBGlpe/eVwe4Ow9Zkdxbu432jFf2wDw+966zTMC4Yf25XXyDGhhYoDFRELFx+eP7sE6WIy+pJmpx6b5yM1UbZVpwZu60L6RNuHLXckYAQ=="
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_015AH8gDXV3MoncE54zfJvG5",
+          "name": "forge_banner",
+          "arguments": {
+            "name": "forge"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 3,
+        "output": 86,
+        "cacheRead": 9273,
+        "cacheWrite": 2250,
+        "totalTokens": 11612,
+        "cost": {
+          "input": 0.000009,
+          "output": 0.0012900000000000001,
+          "cacheRead": 0.0027819,
+          "cacheWrite": 0.0084375,
+          "total": 0.0125184
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 30
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783196117570,
+      "responseId": "msg_015atpTzNAxdrEWqLKW8HN5v"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_015AH8gDXV3MoncE54zfJvG5",
+      "toolName": "forge_banner",
+      "content": [
+        {
+          "type": "text",
+          "text": "\n  \u001b[38;2;255;230;80m✦  \u001b[38;2;200;80;20m▄\u001b[38;2;230;100;30m▓▓▓▓▓\u001b[38;2;200;80;20m▄  \u001b[38;2;255;160;40m≋ ≋ ≋\u001b[0m\n  🔨  \u001b[1m\u001b[38;2;255;160;40mFORGE\u001b[0m  \u001b[2m\u001b[38;2;255;160;40m鍛冶\u001b[0m   \u001b[2m\u001b[38;2;255;160;40mmaking · heat · craft\u001b[0m\n\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783196120149
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01MKHFsNPtGNmwEQnVa75zdF",
+          "name": "forge_preflight",
+          "arguments": {
+            "phase": "plan",
+            "task": "GROVE-S03-T07"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 78,
+        "cacheRead": 11523,
+        "cacheWrite": 262,
+        "totalTokens": 11864,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.00117,
+          "cacheRead": 0.0034568999999999997,
+          "cacheWrite": 0.0009825,
+          "total": 0.005612399999999999
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783196120149,
+      "responseId": "msg_01ChnkvctZCyRud3nkzKcVwb"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01MKHFsNPtGNmwEQnVa75zdF",
+      "toolName": "forge_preflight",
+      "content": [
+        {
+          "type": "text",
+          "text": "Preflight passed."
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783196123351
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01Fh9b4bjed2Zggy7h6gHgwa",
+          "name": "forge_store",
+          "arguments": {
+            "command": "read",
+            "args": [
+              "task",
+              "GROVE-S03-T07",
+              "--json"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 85,
+        "cacheRead": 11785,
+        "cacheWrite": 94,
+        "totalTokens": 11965,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.001275,
+          "cacheRead": 0.0035355,
+          "cacheWrite": 0.0003525,
+          "total": 0.0051660000000000005
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783196123351,
+      "responseId": "msg_01UCGUceAfFLtD1f19mPSCyZ"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01Fh9b4bjed2Zggy7h6gHgwa",
+      "toolName": "forge_store",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\n  \"taskId\": \"GROVE-S03-T07\",\n  \"title\": \"grove doctor - core::doctor report + CLI verb (checks, --json, exit code)\",\n  \"status\": \"planned\",\n  \"sprintId\": \"GROVE-S03\",\n  \"estimate\": \"L\",\n  \"pipeline\": \"default\",\n  \"dependencies\": [\n    \"GROVE-S03-T01\",\n    \"GROVE-S03-T03\",\n    \"GROVE-S03-T04\",\n    \"GROVE-S03-T06\"\n  ],\n  \"latestPhase\": \"review_plan\",\n  \"latestSummary\": {\n    \"objective\": \"Assessed the grove doctor plan (core::doctor report + Cmd::Doctor CLI verb) for feasibility, seam correctness, security, and test coverage.\",\n    \"verdict\": \"revision\",\n    \"key_changes\": [\n      \"Verified reused core seams exist with matching signatures: active_mode, verify_lock, health_probe/HealthError{Unreachable,ModelMissing}, list_models, ExploreConfig::validate, toolset consts.\",\n      \"LockVerifyStatus Match/Mismatch/Missing confirmed; plan's Match->Ok/Mismatch->Fail/Missing->Warn and absent-lock->None mapping is accurate.\",\n      \"BLOCKER: harness-consistency check sits in core::doctor but sentinel/content constants are PRIVATE in cli/src/init.rs; cli->core dep means core cannot import them.\",\n      \"+4 more\"\n    ]\n  }\n}"
+        }
+      ],
+      "details": {
+        "compression": {
+          "tool": "store:read",
+          "before": 978,
+          "after": 306,
+          "saved": 69
+        }
+      },
+      "isError": false,
+      "timestamp": 1783196125789
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "The status is \"planned\" which is in the allowed states for this phase (draft, planned, plan-revision-required). Good to proceed.\n\nNow let me load context - first read the architect persona.",
+          "thinkingSignature": "EoYDCmUIDxgCKkBf1z9jC4ooSs8yycRMpSahVGMvNauEFx4+zvk/E9sBZweh3gpPIy8SzfKplvgVJxytKFFcLwxUGJxttdC6ezIqMhFjbGF1ZGUtc29ubmV0LTQtNjgAQgh0aGlua2luZxIMBMO7oxwbrKqql2QGGgyhlfaVkA+vy1FQ82ciMPyVyvP3vU+QBbvGKN5butT5ey2UJvv5qrCcIcZ9ZR8yBjtn9k7HWAo0AOgo4fAvcyrOAVm7PcWX0xPndmOHEkrdxB4SXxACGMRfThlNCMx7As+j4K6RclJ4tQTX7aHMZWO1PMsLtZ3kR1drYCkGq2A4tjPox8TDtxN/dl3G1ov/5B5IehQYp2tJs0KUCEbzmMjJKc7HohxdoMs5VNrVesfujv3PwaBqVfDB3pKr2y12B7TOHT1cof0eQJ1aMneilL60OD2Rpw49RcQ73UaAc2qHQyeuSzEYjDsjryBGVbGBSyambbUnlL7DtumAUjC0ZZUbEu7OylkB8nOSm3rmL34gGAE="
+        },
+        {
+          "type": "text",
+          "text": "Status is `planned` — within allowed states. Proceeding."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01PwqibbAThFcRaH8CQ5jPtv",
+          "name": "read",
+          "arguments": {
+            "path": ".forge/personas/architect.md"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 131,
+        "cacheRead": 11879,
+        "cacheWrite": 473,
+        "totalTokens": 12484,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.001965,
+          "cacheRead": 0.0035637,
+          "cacheWrite": 0.00177375,
+          "total": 0.007305450000000001
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 55
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783196125789,
+      "responseId": "msg_01FLqUeJccRawHBa9MaiEuMy"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01PwqibbAThFcRaH8CQ5jPtv",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "🗻 **grove Architect** — I hold the shape of the whole. I give final sign-off before commit.\n\n## Identity\n\nI am the grove Architect. I plan sprints, approve completed tasks, and maintain architectural coherence across the project. I have final sign-off before code is committed.\n\nRun this command using the Bash tool as my first action (before any file reads or other tool use):\n```bash\nnode .forge/tools/banners.cjs north\n```\n## What I Need to Know\n\n- The full architecture of the project\n- The business domain and entity model\n- The current sprint's goals and priorities\n- Historical complexity patterns from previous sprints\n- Cross-cutting concerns and technical debt\n\n## What I Produce\n\n- Sprint manifests — task breakdown with dependencies, estimates, priorities\n- `ARCHITECT_APPROVAL.md` — final sign-off on completed tasks\n- Architecture decisions and updates to knowledge base\n\n## Capabilities\n\n- Plan sprints with dependency graphs\n- Approve or reject completed tasks\n- Update architecture documentation\n- Identify cross-task conflicts and dependencies\n## Project Context\n\n- **Entity model and service boundaries**: See `engineering/architecture/` and `engineering/architecture/../business-domain/entity-model.md`\n- **ID format and prefix convention**: Task IDs use the GROVE prefix from `.forge/config.json`\n- **Technical debt areas**: \n- **Deployment topology**: See `engineering/architecture/deployment.md`\n- **Operational impact categories**: \n\n## Commands\n\n- **Syntax check**: `cargo test --release --locked`\n- **Lint**: `cargo clippy -- -D warnings`\n\n## Installed Skill Wiring\n\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783196132726
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "🗻 **grove Architect** — I hold the shape of the whole. I give final sign-off before commit.\n\nNow let me load the task prompt, query the store for full context, and read architecture docs in parallel."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01EE2ssNDFt2eW8nC2T3nnfj",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T07",
+            "artifact": "task-prompt"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_012QYjfRJfAGibPPgVMwAQr3",
+          "name": "forge_store_query",
+          "arguments": {
+            "command": "nlp",
+            "args": [
+              "GROVE-S03-T07 with sprint with feature"
+            ]
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01XVFGmr1hT2rcLmzhNubwyB",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T07",
+            "artifact": "plan"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 330,
+        "cacheRead": 12352,
+        "cacheWrite": 522,
+        "totalTokens": 13205,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.00495,
+          "cacheRead": 0.0037056,
+          "cacheWrite": 0.0019575,
+          "total": 0.0106161
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783196132726,
+      "responseId": "msg_01S6NVWNYhLxcKGGgrh6yC5x"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01EE2ssNDFt2eW8nC2T3nnfj",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "# GROVE-S03-T07: `grove doctor` — `core::doctor` report + CLI verb (checks, `--json`, exit code)\n## Objective\n## Acceptance Criteria\n## Context\n## Artifacts Involved\n## Operational Impact\n- **Version bump:** required at release (new user-facing verb).\n- **Regeneration:** none; additive command.\n- **Security scan:** not required.\n\n[72 body lines omitted — 81 total]"
+        }
+      ],
+      "details": {
+        "compression": {
+          "tool": "artifact:read",
+          "before": 1203,
+          "after": 99,
+          "saved": 92
+        }
+      },
+      "isError": false,
+      "timestamp": 1783196138272
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_012QYjfRJfAGibPPgVMwAQr3",
+      "toolName": "forge_store_query",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\n  \"results\": [\n    {\n      \"id\": \"GROVE-S03-T07\",\n      \"title\": \"grove doctor - core::doctor report + CLI verb (checks, --json, exit code)\",\n      \"status\": \"planned\",\n      \"type\": \"task\",\n      \"relationships\": {\n        \"sprintId\": \"GROVE-S03\"\n      }\n    },\n    {\n      \"id\": \"GROVE-S03\",\n      \"title\": \".grove/config.json declared mode + grove doctor health check\",\n      \"status\": \"active\",\n      \"type\": \"sprint\",\n      \"relationships\": {\n        \"sprintId\": \"GROVE-S03\"\n      }\n    }\n  ],\n  \"query\": \"GROVE-S03-T07 with sprint with feature\",\n  \"path\": \"intent-nlp\",\n  \"totalMatched\": 1,\n  \"returned\": 2\n}"
+        }
+      ],
+      "details": {
+        "compression": {
+          "tool": "query",
+          "before": 662,
+          "after": 167,
+          "saved": 75
+        }
+      },
+      "isError": false,
+      "timestamp": 1783196138272
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01XVFGmr1hT2rcLmzhNubwyB",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "# PLAN — GROVE-S03-T07: `grove doctor` — `core::doctor` report + CLI verb\n## Objective\n## Approach\n### 1. New `core/src/doctor.rs` — types and `diagnose`\n```rust\n```\n### 2. Universal checks (run for every project)\n| Check name | Logic | Status |\n| `grove_version` | `env!(\"CARGO_PKG_VERSION\")` | Info |\n| `config_present` | `GroveConfig::load(root)` — field-named errors from the typed loader | Ok / Fail; Info if absent (unconfigured project) |\n| `legacy_explore_json` | `.grove/explore.json` exists without `.grove/config.json` | Warn with migration hint |\n| `harness_consistent` | **Headline check** — see §2a below | Ok / Fail (per file) / Warn |\n| `registry_root` | `registry::search_path()` — fail if no candidate `exists` | Ok / Fail |\n| `grammar_cache` | `registry::cache_root()` | Ok / Warn if None |\n| `project_languages` | Walk source extensions via `ignore` (same logic `init` uses) against `registry::available()` | Ok / Warn per missing lang |\n| `lock_integrity` | `registry::verify_lock(&root.join(\"grove.lock\"))` | per-grammar Match→Ok, Mismatch→Fail, Missing→Warn; absent lockfile→Warn/Info |\n#### 2a. Harness-consistency check (headline check)\n### 3. Explore-mode checks (mode == McpLlm only)\n| Check name | Logic | Status |\n| `explore_config_valid` | The `explore` section from `GroveConfig::load` must be present and pass `ExploreConfig::validate()` | Fail if absent or invalid |\n| `provider_reachable` | `health_probe(&cfg)` → `HealthError::Unreachable { url, detail }` → Fail; surface the built-in detail and the hint verbatim from `HealthError`'s `fmt` impl |\n| `model_served` | `health_probe` → `HealthError::ModelMissing { model, url, available }` → Fail; enrich hint with `list_models` output if it succeeds |\n| `allowed_tools_known` | Compare `cfg.allowed_tools` against `toolset::{READ, GLOB, GREP, GROVE}` | Warn per unrecognized entry |\n| `tap_config` | `cfg.tap` / `cfg.trace_retain` values | Info |\n### 4. CLI dispatch in `cli/src/main.rs`\n```rust\n    #[arg(default_value = \".\")]\n    #[arg(long = \"explore\")]\n    #[arg(long = \"standard\")]\n```\n```\n```\n```json\n```\n## Files to Modify\n| File | Change |\n| `core/src/doctor.rs` | **New** — `Status`, `Check`, `Report`, `diagnose` |\n| `core/src/lib.rs` | Add `pub mod doctor;` + re-export `doctor::Report` if needed |\n| `cli/src/main.rs` | Add `Cmd::Doctor` variant; add dispatch arm; add `grove_core::doctor` import |\n## Data Model Changes\n## Testing Strategy\n### Unit tests (inline in `core/src/doctor.rs`)\n### Integration tests (in `cli/tests/cli.rs`)\n## Acceptance Criteria\n## Operational Impact\n- **Version bump:** required at release (new user-facing verb).\n- **Regeneration:** none; additive command.\n- **Security scan:** not required.\n- **Change character:** additive — no existing behaviour modified.\n\n[215 body lines omitted — 264 total]"
+        }
+      ],
+      "details": {
+        "compression": {
+          "tool": "artifact:read",
+          "before": 2953,
+          "after": 763,
+          "saved": 74
+        }
+      },
+      "isError": false,
+      "timestamp": 1783196138272
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Good. The task has a plan that was reviewed with a \"revision\" verdict. Let me read the full plan and the plan review to understand what revisions are needed. Let me also read the task prompt in full.",
+          "thinkingSignature": "EpADCmUIDxgCKkDxmIP059555EVjiitAcgBQ4ybrKqzBGzkyp2UiabSPNW/QCZGJxqZefIm4KqHM+gbN6gCUB32fTgbVyqUxL9B4MhFjbGF1ZGUtc29ubmV0LTQtNjgAQgh0aGlua2luZxIMsJTzHFiQ40ujBbAMGgysjN5u8Fb4kX1F5i4iMHEYWplydRK+t6lw5qDpH6y2GZHjH2fx8Gp+AE2Z42m4HYXg2Ar3j0KXsuo+K6/LtirYAckEXcbeWJpz4J+k4Qu0uxeTDH9czWRiabitBWP2fzTmLxOflCLG2mYEoH9dbmpVftzyjZMFPrrptyhPsICV+tcdWUy9aQ5dH6jMRfoV4zwrF3taaeU78VtUz6kFWKv4s0sX0YVgStmPWEr2obf3j8T0xo7uIapbGHBDlG7kNELbuwyO3XyxZTo0s7DoxRXtnMv7ihN3iqVGF0DV+qmW9zYKfqO0BG19UwuEltWUNTlWTczXCkDD3ziu/TDYimBd9wX40E2JDOY+dSDPoEgN/pTZq1O2dlSKJhgB"
+        },
+        {
+          "type": "text",
+          "text": "Let me read the full plan, the code review (or plan review), and architecture docs:"
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01McBq5kRrarA9qtpBYq7Uoe",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T07",
+            "artifact": "plan",
+            "section": "Approach"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_0165c1N41aDbMiNZrk9L2kgb",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T07",
+            "artifact": "plan-review"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01TKK88TobNpibGgvf3Su4ue",
+          "name": "read",
+          "arguments": {
+            "path": "engineering/architecture/stack.md"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 347,
+        "cacheRead": 12874,
+        "cacheWrite": 1677,
+        "totalTokens": 14899,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.005205,
+          "cacheRead": 0.0038621999999999997,
+          "cacheWrite": 0.00628875,
+          "total": 0.01535895
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 57
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783196138272,
+      "responseId": "msg_01AKvRiDhu5D6hBj2gGoDUvG"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01McBq5kRrarA9qtpBYq7Uoe",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "## Approach\n\n### 1. New `core/src/doctor.rs` — types and `diagnose`\n\nDefine the core types:\n\n```rust\npub enum Status { Ok, Warn, Fail, Info }\n\npub struct Check {\n    pub group:  &'static str,  // \"universal\" | \"standard\" | \"explore\"\n    pub name:   &'static str,\n    pub status: Status,\n    pub detail: String,\n    pub hint:   Option<String>,\n}\n\npub struct Report {\n    pub mode:   Mode,        // declared mode from GroveConfig (not Surface)\n    pub checks: Vec<Check>,\n}\n\nimpl Report {\n    pub fn ok(&self) -> bool { /* true when no check has Status::Fail */ }\n}\n\npub fn diagnose(root: &Path, force: ModeChoice) -> Report { … }\n```\n\n`diagnose` is pure and read-only; it composes existing primitives.\n\n**Mode resolution** — call `active_mode(root, force)` (T03 shared helper).\nThe report's `mode` field is the `GroveConfig::mode` value (declared tag,\nnot the CLI-side `Surface` runtime enum). If no config exists, fall back to\n`Mode::Mcp` (same as `active_mode` does) and record that via an info check.\n\n---\n\n### 2. Universal checks (run for every project)\n\nAll results are appended in order to `report.checks` with `group: \"universal\"`.\n\n| Check name | Logic | Status |\n|---|---|---|\n| `grove_version` | `env!(\"CARGO_PKG_VERSION\")` | Info |\n| `config_present` | `GroveConfig::load(root)` — field-named errors from the typed loader | Ok / Fail; Info if absent (unconfigured project) |\n| `legacy_explore_json` | `.grove/explore.json` exists without `.grove/config.json` | Warn with migration hint |\n| `harness_consistent` | **Headline check** — see §2a below | Ok / Fail (per file) / Warn |\n| `registry_root` | `registry::search_path()` — fail if no candidate `exists` | Ok / Fail |\n| `grammar_cache` | `registry::cache_root()` | Ok / Warn if None |\n| `project_languages` | Walk source extensions via `ignore` (same logic `init` uses) against `registry::available()` | Ok / Warn per missing lang |\n| `lock_integrity` | `registry::verify_lock(&root.join(\"grove.lock\"))` | per-grammar Match→Ok, Mismatch→Fail, Missing→Warn; absent lockfile→Warn/Info |\n\n#### 2a. Harness-consistency check (headline check)\n\nThis check compares `config.mode` against the three on-disk harness files,\nnaming every mismatched file in a dedicated `Check` (one per file so the JSON\nreport is queryable):\n\n**`.mcp.json` consistency** — parse the file if it exists; extract\n`doc[\"mcpServers\"][\"grove\"][\"args\"]`. Compare against the expected args for\n`config.mode`:\n- `Mcp | Both` → `[\"serve\"]`\n- `McpLlm` → `[\"serve\", \"--explore\"]`\n- `Skill | Grammars` → grove entry must be absent\n\nIf drift → `Status::Fail`, `detail` names the file and the expected vs actual\nargs, `hint` is \"run `grove init --as <mode>` to reconcile\".\n\n**`CLAUDE.md` consistency** — read the file (if present); detect the\n`<!-- grove:start -->` sentinel (the constant from `cli/src/init.rs`). Compare\nagainst the expected state for `config.mode`:\n- `Grammars` → no grove block expected; block present → Warn\n- `McpLlm` → grove block expected AND must contain `mcp__grove__explore`\n- `Mcp | Both` → grove block expected AND must contain `mcp__grove__outline`\n- `Skill` → grove block expected AND must contain \"grove skill\"\n\nDrift → `Status::Fail` or `Warn`, naming the file and the content mismatch.\n\n**`AGENTS.md` consistency** — same sentinel detection:\n- `McpLlm` → grove block expected; absent → Warn\n- All other modes → grove block must be absent; present → Warn\n\n**Surface `serve` would boot** — simulate `determine_surface` logic: if mode is\n`McpLlm` and `config.explore` is present, note `Surface::Explore`; else\n`Surface::Standard`. Report as an info check (`harness_serve_surface`) so the\noperator sees what `serve` would actually do.\n\nAll five sub-checks (`mcp_json`, `claude_md`, `agents_md`, `serve_surface`) are\nemitted individually so each file's drift is separately addressable in JSON mode.\n\n---\n\n### 3. Explore-mode checks (mode == McpLlm only)\n\nRun after universal checks; appended with `group: \"explore\"`.\n\n| Check name | Logic | Status |\n|---|---|---|\n| `explore_config_valid` | The `explore` section from `GroveConfig::load` must be present and pass `ExploreConfig::validate()` | Fail if absent or invalid |\n| `provider_reachable` | `health_probe(&cfg)` → `HealthError::Unreachable { url, detail }` → Fail; surface the built-in detail and the hint verbatim from `HealthError`'s `fmt` impl |\n| `model_served` | `health_probe` → `HealthError::ModelMissing { model, url, available }` → Fail; enrich hint with `list_models` output if it succeeds |\n| `allowed_tools_known` | Compare `cfg.allowed_tools` against `toolset::{READ, GLOB, GREP, GROVE}` | Warn per unrecognized entry |\n| `tap_config` | `cfg.tap` / `cfg.trace_retain` values | Info |\n\n---\n\n### 4. CLI dispatch in `cli/src/main.rs`\n\nAdd to `Cmd`:\n```rust\n/// Run a pre-flight health check (brew doctor / flutter doctor analogue).\nDoctor {\n    /// Project directory (default: current).\n    #[arg(default_value = \".\")]\n    path: PathBuf,\n    /// Force explore-mode checks even if config declares standard mode.\n    #[arg(long = \"explore\")]\n    explore: bool,\n    /// Force standard mode checks.\n    #[arg(long = \"standard\")]\n    standard: bool,\n},\n```\n\n**Human output** — grouped ✓ / ⚠ / ✗ table per `group`:\n```\ngrove doctor · <path> · mode: <mode>\n\n  Universal\n    ✓ grove <version>\n    ✓ config: .grove/config.json · mode=<mode>\n    ✗ harness drift: config.mode=mcp but .mcp.json registers `serve --explore`\n        → run `grove init --as mcp` to reconcile the harness to the declared mode\n    …\n\n  1 failure, 1 warning — (summary line)\n```\n\n**JSON output** (`--json`):\n```json\n{\n  \"path\": \"<absolute path>\",\n  \"mode\": \"<mode string>\",\n  \"ok\": <bool>,\n  \"checks\": [\n    {\"group\": \"…\", \"name\": \"…\", \"status\": \"ok|warn|fail|info\",\n     \"detail\": \"…\", \"hint\": null}\n  ],\n  \"summary\": {\"ok\": N, \"warn\": N, \"fail\": N, \"info\": N}\n}\n```\n\n**Exit code** — `std::process::exit(1)` when `!report.ok()`, under **both**\noutput formats. Engine arm returns `Ok(())` before the exit call so `?` works.\n\n---\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783196145629
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_0165c1N41aDbMiNZrk9L2kgb",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "# PLAN_REVIEW — GROVE-S03-T07: `grove doctor` (standalone review)\n## Summary\n## Revision Items\n## Advisory Notes\n\n[70 body lines omitted — 74 total]"
+        }
+      ],
+      "details": {
+        "compression": {
+          "tool": "artifact:read",
+          "before": 1179,
+          "after": 40,
+          "saved": 97
+        }
+      },
+      "isError": false,
+      "timestamp": 1783196145629
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01TKK88TobNpibGgvf3Su4ue",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "<!-- AUTO-GENERATED by /forge:init — confidence: 95% -->\n\n# Stack\n\n## Language & Runtime\n\n| Component | Technology | Version |\n|-----------|-----------|---------|\n| Language | Rust | 2021 edition |\n| WASM runtime | wasmtime (via tree-sitter wasm feature) | bundled with tree-sitter 0.25 |\n| Package manager | cargo | latest stable |\n\n## Core Dependencies\n\n| Crate | Version | Purpose |\n|-------|---------|---------|\n| tree-sitter | 0.25 (wasm feature) | Parse engine — loads grammars as WASM modules at runtime |\n| clap | 4 (derive feature) | CLI argument parsing |\n| serde / serde_json | 1 | JSON serialization for MCP and CLI output |\n| ureq | 2 (rustls) | HTTP client for `grove fetch` (grammar downloads) |\n| ignore | 0.4 | Gitignore-aware directory walking (same crate ripgrep uses) |\n| sha2 | 0.10 | Content hashing for lockfile integrity |\n| anyhow | 1 | Error handling |\n| dirs | 5 | OS-native cache/config directory resolution |\n| streaming-iterator | 0.1 | tree-sitter query cursor iteration |\n\n## Build Profile\n\n```toml\n[profile.release]\nlto = \"thin\"\nstrip = true\n```\n\nSingle-binary distribution: `cargo build --release --locked` produces one static binary with no runtime dependencies.\n\n## Test Framework\n\n- **cargo test** — `cargo test --release --locked`\n- Integration tests live in `tests/cli.rs` (374 lines of CLI smoke tests)\n- Unit tests are inline in source modules (`#[cfg(test)] mod tests`)\n\n## Lint / Type Check\n\n- **clippy** — `cargo clippy -- -D warnings` (warnings treated as errors)\n\n## Distribution Channels\n\n| Channel | Mechanism |\n|---------|-----------|\n| GitHub Releases | 5 cross-compiled binaries (linux x86_64, linux aarch64, macos x86_64, macos aarch64, windows x86_64) |\n| npm | `@entelligentsia/grove` — thin wrapper that downloads the platform binary on `npm install` |\n| Homebrew | Custom formula in `dist/homebrew/grove.rb` |\n| Install script | Direct binary download via GitHub Releases |\n\n## Grammar System\n\nGrammars are **not compiled into the binary**. They are:\n1. Fetched at runtime as WASM modules via `grove fetch`\n2. Cached in OS-native cache directories (`~/.cache/grove/grammars` on Linux)\n3. Pinned by `grove.lock` (content-addressed, sha256 integrity)\n\nThe registry ships 3 grammars in-source: JavaScript, Python, Rust.\n\n## MCP Server\n\nThe `grove serve` command runs an MCP server over **stdio** (JSON-RPC 2.0, newline-delimited). The protocol is implemented by hand — no async runtime, no external MCP SDK. Compatible with protocol versions `2025-06-18`, `2025-03-26`, `2024-11-05`."
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783196145629
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01FAzX27k2oz2TLTCXNZMBhK",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T07",
+            "artifact": "plan-review",
+            "section": "Revision Items"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_017qttYK2DbnYtnXCNVXxi3F",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T07",
+            "artifact": "task-prompt",
+            "section": "Acceptance Criteria"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 250,
+        "cacheRead": 14551,
+        "cacheWrite": 3180,
+        "totalTokens": 17982,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.0037500000000000003,
+          "cacheRead": 0.0043653,
+          "cacheWrite": 0.011925,
+          "total": 0.0200433
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783196145629,
+      "responseId": "msg_018EbDdCnv452RHSoxrmj7Zx"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01FAzX27k2oz2TLTCXNZMBhK",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "## Revision Items\n\n1. **Resolve harness-content constant ownership (headline check, blocking).**\n   The plan places the harness-consistency logic in `core::doctor` and says it\n   will \"detect the `<!-- grove:start -->` sentinel (the constant from\n   `cli/src/init.rs`)\" and compare CLAUDE.md/AGENTS.md content against markers\n   like `mcp__grove__explore` / `mcp__grove__outline` / `grove skill`. I\n   verified those are **private** items in `cli/src/init.rs`\n   (`const CLAUDE_START`, steering-block bodies) and that the crate dependency\n   runs **cli → core** (`cli/Cargo.toml` depends on `grove-cst`; core has no\n   cli dependency and cannot gain one without a cycle). Core therefore cannot\n   import them. Duplicating the strings into `core::doctor` is the wrong fix —\n   it lets the checker's expectations silently diverge from what `init` writes,\n   which is precisely the drift class doctor is meant to detect. Commit in the\n   plan to a **single source of truth**: promote the sentinel + per-mode\n   expected-content markers (and, ideally, the `mode → .mcp.json args` mapping)\n   into a shared `core` location that both `cli/src/init.rs` and `core::doctor`\n   consume. Note this touches T04's `init.rs` (constants move + re-import), so\n   call it out in \"Files to Modify\".\n\n2. **Fix the harness-drift unit-test strategy (follows from #1).** The plan's\n   unit tests \"mirror `reconcile_harness_transition_matrix` … reuse the same\n   `seed_lock` + `reconcile_harness` fixture setup.\" `reconcile_harness` and\n   `seed_lock` are **private cli test/impl helpers**; inline tests in\n   `core/src/doctor.rs` (core crate) cannot call them. Rework the drift matrix\n   to build fixtures directly in core — write `.mcp.json`, `CLAUDE.md`,\n   `AGENTS.md`, and `config.json` into a `tempdir` by hand, then call\n   `diagnose` — or, if the check ends up co-located with the constants, keep the\n   tests beside it. Either way the plan must not depend on cross-crate private\n   fixtures. (The `.mcp.json`-args sub-check itself is fine — core can parse\n   JSON and compare the args array without any cli constant; only the\n   CLAUDE.md/AGENTS.md **content** sub-checks and these fixtures are affected.)\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783196151636
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_017qttYK2DbnYtnXCNVXxi3F",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "## Acceptance Criteria\n\n1. `core::doctor` defines `Status { Ok, Warn, Fail, Info }`,\n   `Check { group, name, status, detail, hint }`, `Report { mode: Mode, checks }`\n   (`mode` is the core declared `Mode`, **not** the CLI `Surface`), and\n   `diagnose(root, force) -> Report`. Pure / read-only — no writes.\n2. Mode resolution uses the shared `active_mode(root, force)` (T03): no flag →\n   auto-detect (`config.mode == mcp-llm` ⇒ explore; else standard);\n   `--explore`/`--standard` force, same precedence as `serve`.\n3. **Universal checks** run for every project: grove version;\n   `config.json` present + loads + legal `mode`; **harness-consistency (headline)**\n   — declared `mode` vs `.mcp.json` grove args, the steering blocks in\n   `CLAUDE.md`/`AGENTS.md`, and the surface `serve` would boot; **fail on drift,\n   naming the mismatched file**; legacy `explore.json` present without\n   `config.json` → **warn** (pending migration); registry root + search order;\n   grammar cache presence; detected project languages vs available grammars.\n4. **`grove.lock` sha256 verify** via T06's `verify_lock`: present → per-language\n   Match/Mismatch/Missing, **fail on mismatch**; absent → warn/info (not fail).\n5. **Explore-mode checks** (resolved/forced explore): explore section validates;\n   `steering` legal; provider **reachable** (`health_probe` →\n   `HealthError::Unreachable`) and configured **model served**\n   (`HealthError::ModelMissing`, enriched via `list_models`), surfacing the\n   built-in fix hints **verbatim**; `allowed_tools` recognised (warn on unknown);\n   tap / trace_retain reported as info.\n6. `cli/src/main.rs` gains `Cmd::Doctor { path, explore, standard }` (+ the\n   global `--json`): renders a grouped ✓/⚠/✗ human table by default or the\n   machine-readable `{ path, mode, ok, checks[], summary }` under `--json`, and\n   sets the process **exit code** from `Report::ok()` — **0** when all checks\n   pass (warnings allowed), **non-zero** on any hard failure, under **both**\n   output formats. Engine stays in `core`; the verb only formats.\n7. Tests: unit-test `diagnose` using existing seams (`DownClient` /\n   `health_probe_against_unreachable_url_is_unreachable`, `client.rs`); unit-test\n   the **harness-consistency** check against the T04 transition matrix (shared\n   fixtures) — `Ok` after a clean `init`, `Fail`/`Warn` on hand-induced drift\n   (e.g. `config.mode=mcp` but `.mcp.json` carries `--explore`, or a stale\n   `AGENTS.md` explore block); integration-test the verb against the dev stub\n   (universal + standard, no network) and a dead `base_url` (explore failure).\n8. `cargo build` warning-clean, `cargo clippy -- -D warnings` clean, `cargo\n   test` green; `--help` documents `doctor`. Files end with a newline.\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783196151636
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Now I understand the problem clearly. The plan review identified two blockers:\n\n1. **Harness constant ownership**: The sentinel constants (`CLAUDE_START`, content markers) are private in `cli/src/init.rs`. Core cannot import them. The fix: **promote these constants/mappings into `core`**, so both `cli/src/init.rs` and `core::doctor` can consume them.\n\n2. **Unit test strategy**: The plan relies on cross-crate private fixtures (`reconcile_harness`, `seed_lock`). Instead, tests in `core::doctor` should build fixtures directly in a `tempdir`.\nLet me dig into the codebase to see what constants are defined in `cli/src/init.rs`, what's already available in `core`, and how to best restructure things.",
+          "thinkingSignature": "EqsHCmUIDxgCKkAPMUBy4T7WWI7dlGIdZMUC7DXWjwx8Y4qflybHgcZH2dfLE6y7FaRE2Gbe93bcfvsLwO6m9KGtraI/9xmQ7j3NMhFjbGF1ZGUtc29ubmV0LTQtNjgAQgh0aGlua2luZxIM6ch3V+1uot5qLR9vGgxE+sDikDRonxhGh80iMLMRf+Y0+MRWd/55APnyc+lMJHhFlEErkN9wgqzlYsutd3sRwuCVUy9txzU/uchQASrzBWKop9aDPBGYANK27KM1xDIHkCymcbWV2h9yqIQKANCvPRAyjyfvDfs16+ySMDq8COszIR053YRSwl+f1MXY83JK5jigEU9nKfVt1qzSYN04twCj7ZGqR0nvcfxkA+dlXswmNpSVAvNNsLn8d2UrAvmG/O7J3s7TkrFGuNrt9jXMFUUEzTFBZMb3o0S8kH80tDn6fAAd/ZLz/ctdU4Dqo/7SjnOotAucxTsj6BnlFGEKq2YNgSWVztIzXKPXUv5rA8b2TVBOzLAAc5vp2lMW9droxJoM8ynqIlxqEloCLqybsIi/pQajJXVB9J0O+lwU9npMqXcidpYPshAL315NOlny6Gc/a8aC7ZO6KjCO72YGACyqebw5vIyUqmzbKCK+Hl3syyiL/pNmerXFzTkMgOplPuzuknC5ispcICcuvSWaxd4MG9psQx6lNyM5fJ0p+Q1oxisootPdMOkwhPzqjYC0kMogwCheef6EwtI0vP6p5J+p6i7TkaatCz/3eJ9O3WjtrCY9Oj1JiL2nUoh3TbMuN346xmkU39SbD7JnnNmn84Yi9LX4MlPxY8ZSXEoJMiElU7ZODVXbsToZOf7XA3DF7zIjZKou1fjcLhJaMZTQPF3sno2Rka9jrCojb7qMs3ajJLOilWNTd40n8EzuFrsoye37g9qqX+n0ycvG5gJp3p2Uca2YFI279Tdtips4SVIuPX381izxLNs4NZ1ZukkVkHMKoQRKSRWIHno0tVvRrqfZjIRUwDoqPSxLDvSLmD3wfpqz6It+xHNNErk4iUo7Mw1X8inQnuSYw+jEyh0RPgZ++E2pc2s0oXlE31oD4B1R0Yo5mFfcUVSy42hK5ykk+fnAbCCjsxt3zbLzQziLK0YRQJx9gyZIKMZsz49kdt3KKf9qJ0nTeDthDWmgdqSAgPf83VCI03tVqu0VHAuKXqf1Qj/JH/vobATN4mv0kshI2mmSTduDVsew97KfCt7DEOEkptde8ewv185pzW28EFJoGAE="
+        },
+        {
+          "type": "text",
+          "text": "Now let me research the codebase to understand the current structure:"
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_014jzR7AyqHk5dqtCYaAz4fS",
+          "name": "mcp__grove__outline",
+          "arguments": {
+            "file": "cli/src/init.rs"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01KJR3Tx3jLJYq2TLeCX8bwd",
+          "name": "mcp__grove__outline",
+          "arguments": {
+            "file": "core/src/lib.rs"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 337,
+        "cacheRead": 17731,
+        "cacheWrite": 1786,
+        "totalTokens": 19855,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.0050550000000000005,
+          "cacheRead": 0.0053193,
+          "cacheWrite": 0.0066975,
+          "total": 0.0170748
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 212
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783196151636,
+      "responseId": "msg_01EkHWWXDLkarJ5bdsMyhCRx"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_014jzR7AyqHk5dqtCYaAz4fS",
+      "toolName": "mcp__grove__outline",
+      "content": [
+        {
+          "type": "text",
+          "text": "[{\"col\":10,\"id\":\"rust:cli/src/init.rs#Target@26\",\"kind\":\"class\",\"line\":26,\"name\":\"Target\",\"signature\":\"pub enum Target {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#writes_mcp@50\",\"kind\":\"method\",\"line\":50,\"name\":\"writes_mcp\",\"parent\":\"Target\",\"signature\":\"fn writes_mcp(self) -> bool {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#is_skill@53\",\"kind\":\"method\",\"line\":53,\"name\":\"is_skill\",\"parent\":\"Target\",\"signature\":\"fn is_skill(self) -> bool {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#writes_steering@59\",\"kind\":\"method\",\"line\":59,\"name\":\"writes_steering\",\"parent\":\"Target\",\"signature\":\"fn writes_steering(self) -> bool {\"},{\"col\":12,\"id\":\"rust:cli/src/init.rs#to_mode@65\",\"kind\":\"method\",\"line\":65,\"name\":\"to_mode\",\"parent\":\"Target\",\"signature\":\"pub fn to_mode(self) -> Mode {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#run@81\",\"kind\":\"function\",\"line\":81,\"name\":\"run\",\"signature\":\"pub fn run(root: &Path, target: Target, dry_run: bool) -> Result<()> {\"},{\"col\":4,\"id\":\"rust:cli/src/init.rs#reconcile_harness@184\",\"kind\":\"function\",\"line\":184,\"name\":\"reconcile_harness\",\"signature\":\"fn reconcile_harness(\"},{\"col\":4,\"id\":\"rust:cli/src/init.rs#mode_to_target@234\",\"kind\":\"function\",\"line\":234,\"name\":\"mode_to_target\",\"signature\":\"fn mode_to_target(mode: Mode) -> Target {\"},{\"col\":4,\"id\":\"rust:cli/src/init.rs#strip_steering_block@251\",\"kind\":\"function\",\"line\":251,\"name\":\"strip_steering_block\",\"signature\":\"fn strip_steering_block(root: &Path, filename: &str) -> Result<()> {\"},{\"col\":4,\"id\":\"rust:cli/src/init.rs#strip_grove_entry_from_mcp_json@299\",\"kind\":\"function\",\"line\":299,\"name\":\"strip_grove_entry_from_mcp_json\",\"signature\":\"fn strip_grove_entry_from_mcp_json(root: &Path) -> Result<()> {\"},{\"col\":4,\"id\":\"rust:cli/src/init.rs#write_mcp_json@324\",\"kind\":\"function\",\"line\":324,\"name\":\"write_mcp_json\",\"signature\":\"fn write_mcp_json(root: &Path) -> Result<String> {\"},{\"col\":4,\"id\":\"rust:cli/src/init.rs#write_mcp_json_with@331\",\"kind\":\"function\",\"line\":331,\"name\":\"write_mcp_json_with\",\"signature\":\"fn write_mcp_json_with(root: &Path, args: &[&str], message: &str) -> Result<String> {\"},{\"col\":4,\"id\":\"rust:cli/src/init.rs#write_claude_md@353\",\"kind\":\"function\",\"line\":353,\"name\":\"write_claude_md\",\"signature\":\"fn write_claude_md(root: &Path, langs: &[String], target: Target) -> Result<String> {\"},{\"col\":4,\"id\":\"rust:cli/src/init.rs#write_steering_md@367\",\"kind\":\"function\",\"line\":367,\"name\":\"write_steering_md\",\"signature\":\"fn write_steering_md(\"},{\"col\":4,\"id\":\"rust:cli/src/init.rs#write_mcp_json_explore@390\",\"kind\":\"function\",\"line\":390,\"name\":\"write_mcp_json_explore\",\"signature\":\"fn write_mcp_json_explore(root: &Path) -> Result<String> {\"},{\"col\":4,\"id\":\"rust:cli/src/init.rs#write_agents_md@400\",\"kind\":\"function\",\"line\":400,\"name\":\"write_agents_md\",\"signature\":\"fn write_agents_md(root: &Path, langs: &[String], target: Target) -> Result<String> {\"},{\"col\":4,\"id\":\"rust:cli/src/init.rs#agents_section@412\",\"kind\":\"function\",\"line\":412,\"name\":\"agents_section\",\"signature\":\"fn agents_section(langs: &[String], _target: Target) -> String {\"},{\"col\":4,\"id\":\"rust:cli/src/init.rs#claude_section@452\",\"kind\":\"function\",\"line\":452,\"name\":\"claude_section\",\"signature\":\"fn claude_section(langs: &[String], target: Target) -> String {\"},{\"col\":5,\"id\":\"rust:cli/src/init.rs#tests@554\",\"kind\":\"module\",\"line\":554,\"name\":\"tests\",\"signature\":\"mod tests {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#tmp@558\",\"kind\":\"method\",\"line\":558,\"name\":\"tmp\",\"parent\":\"tests\",\"signature\":\"fn tmp(tag: &str) -> std::path::PathBuf {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#claude_section_mcp_is_delimited_and_names_langs_and_prefix@565\",\"kind\":\"method\",\"line\":565,\"name\":\"claude_section_mcp_is_delimited_and_names_langs_and_prefix\",\"parent\":\"tests\",\"signature\":\"fn claude_section_mcp_is_delimited_and_names_langs_and_prefix() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#claude_section_skill_is_thin_and_defers_to_skill@575\",\"kind\":\"method\",\"line\":575,\"name\":\"claude_section_skill_is_thin_and_defers_to_skill\",\"parent\":\"tests\",\"signature\":\"fn claude_section_skill_is_thin_and_defers_to_skill() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#claude_section_mcp_routes_grove_and_shell@586\",\"kind\":\"method\",\"line\":586,\"name\":\"claude_section_mcp_routes_grove_and_shell\",\"parent\":\"tests\",\"signature\":\"fn claude_section_mcp_routes_grove_and_shell() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#write_claude_md_creates_then_updates_idempotently@598\",\"kind\":\"method\",\"line\":598,\"name\":\"write_claude_md_creates_then_updates_idempotently\",\"parent\":\"tests\",\"signature\":\"fn write_claude_md_creates_then_updates_idempotently() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#write_claude_md_appends_below_existing_content@619\",\"kind\":\"method\",\"line\":619,\"name\":\"write_claude_md_appends_below_existing_content\",\"parent\":\"tests\",\"signature\":\"fn write_claude_md_appends_below_existing_content() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#write_mcp_json_registers_grove_and_preserves_other_servers@634\",\"kind\":\"method\",\"line\":634,\"name\":\"write_mcp_json_registers_grove_and_preserves_other_servers\",\"parent\":\"tests\",\"signature\":\"fn write_mcp_json_registers_grove_and_preserves_other_servers() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#write_mcp_json_creates_file_when_absent@649\",\"kind\":\"method\",\"line\":649,\"name\":\"write_mcp_json_creates_file_when_absent\",\"parent\":\"tests\",\"signature\":\"fn write_mcp_json_creates_file_when_absent() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#write_mcp_json_errors_on_invalid_existing_json@658\",\"kind\":\"method\",\"line\":658,\"name\":\"write_mcp_json_errors_on_invalid_existing_json\",\"parent\":\"tests\",\"signature\":\"fn write_mcp_json_errors_on_invalid_existing_json() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#target_default_is_mcp_and_flags_route_correctly@667\",\"kind\":\"method\",\"line\":667,\"name\":\"target_default_is_mcp_and_flags_route_correctly\",\"parent\":\"tests\",\"signature\":\"fn target_default_is_mcp_and_flags_route_correctly() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#seed_lock@682\",\"kind\":\"method\",\"line\":682,\"name\":\"seed_lock\",\"parent\":\"tests\",\"signature\":\"fn seed_lock(dir: &std::path::Path) {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#strip_steering_block_removes_block_leaves_host_content@693\",\"kind\":\"method\",\"line\":693,\"name\":\"strip_steering_block_removes_block_leaves_host_content\",\"parent\":\"tests\",\"signature\":\"fn strip_steering_block_removes_block_leaves_host_content() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#strip_steering_block_empties_file_when_block_only@717\",\"kind\":\"method\",\"line\":717,\"name\":\"strip_steering_block_empties_file_when_block_only\",\"parent\":\"tests\",\"signature\":\"fn strip_steering_block_empties_file_when_block_only() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#strip_steering_block_noop_when_no_block@734\",\"kind\":\"method\",\"line\":734,\"name\":\"strip_steering_block_noop_when_no_block\",\"parent\":\"tests\",\"signature\":\"fn strip_steering_block_noop_when_no_block() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#strip_steering_block_noop_when_absent@748\",\"kind\":\"method\",\"line\":748,\"name\":\"strip_steering_block_noop_when_absent\",\"parent\":\"tests\",\"signature\":\"fn strip_steering_block_noop_when_absent() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#strip_grove_entry_from_mcp_json_removes_grove_key@760\",\"kind\":\"method\",\"line\":760,\"name\":\"strip_grove_entry_from_mcp_json_removes_grove_key\",\"parent\":\"tests\",\"signature\":\"fn strip_grove_entry_from_mcp_json_removes_grove_key() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#strip_grove_entry_from_mcp_json_noop_when_absent@778\",\"kind\":\"method\",\"line\":778,\"name\":\"strip_grove_entry_from_mcp_json_noop_when_absent\",\"parent\":\"tests\",\"signature\":\"fn strip_grove_entry_from_mcp_json_noop_when_absent() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#strip_grove_entry_from_mcp_json_noop_when_no_grove_key@787\",\"kind\":\"method\",\"line\":787,\"name\":\"strip_grove_entry_from_mcp_json_noop_when_no_grove_key\",\"parent\":\"tests\",\"signature\":\"fn strip_grove_entry_from_mcp_json_noop_when_no_grove_key() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#assert_mcp_json_consistent@805\",\"kind\":\"method\",\"line\":805,\"name\":\"assert_mcp_json_consistent\",\"parent\":\"tests\",\"signature\":\"fn assert_mcp_json_consistent(dir: &std::path::Path, mode: Mode) {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#assert_claude_md_consistent@850\",\"kind\":\"method\",\"line\":850,\"name\":\"assert_claude_md_consistent\",\"parent\":\"tests\",\"signature\":\"fn assert_claude_md_consistent(dir: &std::path::Path, mode: Mode) {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#assert_agents_md_consistent@902\",\"kind\":\"method\",\"line\":902,\"name\":\"assert_agents_md_consistent\",\"parent\":\"tests\",\"signature\":\"fn assert_agents_md_consistent(dir: &std::path::Path, mode: Mode) {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#reconcile_harness_transition_matrix@929\",\"kind\":\"method\",\"line\":929,\"name\":\"reconcile_harness_transition_matrix\",\"parent\":\"tests\",\"signature\":\"fn reconcile_harness_transition_matrix() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#reconcile_harness_preserves_host_content@961\",\"kind\":\"method\",\"line\":961,\"name\":\"reconcile_harness_preserves_host_content\",\"parent\":\"tests\",\"signature\":\"fn reconcile_harness_preserves_host_content() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#reconcile_harness_then_save_config_active_mode@1015\",\"kind\":\"method\",\"line\":1015,\"name\":\"reconcile_harness_then_save_config_active_mode\",\"parent\":\"tests\",\"signature\":\"fn reconcile_harness_then_save_config_active_mode() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#claude_section_mcp_llm_routes_explore_not_individual_tools@1046\",\"kind\":\"method\",\"line\":1046,\"name\":\"claude_section_mcp_llm_routes_explore_not_individual_tools\",\"parent\":\"tests\",\"signature\":\"fn claude_section_mcp_llm_routes_explore_not_individual_tools() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#agents_section_mcp_llm_routes_explore_not_individual_tools@1056\",\"kind\":\"method\",\"line\":1056,\"name\":\"agents_section_mcp_llm_routes_explore_not_individual_tools\",\"parent\":\"tests\",\"signature\":\"fn agents_section_mcp_llm_routes_explore_not_individual_tools() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#reconcile_harness_mcp_llm_writes_mcp_json_explore_and_steering@1066\",\"kind\":\"method\",\"line\":1066,\"name\":\"reconcile_harness_mcp_llm_writes_mcp_json_explore_and_steering\",\"parent\":\"tests\",\"signature\":\"fn reconcile_harness_mcp_llm_writes_mcp_json_explore_and_steering() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#write_agents_md_creates_then_updates_idempotently@1088\",\"kind\":\"method\",\"line\":1088,\"name\":\"write_agents_md_creates_then_updates_idempotently\",\"parent\":\"tests\",\"signature\":\"fn write_agents_md_creates_then_updates_idempotently() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#write_agents_md_appends_below_existing_content@1108\",\"kind\":\"method\",\"line\":1108,\"name\":\"write_agents_md_appends_below_existing_content\",\"parent\":\"tests\",\"signature\":\"fn write_agents_md_appends_below_existing_content() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#write_mcp_json_explore_registers_with_explore_flag@1123\",\"kind\":\"method\",\"line\":1123,\"name\":\"write_mcp_json_explore_registers_with_explore_flag\",\"parent\":\"tests\",\"signature\":\"fn write_mcp_json_explore_registers_with_explore_flag() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#write_mcp_json_explore_preserves_other_servers@1136\",\"kind\":\"method\",\"line\":1136,\"name\":\"write_mcp_json_explore_preserves_other_servers\",\"parent\":\"tests\",\"signature\":\"fn write_mcp_json_explore_preserves_other_servers() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#grammars_target_writes_no_harness_files@1156\",\"kind\":\"method\",\"line\":1156,\"name\":\"grammars_target_writes_no_harness_files\",\"parent\":\"tests\",\"signature\":\"fn grammars_target_writes_no_harness_files() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#skill_target_writes_steering_but_no_mcp_json@1182\",\"kind\":\"method\",\"line\":1182,\"name\":\"skill_target_writes_steering_but_no_mcp_json\",\"parent\":\"tests\",\"signature\":\"fn skill_target_writes_steering_but_no_mcp_json() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#mcp_target_writes_mcp_json_and_steering@1200\",\"kind\":\"method\",\"line\":1200,\"name\":\"mcp_target_writes_mcp_json_and_steering\",\"parent\":\"tests\",\"signature\":\"fn mcp_target_writes_mcp_json_and_steering() {\"},{\"col\":8,\"id\":\"rust:cli/src/init.rs#both_target_writes_mcp_json_and_steering@1213\",\"kind\":\"method\",\"line\":1213,\"name\":\"both_target_writes_mcp_json_and_steering\",\"parent\":\"tests\",\"signature\":\"fn both_target_writes_mcp_json_and_steering() {\"}]"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783196160429
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01KJR3Tx3jLJYq2TLeCX8bwd",
+      "toolName": "mcp__grove__outline",
+      "content": [
+        {
+          "type": "text",
+          "text": "[{\"col\":9,\"id\":\"rust:core/src/lib.rs#config@42\",\"kind\":\"module\",\"line\":42,\"name\":\"config\",\"signature\":\"pub mod config;\"},{\"col\":9,\"id\":\"rust:core/src/lib.rs#engine@43\",\"kind\":\"module\",\"line\":43,\"name\":\"engine\",\"signature\":\"pub mod engine;\"},{\"col\":9,\"id\":\"rust:core/src/lib.rs#explore@44\",\"kind\":\"module\",\"line\":44,\"name\":\"explore\",\"signature\":\"pub mod explore;\"},{\"col\":9,\"id\":\"rust:core/src/lib.rs#init@45\",\"kind\":\"module\",\"line\":45,\"name\":\"init\",\"signature\":\"pub mod init;\"},{\"col\":9,\"id\":\"rust:core/src/lib.rs#ops@46\",\"kind\":\"module\",\"line\":46,\"name\":\"ops\",\"signature\":\"pub mod ops;\"},{\"col\":9,\"id\":\"rust:core/src/lib.rs#registry@47\",\"kind\":\"module\",\"line\":47,\"name\":\"registry\",\"signature\":\"pub mod registry;\"},{\"col\":9,\"id\":\"rust:core/src/lib.rs#fetch@48\",\"kind\":\"module\",\"line\":48,\"name\":\"fetch\",\"signature\":\"pub mod fetch;\"},{\"col\":9,\"id\":\"rust:core/src/lib.rs#ingest@49\",\"kind\":\"module\",\"line\":49,\"name\":\"ingest\",\"signature\":\"pub mod ingest;\"}]"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783196160429
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Interesting! There's a `core/src/init.rs` AND a `cli/src/init.rs`. Let me explore both to understand the relationship.",
+          "thinkingSignature": "EsACCmUIDxgCKkDijd/oeTtk2Q8NW1bHKZIQFPKFldxH9c26nC6B9YsMV1CMOHl1zaPd+W9r29Shr1WtsQ8yDv4dBJeqAjBiLZleMhFjbGF1ZGUtc29ubmV0LTQtNjgAQgh0aGlua2luZxIMqjs/pdMBsDJn2u7KGgzCDcgn+VqJTCoJ2/MiMJgCUREmHEgnhpGpj+LKszDpd66kvGXnrgBoQCIEkO0y7Zd5fNk5n8cZ5XqOz6nqIiqIAT1/iHBYIxBASSnky7TlkPqs2VLQpWcRylnXPcC4kxQy8p5y69jaa59DrSPcOk6ka5Tg/sGME3VDkNN0Ab5+VwQyzkS84uCMJylu7KYyZoYJMkwhbdReWJ01xjlEO+ZV4fkz97hFOeFl+Pu71CF/nNCluizvCLOT9Hy1RtxndOIuidnG8f0S39IYAQ=="
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01Suq2GnUfb6VEGKSmCE7DCx",
+          "name": "mcp__grove__outline",
+          "arguments": {
+            "file": "core/src/init.rs"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01QxrgUZckHoaR1NpjtWVatD",
+          "name": "read",
+          "arguments": {
+            "path": "cli/src/init.rs",
+            "offset": 1,
+            "limit": 80
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 186,
+        "cacheRead": 19517,
+        "cacheWrite": 4928,
+        "totalTokens": 24632,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.00279,
+          "cacheRead": 0.005855099999999999,
+          "cacheWrite": 0.01848,
+          "total": 0.0271281
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 47
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783196160429,
+      "responseId": "msg_01HNnCdCbosFtiVAU8VshteT"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01Suq2GnUfb6VEGKSmCE7DCx",
+      "toolName": "mcp__grove__outline",
+      "content": [
+        {
+          "type": "text",
+          "text": "[{\"col\":8,\"id\":\"rust:core/src/init.rs#provision_project@29\",\"kind\":\"function\",\"line\":29,\"name\":\"provision_project\",\"signature\":\"pub fn provision_project(root: &Path, dry_run: bool) -> Result<Vec<String>> {\"},{\"col\":4,\"id\":\"rust:core/src/init.rs#extension_map@96\",\"kind\":\"function\",\"line\":96,\"name\":\"extension_map\",\"signature\":\"fn extension_map() -> (HashMap<String, String>, bool) {\"},{\"col\":4,\"id\":\"rust:core/src/init.rs#is_cached@122\",\"kind\":\"function\",\"line\":122,\"name\":\"is_cached\",\"signature\":\"fn is_cached(lang: &str) -> bool {\"},{\"col\":5,\"id\":\"rust:core/src/init.rs#tests@127\",\"kind\":\"module\",\"line\":127,\"name\":\"tests\",\"signature\":\"mod tests {\"},{\"col\":8,\"id\":\"rust:core/src/init.rs#tmp@130\",\"kind\":\"method\",\"line\":130,\"name\":\"tmp\",\"parent\":\"tests\",\"signature\":\"fn tmp(tag: &str) -> std::path::PathBuf {\"},{\"col\":8,\"id\":\"rust:core/src/init.rs#provision_empty_project_writes_nothing_and_returns_empty@138\",\"kind\":\"method\",\"line\":138,\"name\":\"provision_empty_project_writes_nothing_and_returns_empty\",\"parent\":\"tests\",\"signature\":\"fn provision_empty_project_writes_nothing_and_returns_empty() {\"},{\"col\":8,\"id\":\"rust:core/src/init.rs#provision_dry_run_writes_no_lock_and_returns_empty@148\",\"kind\":\"method\",\"line\":148,\"name\":\"provision_dry_run_writes_no_lock_and_returns_empty\",\"parent\":\"tests\",\"signature\":\"fn provision_dry_run_writes_no_lock_and_returns_empty() {\"}]"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783196166662
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01QxrgUZckHoaR1NpjtWVatD",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "//! `grove init` — make a project one where the agent actually uses grove.\n//!\n//! Two halves, per VISION §6.4.1: registration (`.mcp.json`) makes the tools\n//! *available*; a steering directive (`CLAUDE.md`) makes them *adopted*. Plus a\n//! `grove.lock` pinning the grammars the project needs. Idempotent: re-running\n//! updates the grove pieces without clobbering anything else.\n\nuse std::io::IsTerminal;\nuse std::path::Path;\n\nuse anyhow::{Context, Result};\nuse clap::ValueEnum;\nuse serde_json::{json, Value};\n\nuse grove_core::config::{GroveConfig, Mode};\nuse grove_core::init::provision_project;\nuse grove_core::registry;\nuse grove_core::ExploreConfig;\n\nconst CLAUDE_START: &str = \"<!-- grove:start -->\";\nconst CLAUDE_END: &str = \"<!-- grove:end -->\";\n\n/// Which integration `grove init` wires up. Grammar provisioning (fetch +\n/// `grove.lock`) happens for every target; this only selects the harness glue.\n#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]\npub enum Target {\n    /// Register the MCP server (`.mcp.json`) + a CLAUDE.md steering block.\n    #[default]\n    Mcp,\n    /// Grammars + a CLAUDE.md steering block (so a cold agent actually reaches\n    /// for grove instead of grep). The skill *artifact* is distributed via the\n    /// skills tool (`npx skills add Entelligentsia/grove`); init provisions and\n    /// steers — steering to the grove skill / CLI rather than MCP tools.\n    Skill,\n    /// Both of the above.\n    Both,\n    /// Register grove in explore-mode (`.mcp.json` with `serve --explore`) + sentinel\n    /// steering blocks in `CLAUDE.md` and `AGENTS.md` directing the agent through\n    /// `mcp__grove__explore`. Runs the config TUI on first init (when\n    /// `.grove/explore.json` is absent); skips TUI on re-runs and `--dry-run`.\n    McpLlm,\n    /// Grammars + `grove.lock` only — no `.mcp.json`, no CLAUDE.md steering.\n    /// For embedding hosts (e.g. an editor or agent runtime) that register\n    /// grove's tools themselves and supply their own steering; the project's\n    /// own files are left untouched.\n    Grammars,\n}\n\nimpl Target {\n    fn writes_mcp(self) -> bool {\n        matches!(self, Target::Mcp | Target::Both)\n    }\n    fn is_skill(self) -> bool {\n        matches!(self, Target::Skill | Target::Both)\n    }\n    /// Whether this target writes a CLAUDE.md steering block. Every target but\n    /// `Grammars` does — `Grammars` provisions grammars + the lock and nothing\n    /// else, leaving project-owned files (CLAUDE.md, `.mcp.json`) untouched.\n    fn writes_steering(self) -> bool {\n        !matches!(self, Target::Grammars)\n    }\n\n    /// Bridge from the CLI `Target` enum (clap-facing) to the store `Mode`\n    /// enum (config-facing). 1-to-1 mapping.\n    pub fn to_mode(self) -> Mode {\n        match self {\n            Target::Mcp => Mode::Mcp,\n            Target::Skill => Mode::Skill,\n            Target::Both => Mode::Both,\n            Target::McpLlm => Mode::McpLlm,\n            Target::Grammars => Mode::Grammars,\n        }\n    }\n}\n\n/// The key grove registers itself under in `.mcp.json`. Claude Code namespaces\n/// an MCP server's tools as `mcp__<key>__<tool>`, so this also determines the\n/// tool prefix the steering directive must use to name the real tools.\nconst MCP_SERVER_KEY: &str = \"grove\";\n\n\n[1142 more lines in file. Use offset=81 to continue.]"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783196166662
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01XqHYmQuGoD6T99BH7bE4oR",
+          "name": "read",
+          "arguments": {
+            "path": "cli/src/init.rs",
+            "offset": 81,
+            "limit": 160
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_017RPyGTyFC8aDNCGZ1aGJYL",
+          "name": "mcp__grove__outline",
+          "arguments": {
+            "file": "core/src/config.rs"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 136,
+        "cacheRead": 24445,
+        "cacheWrite": 1733,
+        "totalTokens": 26315,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.00204,
+          "cacheRead": 0.0073335,
+          "cacheWrite": 0.00649875,
+          "total": 0.01587525
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783196166662,
+      "responseId": "msg_013QbCrkbTkiPSJ4Bh4nvqw4"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01XqHYmQuGoD6T99BH7bE4oR",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "pub fn run(root: &Path, target: Target, dry_run: bool) -> Result<()> {\n    println!(\"grove init  scanning {} (as {:?})\\n\", root.display(), target);\n\n    // Load prior config (old mode) — used for reconcile_harness and explore-config preservation.\n    let old_cfg = GroveConfig::load(root).ok();\n    let old_mode: Option<Mode> = old_cfg.as_ref().map(|c| c.mode);\n\n    // Non-TTY guard for McpLlm first-run: the TUI requires an interactive terminal\n    // to collect the explore backend configuration. Re-runs (when config.json\n    // already exists with mcp-llm mode or explore.json exists) and --dry-run\n    // bypass this guard so CI re-runs are never blocked after the first\n    // interactive session.\n    let already_configured = old_mode == Some(Mode::McpLlm)\n        || root.join(\".grove\").join(\"explore.json\").exists();\n    if target == Target::McpLlm\n        && !dry_run\n        && !already_configured\n        && !std::io::stdout().is_terminal()\n    {\n        anyhow::bail!(\n            \"`grove init --as mcp-llm` requires an interactive terminal for the \\\n             first-run configuration. Run it in a real terminal, or pre-create \\\n             `.grove/explore.json` to skip the TUI on subsequent runs.\"\n        );\n    }\n\n    // Provision grammars + the lock (clap-free core). An empty return is the\n    // contract for \"nothing provisioned\" — a dry-run / no-files / no-cached-\n    // grammars short-circuit; core already printed its terminal line, so stop.\n    let provisioned = provision_project(root, dry_run)?;\n\n    // For McpLlm dry-run: print the harness files that would be written BEFORE\n    // the is_empty() early-return that provision_project triggers on --dry-run.\n    if target == Target::McpLlm && dry_run {\n        println!(\"  would write  .mcp.json (explore-mode registration)\");\n        println!(\"  would write  CLAUDE.md (explore-mode steering)\");\n        println!(\"  would write  AGENTS.md (explore-mode steering)\");\n    }\n\n    if provisioned.is_empty() {\n        return Ok(());\n    }\n\n    // First-run TUI: launch the config TUI to create .grove/explore.json when\n    // it doesn't exist yet. Skipped on re-runs (file already there).\n    if target == Target::McpLlm && !root.join(\".grove\").join(\"explore.json\").exists() {\n        crate::config_tui::run(root, None)?;\n    }\n\n    // Reconcile the harness glue to match new_mode, then extend with provisioning\n    // actions — preserving report order: `.mcp.json`, `CLAUDE.md`, `grove.lock`.\n    let new_mode = target.to_mode();\n    let mut wrote = reconcile_harness(root, old_mode, new_mode)?;\n    wrote.extend(provisioned);\n\n    // Save the new config.json so active_mode reflects the chosen target.\n    let explore = if target == Target::McpLlm {\n        // Prefer config.json (TUI writes here); fall back to legacy explore.json,\n        // then to the explore section of the pre-run config.\n        GroveConfig::load(root).ok().and_then(|c| c.explore)\n            .or_else(|| ExploreConfig::load(root).ok())\n            .or_else(|| old_cfg.as_ref().and_then(|c| c.explore.clone()))\n    } else {\n        // Preserve existing explore config across mode switches.\n        old_cfg.as_ref().and_then(|c| c.explore.clone())\n    };\n    let new_cfg = GroveConfig { version: 1, mode: new_mode, explore };\n    new_cfg.save(root)?;\n\n    println!(\"\\n  wrote\");\n    for w in &wrote {\n        println!(\"             ✓ {w}\");\n    }\n    if target == Target::McpLlm {\n        println!(\"\\n  ready      `mcp__grove__explore` is your single code-exploration surface.\");\n        println!(\"             While the local model is healthy, all code questions route there.\");\n        println!(\"             If the provider goes down, grove auto-surfaces the 7 structural\");\n        println!(\"             tools (outline · symbols · source · callers · map · definition · check).\");\n    } else if target.writes_mcp() {\n        println!(\"\\n  ready      your agent now has grove's tools across its loop:\");\n        println!(\"             outline · symbols · source · callers · map · definition · check\");\n        println!(\"\\n  try it     start a fresh Claude Code session here and ask a\");\n        println!(\"             \\\"where/what/who-calls\\\" question — it routes through grove.\");\n    }\n    if target.is_skill() {\n        println!(\"\\n  skill      grammars + steering are ready. Install the cross-harness\");\n        println!(\"             skill with:  npx skills add Entelligentsia/grove\");\n        println!(\"             (it steers your agent to grove's MCP tools when present,\");\n        println!(\"              else the grove CLI — same engine either way.)\");\n    }\n    if !target.writes_steering() {\n        println!(\"\\n  grammars   provisioned + pinned (grove.lock). No project files were\");\n        println!(\"             modified — the embedding host registers grove's tools and\");\n        println!(\"             supplies its own steering.\");\n    }\n    Ok(())\n}\n\n/// Reconcile all three harness artifacts (`.mcp.json`, `CLAUDE.md`, `AGENTS.md`)\n/// toward `new_mode`. The `old_mode` parameter is accepted for forward-compatibility\n/// (future skip-if-already-correct optimisations) but the reconciliation always\n/// drives from on-disk state to `new_mode`. Stripped artifacts are silently\n/// reconciled (no entry in the returned list); only written artifacts are listed.\nfn reconcile_harness(\n    root: &Path,\n    _old_mode: Option<Mode>,\n    new_mode: Mode,\n) -> Result<Vec<String>> {\n    let mut wrote = Vec::new();\n\n    // Load langs for steering content (from grove.lock written by provision_project).\n    let langs = registry::locked_langs(&root.join(\"grove.lock\"))?;\n\n    // ── .mcp.json ──────────────────────────────────────────────────────────────\n    match new_mode {\n        Mode::Mcp | Mode::Both => {\n            wrote.push(write_mcp_json(root)?);\n        }\n        Mode::McpLlm => {\n            wrote.push(write_mcp_json_explore(root)?);\n        }\n        Mode::Skill | Mode::Grammars => {\n            strip_grove_entry_from_mcp_json(root)?;\n        }\n    }\n\n    // ── CLAUDE.md ──────────────────────────────────────────────────────────────\n    match new_mode {\n        Mode::Grammars => {\n            strip_steering_block(root, \"CLAUDE.md\")?;\n        }\n        _ => {\n            // Map Mode back to a Target for write_claude_md content selection.\n            let target = mode_to_target(new_mode);\n            wrote.push(write_claude_md(root, &langs, target)?);\n        }\n    }\n\n    // ── AGENTS.md ──────────────────────────────────────────────────────────────\n    match new_mode {\n        Mode::McpLlm => {\n            wrote.push(write_agents_md(root, &langs, Target::McpLlm)?);\n        }\n        _ => {\n            strip_steering_block(root, \"AGENTS.md\")?;\n        }\n    }\n\n    Ok(wrote)\n}\n\n/// Map a `Mode` back to the corresponding `Target` variant for content generation.\n/// This is the inverse of `Target::to_mode`.\nfn mode_to_target(mode: Mode) -> Target {\n    match mode {\n        Mode::Mcp => Target::Mcp,\n        Mode::Skill => Target::Skill,\n        Mode::Both => Target::Both,\n        Mode::McpLlm => Target::McpLlm,\n        Mode::Grammars => Target::Grammars,\n\n[982 more lines in file. Use offset=241 to continue.]"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783196169872
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_017RPyGTyFC8aDNCGZ1aGJYL",
+      "toolName": "mcp__grove__outline",
+      "content": [
+        {
+          "type": "text",
+          "text": "[{\"col\":10,\"id\":\"rust:core/src/config.rs#Mode@36\",\"kind\":\"class\",\"line\":36,\"name\":\"Mode\",\"signature\":\"pub enum Mode {\"},{\"col\":12,\"id\":\"rust:core/src/config.rs#from_name@55\",\"kind\":\"method\",\"line\":55,\"name\":\"from_name\",\"parent\":\"Mode\",\"signature\":\"pub fn from_name(s: &str) -> Result<Self> {\"},{\"col\":12,\"id\":\"rust:core/src/config.rs#GroveConfig@75\",\"kind\":\"class\",\"line\":75,\"name\":\"GroveConfig\",\"signature\":\"pub struct GroveConfig {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#default@88\",\"kind\":\"method\",\"line\":88,\"name\":\"default\",\"parent\":\"GroveConfig\",\"signature\":\"fn default() -> Self {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#RawGroveConfig@101\",\"kind\":\"class\",\"line\":101,\"name\":\"RawGroveConfig\",\"signature\":\"struct RawGroveConfig {\"},{\"col\":10,\"id\":\"rust:core/src/config.rs#Error@109\",\"kind\":\"class\",\"line\":109,\"name\":\"Error\",\"parent\":\"GroveConfig\",\"signature\":\"type Error = anyhow::Error;\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#try_from@111\",\"kind\":\"method\",\"line\":111,\"name\":\"try_from\",\"parent\":\"GroveConfig\",\"signature\":\"fn try_from(raw: RawGroveConfig) -> Result<Self> {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#LegacyExploreRaw@131\",\"kind\":\"class\",\"line\":131,\"name\":\"LegacyExploreRaw\",\"signature\":\"struct LegacyExploreRaw {\"},{\"col\":4,\"id\":\"rust:core/src/config.rs#default_legacy_trace_retain@146\",\"kind\":\"function\",\"line\":146,\"name\":\"default_legacy_trace_retain\",\"signature\":\"fn default_legacy_trace_retain() -> u32 {\"},{\"col\":4,\"id\":\"rust:core/src/config.rs#migrate_from_legacy_explore@157\",\"kind\":\"function\",\"line\":157,\"name\":\"migrate_from_legacy_explore\",\"signature\":\"fn migrate_from_legacy_explore(root: &Path) -> Result<GroveConfig> {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#deserialize@186\",\"kind\":\"method\",\"line\":186,\"name\":\"deserialize\",\"parent\":\"GroveConfig\",\"signature\":\"fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>\"},{\"col\":12,\"id\":\"rust:core/src/config.rs#config_path@198\",\"kind\":\"method\",\"line\":198,\"name\":\"config_path\",\"parent\":\"GroveConfig\",\"signature\":\"pub fn config_path(root: &Path) -> PathBuf {\"},{\"col\":12,\"id\":\"rust:core/src/config.rs#load@210\",\"kind\":\"method\",\"line\":210,\"name\":\"load\",\"parent\":\"GroveConfig\",\"signature\":\"pub fn load(root: &Path) -> Result<Self> {\"},{\"col\":12,\"id\":\"rust:core/src/config.rs#save@234\",\"kind\":\"method\",\"line\":234,\"name\":\"save\",\"parent\":\"GroveConfig\",\"signature\":\"pub fn save(&self, root: &Path) -> Result<()> {\"},{\"col\":12,\"id\":\"rust:core/src/config.rs#validate@250\",\"kind\":\"method\",\"line\":250,\"name\":\"validate\",\"parent\":\"GroveConfig\",\"signature\":\"pub fn validate(&self) -> Result<()> {\"},{\"col\":10,\"id\":\"rust:core/src/config.rs#ModeChoice@268\",\"kind\":\"class\",\"line\":268,\"name\":\"ModeChoice\",\"signature\":\"pub enum ModeChoice {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#active_mode@291\",\"kind\":\"function\",\"line\":291,\"name\":\"active_mode\",\"signature\":\"pub fn active_mode(root: &Path, force: ModeChoice) -> Mode {\"},{\"col\":5,\"id\":\"rust:core/src/config.rs#tests@313\",\"kind\":\"module\",\"line\":313,\"name\":\"tests\",\"signature\":\"mod tests {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#temp_root@317\",\"kind\":\"method\",\"line\":317,\"name\":\"temp_root\",\"parent\":\"tests\",\"signature\":\"fn temp_root(tag: &str) -> PathBuf {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#serde_round_trip_each_mode@323\",\"kind\":\"method\",\"line\":323,\"name\":\"serde_round_trip_each_mode\",\"parent\":\"tests\",\"signature\":\"fn serde_round_trip_each_mode() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#explore_section_absent_when_none@335\",\"kind\":\"method\",\"line\":335,\"name\":\"explore_section_absent_when_none\",\"parent\":\"tests\",\"signature\":\"fn explore_section_absent_when_none() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#explore_section_present_when_some@346\",\"kind\":\"method\",\"line\":346,\"name\":\"explore_section_present_when_some\",\"parent\":\"tests\",\"signature\":\"fn explore_section_present_when_some() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#bad_mode_error_names_field_and_legal_values@366\",\"kind\":\"method\",\"line\":366,\"name\":\"bad_mode_error_names_field_and_legal_values\",\"parent\":\"tests\",\"signature\":\"fn bad_mode_error_names_field_and_legal_values() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#steering_key_in_explore_section@378\",\"kind\":\"method\",\"line\":378,\"name\":\"steering_key_in_explore_section\",\"parent\":\"tests\",\"signature\":\"fn steering_key_in_explore_section() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#save_load_round_trip_atomic@397\",\"kind\":\"method\",\"line\":397,\"name\":\"save_load_round_trip_atomic\",\"parent\":\"tests\",\"signature\":\"fn save_load_round_trip_atomic() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#missing_file_actionable_error@425\",\"kind\":\"method\",\"line\":425,\"name\":\"missing_file_actionable_error\",\"parent\":\"tests\",\"signature\":\"fn missing_file_actionable_error() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#bad_version_rejected@437\",\"kind\":\"method\",\"line\":437,\"name\":\"bad_version_rejected\",\"parent\":\"tests\",\"signature\":\"fn bad_version_rejected() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#migrate_legacy_explore_writes_config_json@448\",\"kind\":\"method\",\"line\":448,\"name\":\"migrate_legacy_explore_writes_config_json\",\"parent\":\"tests\",\"signature\":\"fn migrate_legacy_explore_writes_config_json() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#second_load_after_migration_reads_config_not_legacy@486\",\"kind\":\"method\",\"line\":486,\"name\":\"second_load_after_migration_reads_config_not_legacy\",\"parent\":\"tests\",\"signature\":\"fn second_load_after_migration_reads_config_not_legacy() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#config_json_present_ignores_stale_explore_json@523\",\"kind\":\"method\",\"line\":523,\"name\":\"config_json_present_ignores_stale_explore_json\",\"parent\":\"tests\",\"signature\":\"fn config_json_present_ignores_stale_explore_json() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#active_mode_force_standard_returns_mcp@557\",\"kind\":\"method\",\"line\":557,\"name\":\"active_mode_force_standard_returns_mcp\",\"parent\":\"tests\",\"signature\":\"fn active_mode_force_standard_returns_mcp() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#active_mode_force_explore_returns_mcp_llm@571\",\"kind\":\"method\",\"line\":571,\"name\":\"active_mode_force_explore_returns_mcp_llm\",\"parent\":\"tests\",\"signature\":\"fn active_mode_force_explore_returns_mcp_llm() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#active_mode_none_reads_declared_mcp_mode@585\",\"kind\":\"method\",\"line\":585,\"name\":\"active_mode_none_reads_declared_mcp_mode\",\"parent\":\"tests\",\"signature\":\"fn active_mode_none_reads_declared_mcp_mode() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#active_mode_none_reads_declared_mcp_llm_mode@598\",\"kind\":\"method\",\"line\":598,\"name\":\"active_mode_none_reads_declared_mcp_llm_mode\",\"parent\":\"tests\",\"signature\":\"fn active_mode_none_reads_declared_mcp_llm_mode() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#active_mode_mcp_config_ignores_stale_explore_json@613\",\"kind\":\"method\",\"line\":613,\"name\":\"active_mode_mcp_config_ignores_stale_explore_json\",\"parent\":\"tests\",\"signature\":\"fn active_mode_mcp_config_ignores_stale_explore_json() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#active_mode_no_config_falls_back_to_mcp@631\",\"kind\":\"method\",\"line\":631,\"name\":\"active_mode_no_config_falls_back_to_mcp\",\"parent\":\"tests\",\"signature\":\"fn active_mode_no_config_falls_back_to_mcp() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#deprecation_warning_emitted@648\",\"kind\":\"method\",\"line\":648,\"name\":\"deprecation_warning_emitted\",\"parent\":\"tests\",\"signature\":\"fn deprecation_warning_emitted() {\"}]"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783196169872
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Now I understand the codebase better. The key insight is:\n\n1. `CLAUDE_START` and `CLAUDE_END` constants are defined in `cli/src/init.rs` (not `core/src/init.rs`)\n2. The harness-consistency sub-checks (content markers for different modes) are in `cli/src/init.rs`\n3. Core has `core/src/init.rs` but it's a different file (provisions project with grammars/lock)\n\nThe plan review says: the correct fix is to promote the sentinel constants and mode→expected-content mappings into `core` so both `cli/src/init.rs` and `core::doctor` can consume them.\nI need to examine the sentinel constants and the section-building functions in `cli/src/init.rs` to see exactly what needs to be extracted and moved into the core module.",
+          "thinkingSignature": "EuQHCmUIDxgCKkD8QYjCl0f7d31wuHzWDZw5SScHrPexzaSW7FmgjXxEA2/+1CKyW6SNbVQYKLLpdVKcqD4PJlG9n8eN5tltJJ4CMhFjbGF1ZGUtc29ubmV0LTQtNjgAQgh0aGlua2luZxIMqjvvKlT30JY81N8OGgzWGw5oVsp1b6LPg2IiMG5rhegS1xTuAUD3D4j6SGpiWe+3dHrMShPPpqrSHJoDfGUGjhqtDfPh5ifBxq29CCqsBmeDVnWhREu5Jq8Re85QtkVGXSfyBApvBZI20YTU1gokWwJmFHwbe79j8z4BIZv22cYGTKqfOCbro4VzncY+9hPG8LnV64fXAFHmoJ+ggU/IHDVO4J8EE8ZHi0Ce3Fx66dOBs/zBVSEjgj8QTEF63qDoD3idbc9yobTpK6T8htAmAkT2yCx0sZtv/iNMLPpcYFUlecBn6xyMdeMoHxo6kMJudCTRZ82id3QVGWRBIXlCnrE/7HsX9SoRRYAtTDplT3y+LPUoctgaqIp7f34RNvIwYJWHcfyOzTsJk9TeVhDdFuK4Hjmxgg6yAwBehYd5SL9T+mHgk1V3jEBgdEyAYhouFtXfKBudP/ptq3CptOrFsx7R3mk4yVlUTa6a/2M7/2r4DJP+Z7dxogcEZoXwA5VMsP2YUv1MBi8iC06dJKjgpFQ3eXhURgBsFxoLgIT7ZrygZhNKWPB3tCpc/qD5cUb88aPrIgDva1Ug1UmlRMggBvF573A2v2YHcS+hNs5pXx+QodeTjevU/QAzXXw+b9AHbkvKDyZnWH0/mnIk4k+Jv+RqWh8fPB/3n6sgoqnvITC476sa0Ix+8QGy87eaVO4WCaeiDP5wbAGgZ/IKkwzh7a+sOursLhAFU0VxcTNwGNjAfTpFa/W1EV1XV8XckR1E+RWFu8m4XpH9hh8xiZ+qHLVGcij0fVDqCn4B/iA9EkDy7E9A+SuHqS+ZJB2gsgq8VNNt9iNGqMJiH3TjLduH6bOfPXfE+UqOobGpwKd058eUWiz4nKVbxSaqSoNV//LPMSiSQvvZgP0gpkkqT8f1erZ7f0ZjcBUojZyMk4kae57SRJwYRDPe/Otf6H0bWA5CqqGIWtzYs0zF7gUinVFSXIaWvJv/oVBSrU7EnyJhCO0js6vmpeDseRu6Np30cthNiP2kVSorJsLGDxLG8qIIFQAeJPq89W3z3PNBKCxzZlGM6ExQ1znoYnpbvTx+imPoeNcaMqj9CfMdvC7n+dKhEVeM20XL4hwmWTQWAbFz1zJG9+JIw2x2Vp2IJFNDuc42jsOqTzvJ9QeHRPNzahiGGn9Us7bqAyHvsL33GAE="
+        },
+        {
+          "type": "text",
+          "text": "Let me read the key sections of cli/src/init.rs to understand what constants need to be promoted:"
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01GzceH9BiAutReZJn3Pp3Zn",
+          "name": "read",
+          "arguments": {
+            "path": "cli/src/init.rs",
+            "offset": 241,
+            "limit": 180
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_016EnLNBgB2afditf5eLLdus",
+          "name": "read",
+          "arguments": {
+            "path": "cli/src/init.rs",
+            "offset": 440,
+            "limit": 120
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 425,
+        "cacheRead": 26178,
+        "cacheWrite": 4781,
+        "totalTokens": 31385,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.0063750000000000005,
+          "cacheRead": 0.0078534,
+          "cacheWrite": 0.01792875,
+          "total": 0.03216015
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 233
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783196169872,
+      "responseId": "msg_013uwEzPsisfyRnb53xyrZwz"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01GzceH9BiAutReZJn3Pp3Zn",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "    }\n}\n\n/// Remove the `<!-- grove:start -->…<!-- grove:end -->` sentinel block from\n/// `filename` (under `root`), preserving all host-authored content outside the\n/// block. The blank-line separator that `write_steering_md` inserts before the\n/// block is also removed, so repeated A→B→A cycles never accrete blank lines.\n/// If the file is absent or has no grove block, returns `Ok(())` (no-op).\n/// If the block is the entire file, the file is written empty (not deleted).\n/// Ensures a single trailing newline when non-empty content remains.\nfn strip_steering_block(root: &Path, filename: &str) -> Result<()> {\n    let path = root.join(filename);\n    let text = match std::fs::read_to_string(&path) {\n        Ok(t) => t,\n        Err(_) => return Ok(()), // file absent — no-op\n    };\n\n    // No grove block present — no-op.\n    if !text.contains(CLAUDE_START) || !text.contains(CLAUDE_END) {\n        return Ok(());\n    }\n\n    let start = text.find(CLAUDE_START).unwrap();\n    let end = text.find(CLAUDE_END).unwrap() + CLAUDE_END.len();\n\n    // Compute the content before the block, trimming the \\n\\n separator that\n    // write_steering_md inserts when appending below existing content.\n    let before = text[..start].trim_end_matches('\\n');\n    let after = &text[end..];\n\n    let result = if before.is_empty() && after.trim().is_empty() {\n        // Block was the entire file — leave it empty.\n        String::new()\n    } else if before.is_empty() {\n        // Block was at the top; preserve everything after.\n        let s = after.trim_start_matches('\\n');\n        if s.is_empty() {\n            String::new()\n        } else {\n            format!(\"{s}\\n\")\n        }\n    } else {\n        // Host content precedes the block; re-join with single trailing newline.\n        let after_trimmed = after.trim();\n        if after_trimmed.is_empty() {\n            format!(\"{before}\\n\")\n        } else {\n            format!(\"{before}\\n\\n{after_trimmed}\\n\")\n        }\n    };\n\n    std::fs::write(&path, result).with_context(|| format!(\"writing {}\", path.display()))?;\n    Ok(())\n}\n\n/// Remove the `\"grove\"` key from `.mcp.json`'s `mcpServers` object, preserving\n/// all other servers. If the file is absent, has no `mcpServers` object, or has\n/// no `\"grove\"` entry, returns `Ok(())` (no-op). Errors on malformed JSON.\nfn strip_grove_entry_from_mcp_json(root: &Path) -> Result<()> {\n    let path = root.join(\".mcp.json\");\n    let text = match std::fs::read_to_string(&path) {\n        Ok(t) => t,\n        Err(_) => return Ok(()), // file absent — no-op\n    };\n\n    let mut doc: Value = serde_json::from_str(&text)\n        .with_context(|| format!(\"{} is not valid JSON\", path.display()))?;\n\n    // Check if grove entry exists before modifying.\n    if doc.get(\"mcpServers\").and_then(|s| s.get(MCP_SERVER_KEY)).is_none() {\n        return Ok(()); // no grove entry — no-op\n    }\n\n    if let Some(servers) = doc.get_mut(\"mcpServers\").and_then(|v| v.as_object_mut()) {\n        servers.remove(MCP_SERVER_KEY);\n    }\n\n    std::fs::write(&path, format!(\"{}\\n\", serde_json::to_string_pretty(&doc)?))\n        .with_context(|| format!(\"writing {}\", path.display()))?;\n    Ok(())\n}\n\n/// Add (or refresh) the grove MCP server in `.mcp.json`, preserving other servers.\nfn write_mcp_json(root: &Path) -> Result<String> {\n    write_mcp_json_with(root, &[\"serve\"], \".mcp.json (registration — the tools exist)\")\n}\n\n/// Register the grove MCP server in `.mcp.json` with the given `serve` args,\n/// preserving any other servers already present. Shared by the standard and\n/// explore-mode entry points, which differ only in the args and status message.\nfn write_mcp_json_with(root: &Path, args: &[&str], message: &str) -> Result<String> {\n    let path = root.join(\".mcp.json\");\n    let mut doc: Value = match std::fs::read_to_string(&path) {\n        Ok(text) => serde_json::from_str(&text)\n            .with_context(|| format!(\"{} is not valid JSON\", path.display()))?,\n        Err(_) => json!({}),\n    };\n    if !doc.is_object() {\n        doc = json!({});\n    }\n    let exe = std::env::current_exe().context(\"locating the grove binary\")?;\n    doc[\"mcpServers\"][MCP_SERVER_KEY] = json!({\n        \"command\": exe.to_string_lossy(),\n        \"args\": args,\n    });\n    std::fs::write(&path, format!(\"{}\\n\", serde_json::to_string_pretty(&doc)?))\n        .with_context(|| format!(\"writing {}\", path.display()))?;\n    Ok(message.to_string())\n}\n\n/// Write/refresh the grove steering section in `CLAUDE.md`, between markers, so\n/// re-running is idempotent and never disturbs the rest of the file.\nfn write_claude_md(root: &Path, langs: &[String], target: Target) -> Result<String> {\n    write_steering_md(\n        root,\n        \"CLAUDE.md\",\n        &claude_section(langs, target),\n        \"CLAUDE.md (steering — the tools get used)\",\n    )\n}\n\n/// Splice `section` (bracketed by `CLAUDE_START`/`CLAUDE_END`) into `filename`\n/// between those sentinels — replacing an existing block, appending below other\n/// content, or creating the file. Idempotent, and never disturbs the rest of the\n/// file. Shared by `write_claude_md` and `write_agents_md`, which differ only in\n/// the target file, the section body, and the status message.\nfn write_steering_md(\n    root: &Path,\n    filename: &str,\n    section: &str,\n    message: &str,\n) -> Result<String> {\n    let path = root.join(filename);\n    let existing = std::fs::read_to_string(&path).ok();\n    let updated = match existing {\n        Some(text) if text.contains(CLAUDE_START) && text.contains(CLAUDE_END) => {\n            let start = text.find(CLAUDE_START).unwrap();\n            let end = text.find(CLAUDE_END).unwrap() + CLAUDE_END.len();\n            format!(\"{}{}{}\", &text[..start], section, &text[end..])\n        }\n        Some(text) => format!(\"{}\\n\\n{}\\n\", text.trim_end(), section),\n        None => format!(\"{section}\\n\"),\n    };\n    std::fs::write(&path, updated).with_context(|| format!(\"writing {}\", path.display()))?;\n    Ok(message.to_string())\n}\n\n/// Add (or refresh) the grove MCP server in `.mcp.json` in explore-mode,\n/// registering `[\"serve\", \"--explore\"]`. Preserves other servers.\nfn write_mcp_json_explore(root: &Path) -> Result<String> {\n    write_mcp_json_with(\n        root,\n        &[\"serve\", \"--explore\"],\n        \".mcp.json (explore-mode registration)\",\n    )\n}\n\n/// Write/refresh the grove steering section in `AGENTS.md` via `write_steering_md`;\n/// uses harness-neutral framing (AGENTS.md is read by non-Claude harnesses too).\nfn write_agents_md(root: &Path, langs: &[String], target: Target) -> Result<String> {\n    write_steering_md(\n        root,\n        \"AGENTS.md\",\n        &agents_section(langs, target),\n        \"AGENTS.md (explore-mode steering)\",\n    )\n}\n\n/// The AGENTS.md steering block for McpLlm — harness-neutral framing so it is\n/// useful in non-Claude harnesses (e.g. Codex, Cline, Cursor) that also read\n/// AGENTS.md. Uses the same sentinel markers for idempotent updates.\nfn agents_section(langs: &[String], _target: Target) -> String {\n    let langs_str = langs.join(\", \");\n    format!(\n        \"{CLAUDE_START}\n## Code navigation: grove explore-mode\n\n**grove** is running in explore-mode (languages: {langs_str}). The `explore` tool\nexposed by the grove MCP server is a code **locator** backed by a local LLM and\ntree-sitter tools: it finds WHERE code lives and returns file:line citations.\n\n[802 more lines in file. Use offset=421 to continue.]"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783196178219
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_016EnLNBgB2afditf5eLLdus",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "{CLAUDE_END}\"\n    )\n}\n\n/// The steering block, tailored to how the agent reaches grove. The MCP target\n/// carries the full route-by-task guide inline (there is no skill file to defer\n/// to); the skill target is a thin version that defers to SKILL.md as the single\n/// source of truth. Both route by task — grove for named symbols / structure, the\n/// shell for text / non-code / quick facts, combining freely — rather than banning\n/// grep: a cold agent with no block at all defaults to grep / whole-file reads\n/// (VISION §6.4.1), and an over-rigid \"grove or violation\" block overcorrects into\n/// costly source fan-outs for things the shell does cheaply.\nfn claude_section(langs: &[String], target: Target) -> String {\n    let langs = langs.join(\", \");\n    if target == Target::McpLlm {\n        let p = format!(\"mcp__{MCP_SERVER_KEY}__\");\n        return format!(\n            \"{CLAUDE_START}\n## Code navigation: grove explore-mode\n\n**grove** is running in explore-mode (languages: {langs}). `{p}explore` is a code\n**locator** backed by a local LLM with tree-sitter + text tools — it finds WHERE\nrelevant code lives and returns file:line citations. It is not a full-analysis\noracle.\n\n**Ask it ONE narrow, single-focus question per call** (\\\"where is X defined\\\",\n\\\"which files handle Y\\\", \\\"who calls Z\\\") — not a broad multi-part task. For a\nquestion like \\\"how does feature F work\\\", don't delegate the whole thing: make a\nfew targeted `{p}explore` calls to locate the pieces, then read the cited spans\nand **synthesize the explanation yourself**. The local model is light and\novershoots on compound \\\"find everything and explain how it all works\\\" prompts.\nThe explore tool handles tool-selection internally; do **not** call the\nindividual structural tools (outline, symbols, source, callers, map, definition,\ncheck) directly while the local model is healthy — they are not exposed in\nexplore-mode.\n\n**Recommended flow to understand a feature:** (1) make a few narrow\n`{p}explore` calls to locate the pieces — iterate broad → symbol-specific, each\ncall refining from the last's results; (2) read the cited spans — yourself, or\nvia **one** focused subagent whose prompt cites those exact file:line locations;\n(3) synthesize. **Do not spawn a grep-based search subagent before locating with\ngrove** — that spends your metered context on what grove does locally for free.\n\n**Automatic fallback**: if the local model provider is unreachable, grove\nautomatically surfaces the 7 structural tools. They will appear in your tool\nlist and work identically to the standard MCP surface.\n\nFor text, configs, and non-code files, use the shell (`grep`, `rg`, `read`).\n{CLAUDE_END}\"\n        );\n    }\n    if target.writes_mcp() {\n        // Claude Code exposes the tools as `mcp__<server-key>__<tool>`; steer with\n        // those exact names. A future AGENTS.md/.cursorrules adapter passes its own.\n        let p = format!(\"mcp__{MCP_SERVER_KEY}__\");\n        format!(\n            \"{CLAUDE_START}\n## Code navigation: grove for structure, shell for the rest\n\n**grove** is a tree-sitter engine for *structural* code questions — byte-precise,\ntoken-cheap (languages: {langs}). Its tools are **deferred** MCP tools; load them in\none ToolSearch when a code question lands (don't default to a search agent or grep):\n`{p}outline`, `{p}symbols`, `{p}source`, `{p}callers`, `{p}definition`, `{p}map`, `{p}check`.\n\n**Use grove for named symbols and relationships** (every result carries a stable\n`symbol-id`, `<lang>:<relpath>#<name>@<row>`, to pass forward; lines 1-based):\n- What's in a file (skeleton, not the whole file) → `{p}outline` (`detail:0` if > 500 lines).\n- Where a fn / type / struct / macro is defined → `{p}symbols` with `name` → `{p}source` with the id.\n- One symbol's exact body → `{p}source`.\n- Who calls it → `{p}callers`.\n- Go-to-def from a usage (scope-aware, follows imports cross-file) → `{p}definition` with `at` (file:line:col).\n- How a directory connects → `{p}map` (one call; prefer over many `{p}source`).\n- Syntax after an edit → `{p}check`.\n\n**Use the shell — the right tool, not a fallback — when grove can't see the target:**\n- Text, not a symbol (a string, log / error message, config key, a macro's *value*,\n  a constant, a flag, a TODO) → `grep -rn` / `rg`. grove finds definitions, not text.\n- Non-code files (Makefiles, configs, data, docs) → `grep` / `read`.\n- A quick fact (path exists, `ls`, `wc -l`, `find`, read a small file) → shell.\n\n**Combine** (same 1-based lines, same bytes): `grep` a literal's line → `{p}definition`\n`at` to resolve its symbol · `{p}outline` → bounded `read` (`offset`/`limit`) for\nadjacent symbols · `{p}map` / `{p}symbols` to locate → `grep` a constant inside.\n\nRule of thumb: want a **symbol** → grove first (don't `grep` / `read` for it). Want\n**text or a quick fact** → shell. Combining is fine.\n{CLAUDE_END}\"\n        )\n    } else {\n        format!(\n            \"{CLAUDE_START}\n## Code navigation: grove for structure, shell for the rest\n\n**grove** (tree-sitter backed; languages: {langs}) answers *structural* code\nquestions — where a symbol is defined, who calls it, what's in a file, how a\ndirectory connects, syntax-check after edits — byte-precise and token-cheap. For a\n**named symbol or a structural relationship**, reach for grove (the **grove skill**,\nor the `grove` CLI — same engine) before `grep` or a whole-file `read`.\n\nUse the shell where grove can't see the target — it's the right tool, not a fallback:\n**text** (a string, log / error message, config key, constant, flag, TODO) → `grep` / `rg`;\n**non-code files** (Makefiles, configs, data, docs) → `grep` / `read`; a **quick fact**\n(path exists, `ls`, `wc -l`, `find`) → shell. Combining is fine — grove to navigate,\nthe shell to pin a literal or read a small region.\n\n**The procedure, recovery rule, and full command surface live in the grove skill —\nread it before answering a structural question.** It is the single source of truth;\ndon't rely on remembered flags.\n{CLAUDE_END}\"\n        )\n    }\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    use grove_core::config::{GroveConfig, Mode, ModeChoice};\n\n    fn tmp(tag: &str) -> std::path::PathBuf {\n        let dir = std::env::temp_dir().join(format!(\"grove_init_test_{}_{tag}\", std::process::id()));\n\n[663 more lines in file. Use offset=560 to continue.]"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783196178219
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Now I have a clear picture. The key findings:\n\n1. `CLAUDE_START = \"<!-- grove:start -->\"` and `CLAUDE_END = \"<!-- grove:end -->\"` are constants in `cli/src/init.rs`\n\n2. The per-mode expected content markers (like `mcp__grove__explore`, `mcp__grove__outline`, `grove skill`) are embedded inside `claude_section()` and `agents_section()` functions in `cli/src/init.rs`\n\n3. The dependency direction is **cli → core** (cli depends on grove-cst/grove-core; core cannot import cli)\n4. To fix the circular dependency issue, I need to move those sentinel constants and the mode-to-expected-content mappings up into the core module so that `core::doctor` can access them directly.\n\nLet me check the CLI's main entry point and see how commands are wired up, then look at what health-related functionality already exists in core.",
+          "thinkingSignature": "EoEICmUIDxgCKkBYJGA8SyMPGE3QbMiRcAxRgIZicD7qLtldpWOGNyxgkpKEnVYd6v8lAx0zZ4WvlXkmo8gun5oxq0rN61k+6Le6MhFjbGF1ZGUtc29ubmV0LTQtNjgAQgh0aGlua2luZxIM0wJISf+Uotjm90NUGgyu8g5oA4smmttpmWAiMIBY1UrIaX8bMT3dHyunKwt4F2XGcWkWNujP3wGDzrVO9DOLZyqZeGEZFLQu7v0u6yrJBjM4jT2w/jXkDG3Oa6PvRjK6SqUN497T3KoYouxkmarsNtS3WbyV6JYp2gPDplktJFB0qjvWcYogqvgWRYcwo7BaorG4wwOtu5K2EpgzO35wkh8XGZx1O1Zu9GuM29pYFB2sZS15i87k+s4D6lnSXdtlcFUiJjksrg9dk2gMvSPyrXlA8c8T94YBxNXgyvCCvbg9Wp8ZAiPhLeKd45L4WUPMtjblO/BtYEByxCrhrq/jddB9ZiX64Q8VZev0zaEZfg5vdFMUdOdSqOb1vAu5VtOwxhPEp3yJ4v4svCWYTd4jY+UX+RAv2eYEUBCOaRsYUX1hi1qP7b7qauQcVrcEBvoQwp3arvgergxh5Flu0ob4XW1pNeZFCq0cosSgFIoeB9zwdYLBe8JqjwGSvwCiYEVlnrajvVNm9qQPRsYNpIazhce6HERHJFiHPSe1gEGLf0sQ1kcY9tgC0n1DU5OKvGzgqWmXrAK5I67/UtV7K8BIssBp8ihnQG9jtgVXxB3zToWAQP0mYzSr8N3EKmEvoZIMYBlF11wuA1lrGRpdOxsn9rMrY+0/9xlh3p+TwYcteQKGFhHPjQ2zjhjH3J+/nCbpVpcFbmAuMgV6f+rOCF87BiMKJKAQLtFMF0cswYEGEaQa+rWwb+fgMJklEs2KUb8vyG4E1Lt6mBdHDYnnTlbbxFsDcJQacvIFefs8OuDQ4vahr2HpnEBye+hByvb9J5rNM5RE+o5nbR6T0GM1lDGzgTslJb/uoYNtf7vFhwrmdHp3AvI6hHwwzqg6I9hYSPRgTOMy09U0bBamRt1oVeIaFF5nN/NiH5P7OPin5I6URfY8Sjq1pw/P8SflZvdb8W7n31/KRqsJpNWrUAPqlw5y5KiADJzQSiGPFWkwDxGKieGIcdlljgC1TB5cMn9kF9282TKe/uAAsbo0cJ+Ids2KZwMrU0Y7t39EaNBURD0AB1kCPwW/UOAmlSAHTV7SNXksdh9R1Ag5dAAOMVJ9RvhtpgBZkYu4P6y7HsasolVrGhcJliC8YbimWDuxe0BSPRQYYTU45e+61g5kjt0yAe9jkdl+CkOU1P+Ga6tqEtk4bxEyQq6kyD++fdjBS69JEOCIwYcvoLvO3xIYAQ=="
+        },
+        {
+          "type": "text",
+          "text": "Let me look at the CLI main structure and the existing harness-related modules:"
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01STyZqPXeQv9CrBK5QcW4Jx",
+          "name": "mcp__grove__outline",
+          "arguments": {
+            "file": "cli/src/main.rs"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_013jvyXEmNey48dcm7t3xMDK",
+          "name": "mcp__grove__outline",
+          "arguments": {
+            "file": "core/src/explore.rs"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 363,
+        "cacheRead": 30959,
+        "cacheWrite": 4683,
+        "totalTokens": 36006,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.005445,
+          "cacheRead": 0.0092877,
+          "cacheWrite": 0.01756125,
+          "total": 0.032296950000000005
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 235
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783196178219,
+      "responseId": "msg_01GBZaqUAug6StotJdPRVnG7"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01STyZqPXeQv9CrBK5QcW4Jx",
+      "toolName": "mcp__grove__outline",
+      "content": [
+        {
+          "type": "text",
+          "text": "[{\"col\":5,\"id\":\"rust:cli/src/main.rs#config_tui@8\",\"kind\":\"module\",\"line\":8,\"name\":\"config_tui\",\"signature\":\"mod config_tui;\"},{\"col\":5,\"id\":\"rust:cli/src/main.rs#init@9\",\"kind\":\"module\",\"line\":9,\"name\":\"init\",\"signature\":\"mod init;\"},{\"col\":5,\"id\":\"rust:cli/src/main.rs#mcp@10\",\"kind\":\"module\",\"line\":10,\"name\":\"mcp\",\"signature\":\"mod mcp;\"},{\"col\":5,\"id\":\"rust:cli/src/main.rs#tap@11\",\"kind\":\"module\",\"line\":11,\"name\":\"tap\",\"signature\":\"mod tap;\"},{\"col\":5,\"id\":\"rust:cli/src/main.rs#trace_tui@12\",\"kind\":\"module\",\"line\":12,\"name\":\"trace_tui\",\"signature\":\"mod trace_tui;\"},{\"col\":8,\"id\":\"rust:cli/src/main.rs#Cli@21\",\"kind\":\"class\",\"line\":21,\"name\":\"Cli\",\"signature\":\"struct Cli {\"},{\"col\":6,\"id\":\"rust:cli/src/main.rs#Cmd@30\",\"kind\":\"class\",\"line\":30,\"name\":\"Cmd\",\"signature\":\"enum Cmd {\"},{\"col\":4,\"id\":\"rust:cli/src/main.rs#main@186\",\"kind\":\"function\",\"line\":186,\"name\":\"main\",\"signature\":\"fn main() -> Result<()> {\"}]"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783196186427
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_013jvyXEmNey48dcm7t3xMDK",
+      "toolName": "mcp__grove__outline",
+      "content": [
+        {
+          "type": "text",
+          "text": "reading core/src/explore.rs"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783196186427
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01AwrhT2fFpZXtNB1L1zyxEQ",
+          "name": "read",
+          "arguments": {
+            "path": "cli/src/main.rs",
+            "offset": 21,
+            "limit": 165
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01BeuTAo5Stx42e5jbQnXAx4",
+          "name": "mcp__grove__symbols",
+          "arguments": {
+            "dir": "core/src",
+            "name": "health_probe"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 151,
+        "cacheRead": 35642,
+        "cacheWrite": 786,
+        "totalTokens": 36580,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.002265,
+          "cacheRead": 0.0106926,
+          "cacheWrite": 0.0029475,
+          "total": 0.015908099999999998
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783196186428,
+      "responseId": "msg_01HJjwF7wy4B6Atrcxgp9aCy"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01AwrhT2fFpZXtNB1L1zyxEQ",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "struct Cli {\n    /// Emit JSON instead of the human table.\n    #[arg(long, global = true)]\n    json: bool,\n    #[command(subcommand)]\n    cmd: Cmd,\n}\n\n#[derive(Subcommand)]\nenum Cmd {\n    /// List the definitions in one file (kind · name · parent · signature · id).\n    Outline {\n        file: PathBuf,\n        /// Only this kind (e.g. class, function, method).\n        #[arg(long)]\n        kind: Option<String>,\n        /// JSON detail: 0 terse · 1 default (no byte offsets) · 2 full.\n        #[arg(long, default_value_t = 1)]\n        detail: u8,\n    },\n    /// Find symbols across a directory, optionally filtered.\n    Symbols {\n        dir: PathBuf,\n        /// Only this kind (e.g. function, struct, method).\n        #[arg(long)]\n        kind: Option<String>,\n        /// Only definitions whose name equals this exactly (case-insensitive).\n        #[arg(long)]\n        name: Option<String>,\n        /// Substring matching for --name (case-insensitive) instead of exact equality.\n        #[arg(long = \"name-contains\", alias = \"name-substr\")]\n        name_contains: bool,\n        /// Include references, not just definitions.\n        #[arg(long)]\n        refs: bool,\n    },\n    /// Print the full source of a symbol, by id or by file + name.\n    Source {\n        /// A symbol id from outline/symbols, e.g. rust:src/lib.rs#parse@41\n        id_or_file: String,\n        /// If the first arg is a file, the symbol name to find in it.\n        name: Option<String>,\n    },\n    /// Report ERROR / MISSING nodes — a post-edit syntax check.\n    Check { file: PathBuf },\n    /// Find references to a symbol across a directory (structural + textual).\n    Callers {\n        /// The symbol name to find references to.\n        name: String,\n        /// Directory to search.\n        #[arg(short, long, default_value = \".\")]\n        dir: PathBuf,\n    },\n    /// Compact structural map: definitions and their references, no source bodies.\n    Map {\n        dir: PathBuf,\n        /// Only definitions of this kind (e.g. function, class, method).\n        #[arg(long)]\n        kind: Option<String>,\n        /// Only definitions whose name equals this exactly (case-insensitive).\n        #[arg(long)]\n        name: Option<String>,\n        /// Substring matching for --name (case-insensitive) instead of exact equality.\n        #[arg(long = \"name-contains\", alias = \"name-substr\")]\n        name_contains: bool,\n    },\n    /// Find where a symbol is defined (go-to-def), by name or by position.\n    ///\n    /// `name` is an exact-name lookup (may return several candidates). `--at` is\n    /// the precise mode: it resolves the identifier under a usage site,\n    /// scope-aware (a local/parameter shadows a same-named global) and following\n    /// imports across files, falling back to name lookup when it can't resolve.\n    Definition {\n        /// The symbol name to resolve (omit when using --at).\n        name: Option<String>,\n        /// Directory to search.\n        #[arg(short, long, default_value = \".\")]\n        dir: PathBuf,\n        /// Resolve the identifier at a usage site: file:line:col (1-based).\n        /// Scope-aware + cross-file; prefer this when you have a position.\n        #[arg(long)]\n        at: Option<String>,\n    },\n    /// Set up grove in a project: fetch grammars + grove.lock, and wire up the\n    /// chosen integration (MCP server, the cross-harness skill, or both).\n    Init {\n        /// Project directory (default: current).\n        #[arg(default_value = \".\")]\n        path: PathBuf,\n        /// Which integration to set up: mcp (default), skill, or both.\n        #[arg(long = \"as\", value_enum, default_value_t = init::Target::Mcp)]\n        target: init::Target,\n        /// Show what would be detected/written without writing.\n        #[arg(long)]\n        dry_run: bool,\n    },\n    /// Download grammars from the hosted registry into the OS cache.\n    Fetch {\n        /// Languages to fetch (default: all in the catalog).\n        langs: Vec<String>,\n        /// Re-download even if already cached.\n        #[arg(long)]\n        force: bool,\n    },\n    /// Build registry artifacts from curated source specs (registry maintainer step).\n    Ingest {\n        /// Only these languages (default: all in the sources file).\n        only: Vec<String>,\n        /// Curated sources spec.\n        #[arg(long, default_value = \"registry-sources.json\")]\n        sources: PathBuf,\n        /// Output registry directory.\n        #[arg(long, default_value = \"registry\")]\n        out: PathBuf,\n    },\n    /// Build the hosted catalog (index.json) for a registry directory.\n    Index {\n        /// Registry directory to index (default: the resolved registry root).\n        dir: Option<PathBuf>,\n        /// Output path (default: <dir>/index.json).\n        #[arg(short, long)]\n        output: Option<PathBuf>,\n        /// Serve grammar.wasm as release assets from this base URL (GitHub Releases).\n        #[arg(long)]\n        release_base: Option<String>,\n    },\n    /// Show the resolved registry location and search order.\n    Registry,\n    /// List the languages available in the registry.\n    Languages,\n    /// Write grove.lock pinning each registry grammar's version + content hash.\n    Lock,\n    /// Open the full-screen config TUI to set up (or edit) the explore config.\n    ///\n    /// Requires an interactive terminal. Opens pre-populated when\n    /// `.grove/explore.json` already exists; starts from defaults otherwise.\n    Config {\n        /// Project directory (default: current).\n        #[arg(default_value = \".\")]\n        path: PathBuf,\n    },\n    /// Run as an MCP server over stdio (the agent-facing face).\n    Serve {\n        /// Project directory used to locate .grove/explore.json (default: current dir).\n        #[arg(default_value = \".\")]\n        path: PathBuf,\n        /// Force explore mode even if .grove/explore.json is absent.\n        #[arg(long = \"explore\")]\n        explore: bool,\n        /// Force standard structural mode (ignore .grove/explore.json if present).\n        #[arg(long = \"standard\")]\n        standard: bool,\n    },\n    /// Enable explore-mode tracing and browse recorded sessions in a TUI — a\n    /// debug aid for `--as mcp-llm`. Records to `.grove/traces/`; no proxy.\n    Tap {\n        /// Project directory holding `.grove/` (default: current).\n        #[arg(default_value = \".\")]\n        path: PathBuf,\n        /// Open the browser without turning tracing on in the config.\n        #[arg(long = \"no-enable\")]\n        no_enable: bool,\n    },\n}\n\n\n[158 more lines in file. Use offset=186 to continue.]"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783196189869
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01BeuTAo5Stx42e5jbQnXAx4",
+      "toolName": "mcp__grove__symbols",
+      "content": [
+        {
+          "type": "text",
+          "text": "[{\"col\":8,\"end_byte\":24232,\"file\":\"core/src/explore/client.rs\",\"id\":\"rust:core/src/explore/client.rs#health_probe@627\",\"is_definition\":true,\"kind\":\"function\",\"line\":627,\"name\":\"health_probe\",\"signature\":\"pub fn health_probe(cfg: &ExploreConfig) -> Result<(), HealthError> {\",\"start_byte\":22914}]"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783196189869
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Now I have a good understanding of the entire landscape. Let me look at what the plan review says more specifically, and then read the `assert_claude_md_consistent` and `assert_mcp_json_consistent` test helpers to understand what content markers are expected per mode.",
+          "thinkingSignature": "EtYDCmUIDxgCKkBAsY0aHd4UQK9HO83jBrxfPilSYZLXoQ9w0wGCpDZHkjCeypBsi879JsWo3xOmOgIlOgJxjQgboFKWElOs3mhGMhFjbGF1ZGUtc29ubmV0LTQtNjgAQgh0aGlua2luZxIMmjLT7se4ksYrC12KGgwU6RxFxMRO/2yOYbEiMHHxW4eJgwgAOcLaL2gcjiJkZF9OTpx2m5V078VvPJeM8m7rrTBe9tLq3XjRuHrlmiqeAtMCJ3sZTz6nTerBlLw3dAEe9R8CorgTYRR/AdXIZXLHwFPIHdLvluA+s+tOj4ji/r0vEhYkbV05wBvJ0oQG021WCGp0ZO/aSAAX2somWbmcpwEZ/A0klNBDWsY+pIF1weI/JAyJ4REE5uezPscfrBOsuUKPU060BlPZ9epzCcG81Sn4KaJGo/Ib7YUflC1bcM+eCrg8HfYwyU4l2WHaee7kikVNbgLi5JCqB9ciOOb7M5lpn0KH/TgAW8JYl4xXAhCaYTMlm0l1kKdvCboumzRgQy0YIBKx56fZxcJXtlc2A1yNhBuc10q15QvsQFOFh/xnsbhInwLvHepkrCUl175uXukZbzekhtWaO6CBXLf6eA1kgFcZRnfYvfCPx1QYAQ=="
+        },
+        {
+          "type": "text",
+          "text": "Let me read the harness consistency tests to understand what the check logic needs:"
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01H1fHv7L6MpL2NQrt21VUtW",
+          "name": "read",
+          "arguments": {
+            "path": "cli/src/init.rs",
+            "offset": 805,
+            "limit": 160
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01XmmqC9Fs1eGmnWu37wXjJZ",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T07",
+            "artifact": "plan-review",
+            "section": "Advisory Notes"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 297,
+        "cacheRead": 36428,
+        "cacheWrite": 2134,
+        "totalTokens": 38860,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.004455,
+          "cacheRead": 0.0109284,
+          "cacheWrite": 0.0080025,
+          "total": 0.023388899999999997
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 71
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783196189870,
+      "responseId": "msg_01BBPgx6FyFnoNnQHuqythu4"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01H1fHv7L6MpL2NQrt21VUtW",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "    fn assert_mcp_json_consistent(dir: &std::path::Path, mode: Mode) {\n        let path = dir.join(\".mcp.json\");\n        match mode {\n            Mode::Mcp | Mode::Both => {\n                let doc: Value = serde_json::from_str(\n                    &std::fs::read_to_string(&path)\n                        .unwrap_or_else(|_| panic!(\"missing .mcp.json for mode {mode:?}\")),\n                )\n                .unwrap();\n                assert_eq!(\n                    doc[\"mcpServers\"][\"grove\"][\"args\"],\n                    json!([\"serve\"]),\n                    \"mode {mode:?}: .mcp.json args should be [serve]\"\n                );\n            }\n            Mode::McpLlm => {\n                let doc: Value = serde_json::from_str(\n                    &std::fs::read_to_string(&path)\n                        .unwrap_or_else(|_| panic!(\"missing .mcp.json for mode {mode:?}\")),\n                )\n                .unwrap();\n                assert_eq!(\n                    doc[\"mcpServers\"][\"grove\"][\"args\"],\n                    json!([\"serve\", \"--explore\"]),\n                    \"mode {mode:?}: .mcp.json args should be [serve, --explore]\"\n                );\n            }\n            Mode::Skill | Mode::Grammars => {\n                // File may not exist, or if it does, grove entry must be absent.\n                if path.exists() {\n                    let doc: Value = serde_json::from_str(\n                        &std::fs::read_to_string(&path).unwrap(),\n                    )\n                    .unwrap();\n                    assert!(\n                        doc.get(\"mcpServers\")\n                            .and_then(|s| s.get(\"grove\"))\n                            .is_none(),\n                        \"mode {mode:?}: grove entry should be absent in .mcp.json\"\n                    );\n                }\n            }\n        }\n    }\n\n    fn assert_claude_md_consistent(dir: &std::path::Path, mode: Mode) {\n        let path = dir.join(\"CLAUDE.md\");\n        match mode {\n            Mode::Grammars => {\n                // File either absent or has no grove block.\n                if path.exists() {\n                    let text = std::fs::read_to_string(&path).unwrap();\n                    assert!(\n                        !text.contains(CLAUDE_START),\n                        \"mode Grammars: CLAUDE.md must not contain grove block, got: {text:?}\"\n                    );\n                }\n            }\n            Mode::McpLlm => {\n                let text = std::fs::read_to_string(&path)\n                    .unwrap_or_else(|_| panic!(\"missing CLAUDE.md for mode {mode:?}\"));\n                assert!(\n                    text.contains(CLAUDE_START),\n                    \"mode McpLlm: CLAUDE.md must have grove block\"\n                );\n                assert!(\n                    text.contains(\"mcp__grove__explore\"),\n                    \"mode McpLlm: CLAUDE.md must reference explore tool\"\n                );\n            }\n            Mode::Mcp | Mode::Both => {\n                let text = std::fs::read_to_string(&path)\n                    .unwrap_or_else(|_| panic!(\"missing CLAUDE.md for mode {mode:?}\"));\n                assert!(\n                    text.contains(CLAUDE_START),\n                    \"mode {mode:?}: CLAUDE.md must have grove block\"\n                );\n                assert!(\n                    text.contains(\"mcp__grove__outline\"),\n                    \"mode {mode:?}: CLAUDE.md must reference outline tool\"\n                );\n            }\n            Mode::Skill => {\n                let text = std::fs::read_to_string(&path)\n                    .unwrap_or_else(|_| panic!(\"missing CLAUDE.md for mode {mode:?}\"));\n                assert!(\n                    text.contains(CLAUDE_START),\n                    \"mode Skill: CLAUDE.md must have grove block\"\n                );\n                assert!(\n                    text.contains(\"grove skill\"),\n                    \"mode Skill: CLAUDE.md must reference grove skill\"\n                );\n            }\n        }\n    }\n\n    fn assert_agents_md_consistent(dir: &std::path::Path, mode: Mode) {\n        let path = dir.join(\"AGENTS.md\");\n        match mode {\n            Mode::McpLlm => {\n                let text = std::fs::read_to_string(&path)\n                    .unwrap_or_else(|_| panic!(\"missing AGENTS.md for mode McpLlm\"));\n                assert!(\n                    text.contains(CLAUDE_START),\n                    \"mode McpLlm: AGENTS.md must have grove block\"\n                );\n            }\n            _ => {\n                // File absent or grove block absent.\n                if path.exists() {\n                    let text = std::fs::read_to_string(&path).unwrap();\n                    assert!(\n                        !text.contains(CLAUDE_START),\n                        \"mode {mode:?}: AGENTS.md must not have grove block, got: {text:?}\"\n                    );\n                }\n            }\n        }\n    }\n\n    // ─── reconcile_harness transition-matrix test (20 ordered A→B pairs) ─────\n\n    #[test]\n    fn reconcile_harness_transition_matrix() {\n        let modes = [Mode::Mcp, Mode::Skill, Mode::Both, Mode::McpLlm, Mode::Grammars];\n\n        for &old in &modes {\n            for &new in &modes {\n                if old == new {\n                    continue;\n                }\n                let dir = tmp(&format!(\"matrix_{old:?}_{new:?}\"));\n                seed_lock(&dir);\n\n                // Seed the initial harness for mode A\n                reconcile_harness(&dir, None, old)\n                    .unwrap_or_else(|e| panic!(\"seed {old:?}: {e}\"));\n\n                // Transition to mode B\n                reconcile_harness(&dir, Some(old), new)\n                    .unwrap_or_else(|e| panic!(\"transition {old:?}→{new:?}: {e}\"));\n\n                // Assert harness is consistent with B\n                assert_mcp_json_consistent(&dir, new);\n                assert_claude_md_consistent(&dir, new);\n                assert_agents_md_consistent(&dir, new);\n\n                std::fs::remove_dir_all(&dir).ok();\n            }\n        }\n    }\n\n    // ─── host-content-preservation test ──────────────────────────────────────\n\n    #[test]\n    fn reconcile_harness_preserves_host_content() {\n        let dir = tmp(\"preserves_host\");\n        seed_lock(&dir);\n\n\n[258 more lines in file. Use offset=965 to continue.]"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783196198228
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01XmmqC9Fs1eGmnWu37wXjJZ",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "## Advisory Notes\n\n- `verify_lock` already short-circuits to `Ok(None)` when the lockfile is\n  absent, so the \"absent → Warn/Info\" mapping (AC 4/6) is a clean `None` arm —\n  good, and the plan's Match→Ok / Mismatch→Fail / Missing→Warn mapping lines up\n  with the real `LockVerifyStatus` variants.\n- Consider one explicit assertion in the integration tests that a **warning-only**\n  report still exits `0` (AC 9 \"warnings allowed\") — the current cases cover\n  clean-pass and hard-fail but not the warn-but-ok boundary, which is the most\n  likely regression surface for the exit-code logic.\n- The `Check` fields are `&'static str` for `group`/`name` but `String` for\n  `detail`; that's consistent with surfacing dynamic drift detail while keeping\n  names queryable — fine."
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783196198228
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Now I have a complete picture. Let me summarize what the revised plan needs to address:\n\n**Core Issues from Plan Review:**\n\n1. **Harness constant ownership (BLOCKER):** The sentinel `CLAUDE_START` / `CLAUDE_END` and the per-mode expected-content markers (`mcp__grove__explore`, `mcp__grove__outline`, `grove skill`) are private in `cli/src/init.rs`. The fix: **promote these into a new `core/src/harness.rs` module** that defines:\n   - Sentinel constants for marking harness boundaries\n   - The MCP server key constant\n   - A function to retrieve expected MCP arguments per mode\n   - A function to retrieve expected content markers per mode for the documentation files\n   \n   Then `cli/src/init.rs` imports these from core instead of defining them itself.\n\nThe `core::doctor` module uses these same constants to validate harness consistency. For unit tests, I need to build fixtures from scratch in a temporary directory rather than relying on private helpers from the CLI init module. The test approach writes the config files and documentation manually, calls the diagnostic function, and asserts that the right checks are emitted.\n\nI'm setting up a table of files to modify, starting with creating a new `harness.rs` module in core that holds the sentinel constants and per-mode lookup functions, exposing it through `lib.rs`, and then updating `doctor.rs` to use these shared definitions.",
+          "thinkingSignature": "EqQRCmUIDxgCKkA2iMLoI3SxPnKeQsY4/cu8cANqugXNYps6D7KPdOh6jxOZuuQEq8x5E+gOXl9OOYmSV5xCdbXlJZnjae7qgJRqMhFjbGF1ZGUtc29ubmV0LTQtNjgAQgh0aGlua2luZxIMlEDj1Tf0PsXgaZBdGgwEG0C72mO8kD69UNciMLGr79PIqgle0strxqGtPLTXQfGoHuodlbfQ0NBxLcFvMDznxXcDnXZ21t+o386q6CrsDwHVO8nEAgbyL/wCYLEozmTdIXonGo9hw4rX3hI75vdLNeAidJb6/2R/PDze7SGZb6Od0iVgJzsTN48+UZ8L9NC3kbwjdLvrmCkfGWtYkeo/p3wPZHD8f7UdUB62rV3lu1Wq4EOgf6mL47Yd1+2NYiBC2N6Lm2ySBGQ1baCJejNCWUsJs40u2BMRnAJnsMVCQ0p3Poz+IFuoYxWpnFEdqZvHU8nZCelTHcddOz56QVyA9IwwNEEy9jzfUn6iIhGr4/wHjsX1PGH/ugJ6bBXH4nzikGE1K7jGYD/Tw6kQFy47iyzd79zr7P5yxteQ1xLfxXwdRQkpsrAtMGDz+BSbI4zXxN0vCmi7eSKsoWWQvi7PLsVNadWDUmWxcsHQnPCN/IZsp/Dg4LYARoA/Gd8Y36lps+yBr+ftdcgAMGh3kzPlk5AsYaV6h752zdEbhvZXFW3GPbHQsQl8hUgIvfUwnzxssX2DREddv6bV+RGDHa2MJwvsdLBgdSJFY8Aido8nEUkH1fN9+L0RLbshUgbF6L3YyaSRe4ZlZgnCcT95coGMlSnnMhKP5NPCbSC9at4ewWGxTG9Qf3zTQzCROlV1aFFtqHUtolWsGku0sAIRCbnis+NmaCaQsB7e8G0BZp8D5BzgOKbtBL8l5/gZKlgzfXYLO6jpzsTwObJTVeFtlzCKVdcFPg/K38gjqlIlQhGs1CbKZ7go0Zrwc5OYSRLal391Tisaq7lbVD4xtyVey7wk0iZEmSPlUxllGYUsUK1m8OO7wM+jaZK/LO7Baalax3nEVRiq/R7Wuv0unnvPxp4LIG6dPOQJVahPwvCcoItnLezUVWSOzIVdinXMW/AX9xZ1SHgn9uXp6Lnwm0VfTyJz/DNNiU1yRWgsy7nG5KxbyccuAwl6j3E8xPdAlgDiDnXXQv6rah9BAo3EDMyvFw6hKZSp9Ahu8RV/F38l2nLdEbT1GrA1T+NSnHOEhXpOBYFa8bQhdaGvGBZtTLqoH5/dfBQheuXxLanqhJ5z2VkOYgC8r44+nSgDC2EhJ2jHaBgJoK1EKYCw2gp55JR+j6bSdg2Z8pNjeu6O0UEGTa64aRe0eYPHo3eMcP4nEUyLddZyFBYYlEJqTKCjaq2qB6JQW8jiAmHpZLWc6REA3Ul9HUtrzyEZKodZ7ofLQU61Ovk+UkVKrAQTuzaLUzN5fAVKAkD+b8lFtKsbD+gIeypE6yYGHmz7GaYMasL6A7kCCmg8pPgjAR4tVv6qn8lTUvrxw/rgfQeZ84fzypTWGzO1++SADIHfnBBI9L9vn3+eQ8pLNF6IkTAqr3lOKe45UynqRUylRU6qhAC1GgSmh0ijRMJhVlb9uMyJB7rSvlLdmjlXCa2xCkshSfkWgiPh+V0rUniMJ7Z6nM6X71T+t5Zgti58Z4xg1NtKSQNBzcIpwM9a+6aziLb+Df0guQFNew5HP1CxteW3hjOo7naxPhizDalButs7JlYNsHZfRdwAFXZ/FEkX4qPiw6sVzW8gC4q5ilXB6PUN3jTw+8a1dhgSysY3BdcbL76sj/qDpKXhIDjSHDNxkYL3RcYj824TxSJu1GK4wmWABZzNFwPTR9AWTaUYbwu7l+JwtsOasq9ESb8L5wuJdrkZggvxVbP/KKo8QVtWGIRSewIqJ87YE0ttcEWj/bkHFabIP2f/q8IGOayYSuYo/qFUGCdYPXhSYSTsUb6KCN5fEUwbENXeOZzvDzsb6YewHHBBXmlUHGU3JeGluZkQk/+uWcjvKVVsmQkKGp44mJBRHFf38ZObrCHq0Y5+WuqrQino3zm3YrsuZfJKgxE6O2nx+ziszrY0JLLPz0+AcaOvQYTf94vqGN14hX4N1hvnNZ/hmowmJBhZ8RsglOHcjGQmic4hrFks/OaxA+VNKpUMMT0C1yQAZ9M99qcSHFz7AI1w2IkfCiAQToI5UjDCuGLDpBd9/llwJFrICF5C1MneKQ+9nKzBHJxIGx0zbhu42fdMRAODcfj1Ao8UJ35eMK7nYX+UXxesyTdw78jjUeI7que1UGiwUEvZqz9Zd0vpcaXXjHTSS9Hg5yE0KKCh2GkaRss2bsZlhcAuZfcnnvNBSqtQ5C3pij5Dbsa3Px6mZ/rCIwnMm0G3Y2WAIGGqaoEwHzqY3xZAM5KLeASuDd3p4Px4UbAeHlZ5bfvxCeZHeWJchybwifZK2IJzc061ryt9Vxtex3Yr/5n4MGG/tV8PSqo4AeOYi3mBjaKWoiUfDfmS24Yp8e0IsTaHZgswfdsoXxPTWpDcrH+jHqGGmtTflnC51dZGk+KnTFdYOTc6iYR+yrj384G/AKWGRsCkQWu/12Up2Qmg26yRPwslcdmk8TB2806m9FncDIh5o3OLi0YkG1zrBv/yKZAf7i12QImjcJ9iLGTsMjdtQCQkrJhcTi45W1PsMbX7BA9Yt24bfEyk8MNlwDWUSVo8dRPse3Jc9o75O3l5mHBUJvt35R6/jy58tI8HNosbwZBO8Y4sI4s4vDEPOLmTxQMFV/8pgjHO/8+HfQyP2p1Bgy3M0rrhEi1uQW7EV3YkkkAgVkH03HWhXb0EpCFe6Vb108bGloRpi+FfUqCLHS589WZHi2KVMBLGwdxdH5LLWcybZG4QCBPJ/vYgRfO7AhC76ecjox5W2wcVVRtPTSONWyJ7QhEdR+KTm2jtQirtdvYGnClEuC9NpwfrchgB"
+        },
+        {
+          "type": "text",
+          "text": "Let me look at the plan's full files-to-modify section, and check T04 and T06 for dependencies:"
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_013gBZopDWyM65KYvHKipVjt",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T07",
+            "artifact": "plan",
+            "section": "Files to Modify"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01M1LuiJpGQds6q9gTpFDmpG",
+          "name": "forge_store",
+          "arguments": {
+            "command": "read",
+            "args": [
+              "task",
+              "GROVE-S03-T04",
+              "--json"
+            ]
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01GGdfYmMyQ36fU9twhaZmm8",
+          "name": "forge_store",
+          "arguments": {
+            "command": "read",
+            "args": [
+              "task",
+              "GROVE-S03-T06",
+              "--json"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 927,
+        "cacheRead": 38562,
+        "cacheWrite": 2313,
+        "totalTokens": 41803,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.013905,
+          "cacheRead": 0.0115686,
+          "cacheWrite": 0.00867375,
+          "total": 0.03415035
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 629
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783196198228,
+      "responseId": "msg_015ueTNuQt2dnT7yXQH3W8Pc"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_013gBZopDWyM65KYvHKipVjt",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "## Files to Modify\n\n| File | Change |\n|---|---|\n| `core/src/doctor.rs` | **New** — `Status`, `Check`, `Report`, `diagnose` |\n| `core/src/lib.rs` | Add `pub mod doctor;` + re-export `doctor::Report` if needed |\n| `cli/src/main.rs` | Add `Cmd::Doctor` variant; add dispatch arm; add `grove_core::doctor` import |\n\nReuses (read-only, no changes):\n- `core/src/config.rs` — `GroveConfig::load`, `active_mode`, `ModeChoice`, `Mode`\n- `core/src/registry.rs` — `search_path`, `cache_root`, `verify_lock`, `available`, `manifests`\n- `core/src/explore/client.rs` — `health_probe`, `list_models`, `HealthError`\n- `core/src/explore/config.rs` — `ExploreConfig::validate`\n- `core/src/explore/toolset.rs` — `READ`, `GLOB`, `GREP`, `GROVE` constants\n\n---\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783196214956
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01M1LuiJpGQds6q9gTpFDmpG",
+      "toolName": "forge_store",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\n  \"taskId\": \"GROVE-S03-T04\",\n  \"title\": \"reconcile_harness single harness writer + transition-matrix test\",\n  \"status\": \"committed\",\n  \"sprintId\": \"GROVE-S03\",\n  \"estimate\": \"L\",\n  \"pipeline\": \"default\",\n  \"dependencies\": [\n    \"GROVE-S03-T01\",\n    \"GROVE-S03-T03\"\n  ],\n  \"latestPhase\": \"validation\",\n  \"latestSummary\": {\n    \"objective\": \"Validate that reconcile_harness(root, old_mode, new_mode) correctly writes/strips all harness files per declared mode, that run persists mode to config.json, that all 20 A→B transition pairs pass, and host content is never touched.\",\n    \"verdict\": \"approved\",\n    \"key_changes\": [\n      \"AC#1 PASS: reconcile_harness signature correct at cli/src/init.rs:183; drives .mcp.json/CLAUDE.md/AGENTS.md purely from new_mode; write_harness fully removed.\",\n      \"AC#2 PASS: run() loads prior GroveConfig→old_mode, calls reconcile_harness, saves GroveConfig{mode:new_mode} — mode recorded verbatim every run.\",\n      \"AC#3 PASS: Leaving mcp-llm strips AGENTS.md sentinel block and reverts .mcp.json to [serve] or removes entry; all 4 McpLlm→B matrix rows asserted.\",\n      \"+6 more\"\n    ]\n  }\n}"
+        }
+      ],
+      "details": {
+        "compression": {
+          "tool": "store:read",
+          "before": 2464,
+          "after": 306,
+          "saved": 88
+        }
+      },
+      "isError": false,
+      "timestamp": 1783196214956
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01GGdfYmMyQ36fU9twhaZmm8",
+      "toolName": "forge_store",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\n  \"taskId\": \"GROVE-S03-T06\",\n  \"title\": \"grove.lock wasm sha256 verify primitive (core)\",\n  \"status\": \"committed\",\n  \"sprintId\": \"GROVE-S03\",\n  \"estimate\": \"S\",\n  \"pipeline\": \"default\",\n  \"latestPhase\": \"approve\",\n  \"latestSummary\": {\n    \"objective\": \"Architect sign-off on the additive read-only verify_lock wasm sha256 primitive (LockVerifyStatus/LockVerifyEntry) in core/src/registry.rs for grove doctor (T07).\",\n    \"verdict\": \"approved\",\n    \"key_changes\": [\n      \"Purely additive: no existing signatures, lock-file format, or Cargo.toml deps changed — nothing downstream must migrate.\",\n      \"Verifier reuses the same sha256() primitive as write_lock_for/wasm_sha256(), so a fresh lock round-trips to all-Match with no writer/verifier skew.\",\n      \"Wasm path registry_root()/<name>/grammar.wasm is consistent with resolve(); covers dev-stubs, cache_root, GROVE_REGISTRY.\",\n      \"+7 more\"\n    ]\n  }\n}"
+        }
+      ],
+      "details": {
+        "compression": {
+          "tool": "store:read",
+          "before": 2486,
+          "after": 247,
+          "saved": 90
+        }
+      },
+      "isError": false,
+      "timestamp": 1783196214956
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "T04 is committed (reconcile_harness single harness writer + transition-matrix test) and T06 is committed (verify_lock). The current state of the codebase has `CLAUDE_START`, `CLAUDE_END`, `MCP_SERVER_KEY` still as private constants in `cli/src/init.rs`.\n\nNow I have everything I need to write the revised plan. The key changes from the original plan are:\n\n1. **New file: `core/src/harness.rs`** — single source of truth for:\n   - Sentinel constants: `pub const GROVE_START: &str = \"<!-- grove:start -->\";`, `pub const GROVE_END: &str = \"<!-- grove:end -->\";`\n   - The MCP server key constant\n   - Functions that map modes to their expected mcp.json arguments, CLAUDE.md content markers, and whether AGENTS.md should exist\n\n2. **Modified: `core/src/lib.rs`** — expose the harness module publicly\n\n3. **Modified: `cli/src/init.rs`** — import these constants and functions from the core harness module instead of defining them locally, updating all references throughout\n\n4. **New: `core/src/doctor.rs`** — implement the doctor command using the harness module's sentinel and marker constants; the harness checks read actual files and compare them against the expected values from the harness functions; unit tests build fixtures in temporary directories\n\n5. **Modified: `cli/src/main.rs`** — add the Doctor command variant and wire up its dispatch\n\nNow I'm refining the overall plan to incorporate these findings, making sure the harness constants promotion is clear and the testing strategy is solid.",
+          "thinkingSignature": "EvEPCmUIDxgCKkBlHQa+3RqMrGBBeleY2NJRE9lXakMNWS6x+hDs9XTsLdLUbJlItP3aLsKQbx7DFMfyH4Edeg6hDSOQY5KatZ7FMhFjbGF1ZGUtc29ubmV0LTQtNjgAQgh0aGlua2luZxIMlqzhG0GBNJ4cz0IqGgwVyvJDyXGM2d1Ud+giMPzHn8w5TRlAzcyD9RpsKHpPxOkRTv3KmzXrZ2+PTErIofMVJ/zKWJi/YykEML+1ryq5DuYeDdEKg8EGdodOLLLb9oXvBPnww1HwOdKdL6vLkSSFloug5aYQuAqNIHlNhPoAR89DYDq/cybvDv8aZZ/a6/NgfPeXrFQRteCcjVZAA2Y/KFGq6aJ782F414yrZXM0SzxbGZnZsq4xmFEXorjQH1YLbaEo9QxfGTPfeY7MnssedbT2NmkoeDZKt/FEf0R6d7a0giBWOYyMjFvIBome+XUCfxfEtYi0luzZaRrMJZUf7MlkNrToqz4G41ZcO5KL9cVm5YJmeEKB4JLjCKBdis3XKHSjtPDMXmQWb74z3X1Km0FMTXRle//6s06Wd2ZtvvqNNBzoF2BfIuuoorEZn4i2n7eQ4lJKf5I62YpOhqOCkAgqkWIyGv7zhQthC8/gd+nhxlpZD9w6m8kxJTfX6/4YeNsyDDT5oDZPfhrpni3a7Z4VmRUT1N7ddxIcK6tmrutd+7H3LTTjuCRdzqTb8r4jLEaxhT/mcCrg5x1QOIkKrbpYTQDFsEBOUKlqqyttJKvY165m6Cbsup/sAcy9eDAb8dnXDR2ESz+WUXvbyZf2sbGQr4OjNFO8RuMXhQKJduGBQMByh21TxWuWzZINgJRKJc5nZk0WaHb+6sjljxM9cOtYcz3wBn8QNlgtsT1aa8KuafeJXI32Hd9Eqt6TylDFQ9euI2rgEttJ4f7r8xhFDDIPQWppKgZcaQtUrh0jXraOHjOLHO4yTkfDvnprgEowebYJ63zscE4gATGIeeqNoUTNUAz3Q0/atA0NlKIFER2RZF39GgEQWqbY9Goi34IaiqhZAv/VpbVsxbzl4V6e6XlcW1ERFPs47mYIArGe3lMu+RACBjFp7qQOYa/52jAyfZXHX3tGSQOnZFTB6bMEB9zMUIJOUZTACuyYiXi8Qhd04O5UKXZSWLE/dPJPxnqc5Ea2XuNwxYtdop3Zx4xo2g+c8C4QoVOx/Yqx7vLilOwYJ6OK0LygmA9ihrWax0JRofukepGHoVYTvRHHEDD7tV6kIaoO0l2Z+RlZagMFhGW5kDYsx+pMPn+TqrMQhDexQ8++oIzXIn0dCfwA9IK0rmen0SK8t+5iW6fp/jjmAyWfs/FoH40Djw1BO9T3BehxPGT1Abm8GN9Mzg6g11Bd4SQw7eJxFKHKbudJ2aHwN5IAjTcYsqKmRj1WbLlqxPOXVvC9mol9VEYi+iypIsNcYw82TOaNbV8qRaZ6voDmr83E9uFhS2+hK8bxZ0JabdwsHl2Va0CLV/o/V7AVya956IbW195LLac/EB+2ar3nmvvI498x+ci4UFPwTOsF9quPEtKj4B4tdlWI0gjhsB2HZKlofrnRGYTOfrxvFRhZF+qSYnMYRwqdHAkjJd3HBInjo79Ur6Emovr13fu12AJVgq/m4lLgUEbhe8cqj4ftYcdmm6pcgB+hkifmHTYF6/RMYBSZP+42NkJomgrb2xfoB4V7o5RorWBEyCpjcr7x7jimx8usSCDX+UQjMwnhQ32q31yIzkgZ1PytL3PHLZ8aoizkmg9vyZLjv7tyN6kxUJmMRDpTlBftS0osfGr2iSKVeZkpJ8Q0UhME3VdD9w5795e7x2oFOidf0o4DU64K+jahfko7Nfrj9bajSnRqomGOQqfBrJ5zM4IbDkfdG1hZZPi7sfKVIjsSjdSqjb+cQgDu/Le5VSBlHVxbbTv3dQYO7jvwfxasN9mWkhqi/MhRfx61+tp/ewYWfVLaeHvFa0DtXspMcytZ2KxHhJMANknPxFLyWycT5nwnobtv2DnJuUsnc/4FJv98WeyU0Iatj3b/2RMAdfqgYi00GtTQdycQ+PCQMaKR/NTn/d1CJlzkEVF/V92pI15Y8jI1ACbO3MsGi9S0/Rz6to6q7oZKqVPCVTzXZZkvnHG6SqQQbM2y9hSg3TnjFEIzJe/nFD7xuXJJhX8jw7t9qd15qpdUFA8Fd103yUVx7e3gYgIW2aCeBI94xwLHL3H2/+nnb4g22cMx+acb789t3AIeAX8ZATbSwN6IBg3JO+QxiIMxGksCiXgem/myISmObye1Ds58AW6cY8VDvT7Lm7BbFCeB1BpK0D39YZ2b+BOo8nzrQYwtz6LlXt/rIOJc2IJy6mpIUuh1a6uwiSN1D39gNYf/KTr/9cXq2MVVScjJnv1aHCPTU019YEBd0omtpijXldX5lsrDKM75Rvb9n9RBmtUEiFnPf4Spc8kxAXy3E7t+r3PiwdsvzCfBYE1kzyUtG8r/3WcCWnPAKB3xb9hc5K9jv8RpMKzjePT+kq+emu7BOmzO0MphukvXhAlQaFLABaGCsOdM4ilSSrQQy9G13BacpBubvt9wRadCfdxnupGxNq7LwABjffrOBqwQAgzXy4yjioJqcNsFvwY5Jv3g/U3WCBqHu5ED476TqcJWRa90Q89TdGfQfi/64peR5PBC7OM5fpZY5r1aDPP4t5uKdICU9jNDL1D7YAjsoHwYAQ=="
+        },
+        {
+          "type": "text",
+          "text": "Now I have all the context I need. Let me write the revised plan that addresses the two blocking issues from the plan review:\n\n1. **Harness constant ownership** — promote sentinels + mode-content mappings into `core/src/harness.rs`\n2. **Unit test strategy** — build fixtures directly in tempdir, no cross-crate private helpers"
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01322QUJBJ6rqmPEwc96KyJj",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "write",
+            "entity": "task",
+            "entityId": "GROVE-S03-T07",
+            "artifact": "plan",
+            "content": "# PLAN — GROVE-S03-T07: `grove doctor` — `core::doctor` report + CLI verb\n\n## Objective\n\nImplement `grove doctor`: a `core::doctor` module with `Status`, `Check`, `Report`,\nand `diagnose(root, force)` that runs universal + mode-scoped health checks; a\nnew `Cmd::Doctor` CLI verb with `--json` output and exit-code semantics; and a\n`core::harness` module that holds the sentinel constants and mode→expected-content\ntables so both `init` and `doctor` share a single source of truth.\n\n---\n\n## Approach\n\n### 0. Pre-requisite: Plan review resolution\n\nThe review identified two blocking issues; this revised plan resolves both before\nany code is written.\n\n**Blocker 1 — Harness constant ownership**: `CLAUDE_START`, `CLAUDE_END`, and\n`MCP_SERVER_KEY` are private constants in `cli/src/init.rs`. Core cannot import\nthem (cli→core dependency runs that direction; adding a core→cli edge would\ncreate a cycle). The per-mode expected-content markers (`mcp__grove__explore`,\n`mcp__grove__outline`, `grove skill`) and `.mcp.json` args are embedded in\nprivate `claude_section` / `write_mcp_json_with` functions in `cli`. Therefore\n`core::doctor` cannot reference them without duplication, which defeats the\npurpose of the check.\n\n**Fix:** introduce `core/src/harness.rs` as the single source of truth for all\nharness-shape knowledge: sentinel constants, expected `.mcp.json` args per mode,\nand expected content-markers per mode. Both `cli/src/init.rs` (for writing) and\n`core/src/doctor.rs` (for reading/checking) import from this module.\n\n**Blocker 2 — Unit test strategy**: The original plan's harness-consistency\ntests referenced `reconcile_harness` and `seed_lock` — private helpers in\n`cli/src/init.rs`. Inline tests in `core/src/doctor.rs` cannot call cross-crate\nprivate items.\n\n**Fix:** unit tests in `core/src/doctor.rs` build every fixture by hand into a\n`tempdir`: write `.grove/config.json`, `.mcp.json`, `CLAUDE.md`, `AGENTS.md`\ndirectly using `std::fs::write`, then call `diagnose`. No private cli imports.\n\n---\n\n### 1. New `core/src/harness.rs` — single source of truth for harness shape\n\nThis module defines the constants and query functions that `init` uses to write\nthe harness and `doctor` uses to verify it. It has **no external dependencies**\nother than `core::config::Mode`.\n\n```rust\nuse crate::config::Mode;\n\n// ── Sentinel markers (single source of truth) ──────────────────────────────\n\npub const GROVE_START: &str = \"<!-- grove:start -->\";\npub const GROVE_END:   &str = \"<!-- grove:end -->\";\n\n// ── MCP server registry key ─────────────────────────────────────────────────\n\npub const MCP_SERVER_KEY: &str = \"grove\";\n\n// ── Expected .mcp.json args per mode ───────────────────────────────────────\n//\n// Returns `Some(&[\"serve\"])` / `Some(&[\"serve\", \"--explore\"])` when a grove\n// entry is expected, `None` when the mode must have NO grove entry.\n\npub fn expected_mcp_args(mode: Mode) -> Option<&'static [&'static str]> {\n    match mode {\n        Mode::Mcp | Mode::Both => Some(&[\"serve\"]),\n        Mode::McpLlm           => Some(&[\"serve\", \"--explore\"]),\n        Mode::Skill            => None,\n        Mode::Grammars         => None,\n    }\n}\n\n// ── Expected CLAUDE.md content marker per mode ─────────────────────────────\n//\n// Returns `None` for `Grammars` (file may exist but must have no grove block).\n// Returns `Some(marker)` — a substring that MUST appear inside the grove block.\n\npub fn expected_claude_marker(mode: Mode) -> Option<&'static str> {\n    match mode {\n        Mode::McpLlm           => Some(\"mcp__grove__explore\"),\n        Mode::Mcp | Mode::Both => Some(\"mcp__grove__outline\"),\n        Mode::Skill            => Some(\"grove skill\"),\n        Mode::Grammars         => None,          // block must be absent\n    }\n}\n\n// ── AGENTS.md expectation per mode ─────────────────────────────────────────\n//\n// Returns `true` when the mode requires a grove block in AGENTS.md.\n\npub fn agents_md_expected(mode: Mode) -> bool {\n    mode == Mode::McpLlm\n}\n```\n\n**Migration in `cli/src/init.rs`**: replace the three `const` definitions\n(`CLAUDE_START`, `CLAUDE_END`, `MCP_SERVER_KEY`) with `use grove_core::harness`\nimports. All downstream call-sites that reference the old constants now reference\n`harness::GROVE_START` / `harness::GROVE_END` / `harness::MCP_SERVER_KEY`.\nThe existing `assert_mcp_json_consistent`, `assert_claude_md_consistent`, and\n`assert_agents_md_consistent` test helpers in `cli/src/init.rs` can additionally\nadopt `harness::expected_mcp_args` / `harness::expected_claude_marker` /\n`harness::agents_md_expected` so they share the same truth source as doctor.\n\n---\n\n### 2. New `core/src/doctor.rs` — types and `diagnose`\n\n**Core types:**\n\n```rust\npub enum Status { Ok, Warn, Fail, Info }\n\npub struct Check {\n    pub group:  &'static str,   // \"universal\" | \"explore\"\n    pub name:   &'static str,\n    pub status: Status,\n    pub detail: String,\n    pub hint:   Option<String>,\n}\n\npub struct Report {\n    pub mode:   Mode,            // declared mode from GroveConfig; not the CLI Surface\n    pub checks: Vec<Check>,\n}\n\nimpl Report {\n    /// True when no check has `Status::Fail`.\n    pub fn ok(&self) -> bool {\n        self.checks.iter().all(|c| !matches!(c.status, Status::Fail))\n    }\n}\n\npub fn diagnose(root: &Path, force: ModeChoice) -> Report { … }\n```\n\n`diagnose` is **pure and read-only**. It composes only existing `core` primitives;\nit never writes to disk.\n\n**Mode resolution**: call `active_mode(root, force)` (T03 shared helper). The\nreport's `mode` field is `GroveConfig::mode` (the declared tag). If no config\nexists, mode falls back to `Mode::Mcp` and that is recorded via an Info check.\n\n---\n\n### 3. Universal checks (run for every project)\n\nAppended in order to `report.checks` with `group: \"universal\"`.\n\n| Check name | Logic | Status |\n|---|---|---|\n| `grove_version` | `env!(\"CARGO_PKG_VERSION\")` | Info |\n| `config_present` | `GroveConfig::load(root)` | Ok / Fail; Info if absent (unconfigured) |\n| `legacy_explore_json` | `.grove/explore.json` present without `.grove/config.json` | Warn |\n| `harness_mcp_json` | compare `.mcp.json` grove args vs `harness::expected_mcp_args(mode)` | Ok / Fail |\n| `harness_claude_md` | detect sentinel; check for `harness::expected_claude_marker(mode)` | Ok / Fail / Warn |\n| `harness_agents_md` | detect sentinel; check vs `harness::agents_md_expected(mode)` | Ok / Warn |\n| `harness_serve_surface` | simulate `determine_surface` for the declared mode | Info |\n| `registry_root` | `registry::search_path()` — fail if no candidate `exists` | Ok / Fail |\n| `grammar_cache` | `registry::cache_root()` | Ok / Warn if None |\n| `project_languages` | walk source extensions via `ignore` against `registry::available()` | Ok / Warn per missing lang |\n| `lock_integrity` | `registry::verify_lock(&root.join(\"grove.lock\"))` | Match→Ok, Mismatch→Fail, Missing→Warn; absent→Warn |\n\n#### 3a. Harness check detail\n\nEach of the four harness sub-checks (`harness_mcp_json`, `harness_claude_md`,\n`harness_agents_md`, `harness_serve_surface`) is emitted as a separate `Check`\nentry so each file's drift is independently addressable in `--json` output.\n\n**`.mcp.json` consistency** — parse file if present; extract\n`doc[\"mcpServers\"][\"grove\"][\"args\"]` as a `Vec<String>`. Compare to\n`harness::expected_mcp_args(mode)`:\n- Mode expects a grove entry (`Some(args)`) but args mismatch or file absent → `Fail`;\n  detail names file + expected vs actual; hint: `grove init --as <mode>`.\n- Mode expects no grove entry (`None`) but a grove entry exists → `Fail`.\n- Correct → `Ok`.\n\n**`CLAUDE.md` consistency** — read file if present:\n- `harness::expected_claude_marker(mode) == None` (Grammars): block must be\n  absent; if `GROVE_START` found → `Warn`.\n- `harness::expected_claude_marker(mode) == Some(marker)`: file must exist, must\n  contain `GROVE_START`, and must contain `marker` inside the block; any deviation\n  → `Fail`.\n\n**`AGENTS.md` consistency** — read file if present:\n- `harness::agents_md_expected(mode)` is `true`: file must exist, must contain\n  `GROVE_START`; absent → `Warn`.\n- `harness::agents_md_expected(mode)` is `false`: if file exists and contains\n  `GROVE_START` → `Warn`.\n\n**`harness_serve_surface`** — compute what `Cmd::Serve` would pick (`Standard` or\n`Explore`) given the declared mode and whether an `explore` config section is\npresent. Emitted as `Info`.\n\nAll four use `harness::GROVE_START` / `harness::GROVE_END` / `harness::MCP_SERVER_KEY`\nfrom `core/src/harness.rs` — no constants duplicated, no cli cross-dependency.\n\n---\n\n### 4. Explore-mode checks (mode == McpLlm only)\n\nRun after universal checks; appended with `group: \"explore\"`.\n\n| Check name | Logic | Status |\n|---|---|---|\n| `explore_config_valid` | `explore` section must be present and pass `ExploreConfig::validate()` | Fail if absent/invalid |\n| `provider_reachable` | `health_probe(&cfg)` → `HealthError::Unreachable { url, detail }` | Fail; surface hint verbatim |\n| `model_served` | `health_probe` → `HealthError::ModelMissing { model, url, available }` | Fail; enrich with `list_models` |\n| `allowed_tools_known` | compare `cfg.allowed_tools` vs `toolset::{READ, GLOB, GREP, GROVE}` | Warn per unrecognized |\n| `tap_config` | `cfg.tap` / `cfg.trace_retain` values | Info |\n\n---\n\n### 5. CLI dispatch in `cli/src/main.rs`\n\nAdd to `Cmd`:\n\n```rust\n/// Run a pre-flight health check (brew doctor / flutter doctor analogue).\nDoctor {\n    /// Project directory (default: current).\n    #[arg(default_value = \".\")]\n    path: PathBuf,\n    /// Force explore-mode checks even if config declares standard mode.\n    #[arg(long = \"explore\")]\n    explore: bool,\n    /// Force standard mode checks.\n    #[arg(long = \"standard\")]\n    standard: bool,\n},\n```\n\n**Human output** — grouped ✓ / ⚠ / ✗ table per `group`:\n\n```\ngrove doctor · <path> · mode: <mode>\n\n  Universal\n    ✓ grove_version · <version>\n    ✓ config_present · .grove/config.json · mode=<mode>\n    ✗ harness_mcp_json · config.mode=mcp but .mcp.json registers `serve --explore`\n        → run `grove init --as mcp` to reconcile the harness to the declared mode\n    …\n\n  1 failure, 1 warning\n```\n\n**JSON output** (`--json`):\n\n```json\n{\n  \"path\": \"<absolute path>\",\n  \"mode\": \"<mode string>\",\n  \"ok\": <bool>,\n  \"checks\": [\n    { \"group\": \"…\", \"name\": \"…\", \"status\": \"ok|warn|fail|info\",\n      \"detail\": \"…\", \"hint\": null }\n  ],\n  \"summary\": { \"ok\": N, \"warn\": N, \"fail\": N, \"info\": N }\n}\n```\n\n**Exit code** — `std::process::exit(1)` when `!report.ok()`, under **both**\noutput formats. `Cmd::Doctor` dispatch arm returns `Ok(())` before the exit call\nso `?` propagation works normally.\n\n---\n\n## Files to Modify\n\n| File | Change |\n|---|---|\n| `core/src/harness.rs` | **New** — `GROVE_START`, `GROVE_END`, `MCP_SERVER_KEY`, `expected_mcp_args`, `expected_claude_marker`, `agents_md_expected` |\n| `core/src/lib.rs` | Add `pub mod harness;` and `pub mod doctor;` |\n| `core/src/doctor.rs` | **New** — `Status`, `Check`, `Report`, `diagnose` |\n| `cli/src/init.rs` | Replace local `CLAUDE_START`/`CLAUDE_END`/`MCP_SERVER_KEY` consts with imports from `grove_core::harness`; update all references |\n| `cli/src/main.rs` | Add `Cmd::Doctor` variant; dispatch arm; import `grove_core::doctor` |\n\nReuses (read-only, no changes required):\n\n- `core/src/config.rs` — `GroveConfig::load`, `active_mode`, `ModeChoice`, `Mode`\n- `core/src/registry.rs` — `search_path`, `cache_root`, `verify_lock`, `available`\n- `core/src/explore/client.rs` — `health_probe`, `list_models`, `HealthError`\n- `core/src/explore/config.rs` — `ExploreConfig::validate`\n- `core/src/explore/toolset.rs` — `READ`, `GLOB`, `GREP`, `GROVE` constants\n\n---\n\n## Data Model Changes\n\nNone. No `.forge/store/`, `config.json`, lock-file, or wire-format changes.\n`core::harness` is an additive module with no serialised state.\n\n---\n\n## Testing Strategy\n\n### Unit tests in `core/src/harness.rs`\n\n- `expected_mcp_args_coverage` — assert every `Mode` variant returns a value;\n  verify Mcp/Both → `[\"serve\"]`, McpLlm → `[\"serve\",\"--explore\"]`,\n  Skill/Grammars → `None`.\n- `expected_claude_marker_coverage` — assert all variants; McpLlm has\n  `mcp__grove__explore`, Mcp/Both have `mcp__grove__outline`, Skill has\n  `grove skill`, Grammars is `None`.\n- `agents_md_expected_only_mcp_llm` — `true` exactly for `Mode::McpLlm`.\n\n### Unit tests in `core/src/doctor.rs`\n\nAll tests build fixtures **by hand** in a `tempdir` (`std::fs::write`) and call\n`diagnose`. No cross-crate private helpers.\n\n**Harness-consistency matrix** (replaces the private `reconcile_harness` fixtures):\n\nFor each mode (Mcp, Skill, Both, McpLlm, Grammars), write a minimal but\ncomplete fixture set (config.json + correct harness files), call `diagnose`, and\nassert all four harness checks are `Status::Ok`.\n\nThen for selected drift scenarios:\n- `config.mode=mcp` + `.mcp.json` has `[\"serve\",\"--explore\"]` → `harness_mcp_json` is `Fail`.\n- `config.mode=mcp` + `CLAUDE.md` contains `mcp__grove__explore` → `harness_claude_md` is `Fail`.\n- `config.mode=mcp-llm` + `AGENTS.md` absent → `harness_agents_md` is `Warn`.\n- `config.mode=grammars` + `CLAUDE.md` has `GROVE_START` → `harness_claude_md` is `Warn`.\n\n**Lock integrity** (using the `DownClient` stub pattern from T06):\n\n- `lock_integrity_absent_lockfile_is_warn` — no `grove.lock` present; assert\n  `lock_integrity` check is `Warn`.\n- `lock_integrity_match_is_ok` — write a minimal valid `grove.lock` matching a\n  seeded grammar wasm; assert `lock_integrity` is `Ok` for that grammar.\n\n**Explore-mode checks** (no network):\n\n- `explore_config_absent_is_fail` — config declares McpLlm, explore section absent;\n  `explore_config_valid` → `Fail`.\n- `provider_unreachable_is_fail` — config has a dead `base_url`; `provider_reachable`\n  → `Fail`.\n\n**Exit-code boundary** (advisory from review):\n\n- `warn_only_report_exits_zero` — unit-test `Report::ok()` with a fixture that\n  has only `Warn` checks; assert `ok()` is `true` (warnings are pass-grade).\n\n### Integration tests in `cli/tests/cli.rs`\n\n- `doctor_help_documents_verb` — `grove doctor --help` exits 0 and prints\n  \"doctor\".\n- `doctor_universal_clean_exits_zero` — run against a provisioned dev root (no\n  network); assert exit 0.\n- `doctor_json_output_is_valid` — `grove doctor --json`; parse the output, assert\n  `ok` field present and `checks` is an array.\n- `doctor_fail_exits_nonzero` — induce a harness drift (e.g. write a wrong\n  `.mcp.json`); assert exit code 1 under both human and `--json` modes.\n\n---\n\n## Acceptance Criteria\n\n1. `core::harness` defines `GROVE_START`, `GROVE_END`, `MCP_SERVER_KEY`,\n   `expected_mcp_args(Mode)`, `expected_claude_marker(Mode)`, `agents_md_expected(Mode)`.\n   `cli/src/init.rs` imports and uses them — the sentinel strings exist in exactly\n   one place in the codebase.\n\n2. `core::doctor` defines `Status { Ok, Warn, Fail, Info }`,\n   `Check { group, name, status, detail, hint }`, `Report { mode: Mode, checks }`,\n   and `diagnose(root: &Path, force: ModeChoice) -> Report`. Pure / read-only.\n\n3. Mode resolution via `active_mode(root, force)` (T03): no flag → auto-detect;\n   `--explore`/`--standard` force.\n\n4. **Universal checks** run for every project: `grove_version` (Info);\n   `config_present` (Ok/Fail/Info); `legacy_explore_json` (Warn if drift);\n   four harness sub-checks using `core::harness` constants; `registry_root`;\n   `grammar_cache`; `project_languages`; `lock_integrity`.\n\n5. **Harness checks** compare on-disk state to `harness::expected_*` → Fail on\n   drift naming the mismatched file; hint instructs `grove init --as <mode>`.\n\n6. **`grove.lock` sha256 verify** via T06 `verify_lock`: present → per-grammar\n   Match→Ok / Mismatch→Fail / Missing→Warn; absent → Warn.\n\n7. **Explore-mode checks** (McpLlm only): `explore_config_valid`,\n   `provider_reachable`, `model_served`, `allowed_tools_known`, `tap_config`.\n\n8. `cli/src/main.rs` gains `Cmd::Doctor { path, explore, standard }` + global\n   `--json`; renders grouped ✓/⚠/✗ table or machine-readable JSON; sets exit\n   code from `Report::ok()` — 0 when ok (warnings allowed), 1 on any Fail.\n\n9. `Report::ok()` is `true` when only `Warn`/`Info` checks are present (no Fail).\n   A warn-only run exits 0 under both output formats.\n\n10. `cargo build` warning-clean; `cargo clippy -- -D warnings` clean;\n    `cargo test` green; `--help` documents `doctor`.\n\n---\n\n## Operational Impact\n\n- **Version bump:** required at release (new user-facing verb).\n- **Regeneration:** none; additive command.\n- **Security scan:** not required.\n- **Change character:** additive — no existing behaviour modified.\n- **`cli/src/init.rs` refactor:** moving constants to `core::harness` is a\n  non-breaking internal refactor; all public APIs and on-disk file formats are\n  unchanged.\n"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 6213,
+        "cacheRead": 40875,
+        "cacheWrite": 1976,
+        "totalTokens": 49065,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.093195,
+          "cacheRead": 0.012262499999999999,
+          "cacheWrite": 0.00741,
+          "total": 0.1128705
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 562
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783196214957,
+      "responseId": "msg_01AMtc8UTTneJV2SKMPW4PP1"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01322QUJBJ6rqmPEwc96KyJj",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "Wrote 17279 bytes to engineering/sprints/GROVE-S03/GROVE-S03-T07/PLAN.md"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783196324996
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Now update the task status to `planned` and write the plan summary:"
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01DrdEXqTnWry6ySSuPzQxBd",
+          "name": "forge_store",
+          "arguments": {
+            "command": "update-status",
+            "args": [
+              "task",
+              "GROVE-S03-T07",
+              "status",
+              "planned"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 106,
+        "cacheRead": 42851,
+        "cacheWrite": 6257,
+        "totalTokens": 49215,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.00159,
+          "cacheRead": 0.0128553,
+          "cacheWrite": 0.02346375,
+          "total": 0.03791205
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783196324997,
+      "responseId": "msg_01Bv2NJ3F4M6AZc4jPRCLYbN"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01DrdEXqTnWry6ySSuPzQxBd",
+      "toolName": "forge_store",
+      "content": [
+        {
+          "type": "text",
+          "text": "OK"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783196328116
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_018aavBN4o7vNR2tYQ9nq6ie",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "write",
+            "entity": "task",
+            "entityId": "GROVE-S03-T07",
+            "artifact": "plan-summary",
+            "content": "{\n  \"objective\": \"Implement grove doctor with a new core::harness module (single source of truth for sentinel constants and mode→expected-content tables), core::doctor (pure diagnose function with universal + explore-mode checks), and Cmd::Doctor CLI verb with --json output and exit-code semantics.\",\n  \"key_changes\": [\n    \"New core/src/harness.rs: GROVE_START, GROVE_END, MCP_SERVER_KEY, expected_mcp_args(Mode), expected_claude_marker(Mode), agents_md_expected(Mode) — resolves plan-review blocker #1 (constant ownership).\",\n    \"cli/src/init.rs refactored: remove local CLAUDE_START/CLAUDE_END/MCP_SERVER_KEY consts; import from grove_core::harness so sentinel strings live in exactly one place.\",\n    \"New core/src/doctor.rs: Status{Ok,Warn,Fail,Info}, Check{group,name,status,detail,hint}, Report{mode,checks}, Report::ok(), diagnose(root,force)->Report — pure read-only.\",\n    \"core/src/lib.rs: add pub mod harness and pub mod doctor.\",\n    \"Universal checks: grove_version, config_present, legacy_explore_json, harness_mcp_json, harness_claude_md, harness_agents_md, harness_serve_surface, registry_root, grammar_cache, project_languages, lock_integrity.\",\n    \"Harness sub-checks use harness::expected_mcp_args/expected_claude_marker/agents_md_expected to validate on-disk harness files against declared mode; Fail on drift naming the file.\",\n    \"Explore-mode checks (McpLlm only): explore_config_valid, provider_reachable, model_served, allowed_tools_known, tap_config.\",\n    \"cli/src/main.rs: Cmd::Doctor{path,explore,standard} variant; dispatch arm; grouped ✓/⚠/✗ human output or --json; exit code from Report::ok().\",\n    \"Unit tests in core/src/doctor.rs build all fixtures by hand (tempdir + std::fs::write) — resolves plan-review blocker #2 (no cross-crate private helpers).\",\n    \"Harness-consistency drift matrix in doctor tests: per-mode clean fixture → all harness checks Ok; selected drift scenarios → correct Fail/Warn.\",\n    \"warn_only_report_exits_zero: Report::ok() true when only Warn/Info checks present (AC 9 warning boundary, per reviewer advisory).\",\n    \"Integration tests: doctor --help, clean project exits 0, --json parses, induced drift exits 1 under both output modes.\"\n  ],\n  \"verdict\": \"n/a\",\n  \"written_at\": \"2026-07-05T00:00:00Z\",\n  \"artifact_ref\": \"PLAN.md\"\n}\n"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 830,
+        "cacheRead": 49108,
+        "cacheWrite": 119,
+        "totalTokens": 50058,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.012450000000000001,
+          "cacheRead": 0.0147324,
+          "cacheWrite": 0.00044625,
+          "total": 0.027631649999999997
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783196328117,
+      "responseId": "msg_01PzBTXrh3ocWXUhfuxVbsP4"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_018aavBN4o7vNR2tYQ9nq6ie",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "Wrote 2321 bytes to engineering/sprints/GROVE-S03/GROVE-S03-T07/PLAN-SUMMARY.json"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783196344502
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01YBata2ePe7tm5r1LaPQL6q",
+          "name": "forge_store",
+          "arguments": {
+            "command": "set-summary",
+            "args": [
+              "GROVE-S03-T07",
+              "plan"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 84,
+        "cacheRead": 49227,
+        "cacheWrite": 877,
+        "totalTokens": 50189,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.00126,
+          "cacheRead": 0.0147681,
+          "cacheWrite": 0.00328875,
+          "total": 0.01931985
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783196344502,
+      "responseId": "msg_018bdx3qwq3oTpr8AD7uWXVP"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01YBata2ePe7tm5r1LaPQL6q",
+      "toolName": "forge_store",
+      "content": [
+        {
+          "type": "text",
+          "text": "forge_store failed: Command failed: node /home/boni/.nvm/versions/node/v24.3.0/lib/node_modules/@entelligentsia/forgecli/dist/forge-payload/tools/store-cli.cjs set-summary GROVE-S03-T07 plan\nobjective: value length 281 exceeds maxLength 280\nkey_changes[4]: item length 213 exceeds maxLength 200\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783196346799
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "The summary has some fields exceeding limits. Let me fix the objective and key_changes[4] to be within limits.\n\n- objective: must be ≤ 280 chars (currently 281)\n- key_changes[4]: must be ≤ 200 chars (currently 213)",
+          "thinkingSignature": "EqQDCmUIDxgCKkDRSxbk44e0M2pNbW8Q1NT4dC/33W3vjZDfR4eb4I0vA98lSNjey8/w45oaFdtqdvEf7JuQdk2NoKkdOK6M7ffwMhFjbGF1ZGUtc29ubmV0LTQtNjgAQgh0aGlua2luZxIMZ9OVRRlWHSq+VSt8GgzSFlPH+yckABfQZLYiMH/SgzCSuuMkCoHJc7jjL2DNojc06JWXhyrRjtMPtaoexhUqVKf/aWhsSeLlel1lXirsAa1yMBu0LIjDIjbgq/eT/pL4/wwnatuqR1+JTEttg6KmMqOgOuN27o0Z1Eu4eBa7vscOlUGyLNqn0Puas694mw8Ty0wpcaALzGlB7Cws3d8l4VSFDiW71acXKV5zVaEis5ffHC6Chogds6zgSHLlSK4jHC3Hg1y8Qp1tDNL2bTmLZdLZucN0RzPdITkTO507u7g6HQ8Q6XRuo8i872eL0niJV6ZIF6CA/yESltTQszoJ0SQ7odhjYBksf6Tv9dKmRKoVOiG02FI3RytnZGvbMYlHJRPdXMZpxP7yzQ/xo2NIRNOpBwaqtLDV1HSrGAE="
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01Q8NHBhEST5PxqhX8jLRDHN",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "write",
+            "entity": "task",
+            "entityId": "GROVE-S03-T07",
+            "artifact": "plan-summary",
+            "content": "{\n  \"objective\": \"Implement grove doctor with a new core::harness module (sentinel constants + mode→content tables), core::doctor (pure diagnose with universal + explore checks), and Cmd::Doctor CLI verb with --json and exit-code semantics.\",\n  \"key_changes\": [\n    \"New core/src/harness.rs: GROVE_START, GROVE_END, MCP_SERVER_KEY, expected_mcp_args(Mode), expected_claude_marker(Mode), agents_md_expected(Mode) — resolves plan-review blocker #1 (constant ownership).\",\n    \"cli/src/init.rs refactored: remove local CLAUDE_START/CLAUDE_END/MCP_SERVER_KEY consts; import from grove_core::harness — sentinel strings live in exactly one place.\",\n    \"New core/src/doctor.rs: Status{Ok,Warn,Fail,Info}, Check{group,name,status,detail,hint}, Report{mode,checks}, Report::ok(), diagnose(root,force)->Report — pure read-only.\",\n    \"core/src/lib.rs: add pub mod harness and pub mod doctor.\",\n    \"Universal checks: grove_version, config_present, legacy_explore_json, harness_mcp_json, harness_claude_md, harness_agents_md, harness_serve_surface, registry_root, grammar_cache, project_languages, lock_integrity.\",\n    \"Harness sub-checks use harness::expected_mcp_args/expected_claude_marker/agents_md_expected to validate on-disk files vs declared mode; Fail on drift naming the file.\",\n    \"Explore-mode checks (McpLlm only): explore_config_valid, provider_reachable, model_served, allowed_tools_known, tap_config.\",\n    \"cli/src/main.rs: Cmd::Doctor{path,explore,standard}; dispatch arm; grouped ✓/⚠/✗ human output or --json; exit code from Report::ok().\",\n    \"Unit tests in core/src/doctor.rs build all fixtures by hand (tempdir + std::fs::write) — resolves plan-review blocker #2 (no cross-crate private helpers).\",\n    \"Harness-consistency drift matrix: per-mode clean fixture → all harness checks Ok; selected drift scenarios → correct Fail/Warn checks emitted.\",\n    \"warn_only_report_exits_zero: Report::ok() true when only Warn/Info present — AC 9 warning boundary (per reviewer advisory).\",\n    \"Integration tests: doctor --help, clean project exits 0, --json parses, induced drift exits 1 under both output modes.\"\n  ],\n  \"verdict\": \"n/a\",\n  \"written_at\": \"2026-07-05T00:00:00Z\",\n  \"artifact_ref\": \"PLAN.md\"\n}\n"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 898,
+        "cacheRead": 50104,
+        "cacheWrite": 201,
+        "totalTokens": 51204,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.013470000000000001,
+          "cacheRead": 0.0150312,
+          "cacheWrite": 0.00075375,
+          "total": 0.02925795
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 80
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783196346799,
+      "responseId": "msg_014NoRxdzP2AzqVqvxLD9RjW"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01Q8NHBhEST5PxqhX8jLRDHN",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "Wrote 2237 bytes to engineering/sprints/GROVE-S03/GROVE-S03-T07/PLAN-SUMMARY.json"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783196356935
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01AZVbjRjXTQMrGS4CkwGKJm",
+          "name": "forge_store",
+          "arguments": {
+            "command": "set-summary",
+            "args": [
+              "GROVE-S03-T07",
+              "plan"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 84,
+        "cacheRead": 50305,
+        "cacheWrite": 945,
+        "totalTokens": 51335,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.00126,
+          "cacheRead": 0.015091499999999999,
+          "cacheWrite": 0.00354375,
+          "total": 0.01989825
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783196356935,
+      "responseId": "msg_01QooYAGk42XZ8atFDXvW3eH"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01AZVbjRjXTQMrGS4CkwGKJm",
+      "toolName": "forge_store",
+      "content": [
+        {
+          "type": "text",
+          "text": "forge_store failed: Command failed: node /home/boni/.nvm/versions/node/v24.3.0/lib/node_modules/@entelligentsia/forgecli/dist/forge-payload/tools/store-cli.cjs set-summary GROVE-S03-T07 plan\nkey_changes[4]: item length 213 exceeds maxLength 200\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783196359090
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_013kaJC1eSmTaPNmzNFRyLBo",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "write",
+            "entity": "task",
+            "entityId": "GROVE-S03-T07",
+            "artifact": "plan-summary",
+            "content": "{\n  \"objective\": \"Implement grove doctor with a new core::harness module (sentinel constants + mode→content tables), core::doctor (pure diagnose with universal + explore checks), and Cmd::Doctor CLI verb with --json and exit-code semantics.\",\n  \"key_changes\": [\n    \"New core/src/harness.rs: GROVE_START, GROVE_END, MCP_SERVER_KEY, expected_mcp_args(Mode), expected_claude_marker(Mode), agents_md_expected(Mode) — resolves constant-ownership blocker.\",\n    \"cli/src/init.rs refactored: remove local CLAUDE_START/CLAUDE_END/MCP_SERVER_KEY consts; import from grove_core::harness — sentinel strings live in exactly one place.\",\n    \"New core/src/doctor.rs: Status{Ok,Warn,Fail,Info}, Check{group,name,status,detail,hint}, Report{mode,checks}, Report::ok(), diagnose(root,force)->Report — pure read-only.\",\n    \"core/src/lib.rs: add pub mod harness and pub mod doctor.\",\n    \"Universal checks: grove_version, config_present, legacy_explore_json, four harness sub-checks, registry_root, grammar_cache, project_languages, lock_integrity.\",\n    \"Harness sub-checks use harness::expected_mcp_args/expected_claude_marker/agents_md_expected; validate on-disk files vs declared mode; Fail on drift.\",\n    \"Explore-mode checks (McpLlm only): explore_config_valid, provider_reachable, model_served, allowed_tools_known, tap_config.\",\n    \"cli/src/main.rs: Cmd::Doctor{path,explore,standard}; dispatch arm; grouped ✓/⚠/✗ human output or --json; exit code from Report::ok().\",\n    \"Unit tests in core/src/doctor.rs build all fixtures by hand (tempdir + std::fs::write) — resolves test-strategy blocker (no cross-crate private helpers).\",\n    \"Harness drift matrix: per-mode clean fixture → all harness checks Ok; selected drift scenarios → correct Fail/Warn.\",\n    \"warn_only_report_exits_zero: Report::ok() true when only Warn/Info present — AC 9 warning boundary (per reviewer advisory).\",\n    \"Integration tests: doctor --help, clean project exits 0, --json parses, induced drift exits 1 under both output modes.\"\n  ],\n  \"verdict\": \"n/a\",\n  \"written_at\": \"2026-07-05T00:00:00Z\",\n  \"artifact_ref\": \"PLAN.md\"\n}\n"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 775,
+        "cacheRead": 51250,
+        "cacheWrite": 187,
+        "totalTokens": 52213,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.011625,
+          "cacheRead": 0.015375,
+          "cacheWrite": 0.00070125,
+          "total": 0.02770425
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783196359091,
+      "responseId": "msg_01TpggjmhiiG4WLXgBuLjaxd"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_013kaJC1eSmTaPNmzNFRyLBo",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "Wrote 2120 bytes to engineering/sprints/GROVE-S03/GROVE-S03-T07/PLAN-SUMMARY.json"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783196367836
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01S4ztUssHz1Me6XErfwM5i7",
+          "name": "forge_store",
+          "arguments": {
+            "command": "set-summary",
+            "args": [
+              "GROVE-S03-T07",
+              "plan"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 84,
+        "cacheRead": 51437,
+        "cacheWrite": 822,
+        "totalTokens": 52344,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.00126,
+          "cacheRead": 0.0154311,
+          "cacheWrite": 0.0030825,
+          "total": 0.0197766
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783196367837,
+      "responseId": "msg_01VSS5BuLZFh8ut5naCJ9rLr"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01S4ztUssHz1Me6XErfwM5i7",
+      "toolName": "forge_store",
+      "content": [
+        {
+          "type": "text",
+          "text": "OK"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783196369990
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Plan phase complete. Here's what was produced:\n\n---\n\n## Plan — GROVE-S03-T07: `grove doctor`\n\n### Summary\n\nThe revised plan resolves both blockers identified in the plan review:\n\n**Blocker 1 — Harness constant ownership (fixed)**\n\nA new `core/src/harness.rs` module becomes the **single source of truth** for all harness-shape knowledge:\n- `GROVE_START` / `GROVE_END` sentinel constants (previously private in `cli/src/init.rs`)\n- `MCP_SERVER_KEY` (previously private in `cli/src/init.rs`)\n- `expected_mcp_args(Mode) -> Option<&'static [&'static str]>` — maps mode to expected `.mcp.json` args\n- `expected_claude_marker(Mode) -> Option<&'static str>` — maps mode to expected CLAUDE.md content marker\n- `agents_md_expected(Mode) -> bool` — whether AGENTS.md requires a grove block\n\n`cli/src/init.rs` imports from `grove_core::harness` instead of defining its own consts. `core::doctor` uses the same functions to check drift — no duplication, no circular dependency.\n\n**Blocker 2 — Unit test strategy (fixed)**\n\nTests in `core/src/doctor.rs` write all fixtures by hand (`tempdir` + `std::fs::write`) then call `diagnose`. No references to private `reconcile_harness` or `seed_lock` helpers from the cli crate.\n\n### Files to Modify\n\n| File | Change |\n|---|---|\n| `core/src/harness.rs` | **New** — sentinel constants + per-mode query functions |\n| `core/src/lib.rs` | Add `pub mod harness;` + `pub mod doctor;` |\n| `core/src/doctor.rs` | **New** — `diagnose`, types, universal + explore checks |\n| `cli/src/init.rs` | Replace 3 private consts with `grove_core::harness` imports |\n| `cli/src/main.rs` | Add `Cmd::Doctor` variant + dispatch arm |"
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 517,
+        "cacheRead": 52259,
+        "cacheWrite": 97,
+        "totalTokens": 52874,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.007755000000000001,
+          "cacheRead": 0.0156777,
+          "cacheWrite": 0.00036375,
+          "total": 0.02379945
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "stop",
+      "timestamp": 1783196369990,
+      "responseId": "msg_01WcyHQJK7opV7sAZFNfbnSC"
+    }
+  ]
+}

@@ -1,0 +1,1596 @@
+{
+  "schema": "forge-subagent-transcript/v1",
+  "startedAt": "2026-07-04T19:57:35.924Z",
+  "finishedAt": "2026-07-04T20:01:00.974Z",
+  "cwd": "/home/boni/src/grove-engineering/grove",
+  "persona": "engineer",
+  "tag": "GROVE-S03-T06__implement",
+  "prompt": "Read the workflow below and follow it. Task ID: GROVE-S03-T06.\n\n---\n\n## Prior phase summaries (carry-forward)\n\n### plan\nObjective: Add a `verify_lock(path) -> Result<Option<Vec<LockVerifyEntry>>>` function plus `LockVerifyStatus` enum and `LockVerifyEntry` struct to `core/src/registry.rs`, enabling grove doctor (T07) to recompute each cached grammar wasm's sha256 and compare it against the lock file.\nVerdict: n/a\nKey changes: New `pub enum LockVerifyStatus { Match, Mismatch, Missing }` in registry.rs; New `pub struct LockVerifyEntry { lang, expected, actual: Option<String>, status }` in registry.rs; New `pub fn verify_lock(path: &Path) -> Result<Option<Vec<LockVerifyEntry>>>` — Ok(None) when lock absent, Ok(Some(vec)) when parsed; Wasm resolved via `registry_root()/<name>/grammar.wasm` (same path as `resolve()`; covers dev-stubs, cache_root, GROVE_REGISTRY); NotFound error on wasm path → Missing; hash mismatch → Mismatch; equal hashes → Match; Reuses existing `sha256()` primitive so a lock written by `write_lock_for` verifies clean; Four unit tests: absent-lock (Ok(None)), Match after write_lock_for, Mismatch on tampered hash, Missing on nonexistent lang wasm; Add `pub use registry::{LockVerifyEntry, LockVerifyStatus}` to core/src/lib.rs curated surface; No new files, no Cargo.toml changes, no lock-format changes — purely additive; Not material: additive read-only primitive, no CLI surface, no version bump required\nFull artifact: PLAN.md\n### review_plan\nObjective: Assess the plan to add a read-only grove.lock wasm sha256 verify primitive (verify_lock + LockVerifyStatus/LockVerifyEntry) to core/src/registry.rs for grove doctor (T07).\nVerdict: approved\nKey changes: Verified against actual code: lock JSON shape {version,grammars:[{name,version,wasm}]} matches write_lock_for@412; plan's parse of doc[grammars]/entry[wasm]/name is correct.; AC#2 holds: wasm_sha256@106 == sha256(self.wasm) and verify_lock recomputes sha256 over the same file bytes, so a fresh lock verifies all-Match.; Wasm path registry_root()/<name>/grammar.wasm equals resolve@219's idx.root.join(lang)/grammar.wasm in steady state (index root seeded from registry_root).; Missing/Mismatch/None signals map correctly to NotFound / hash-diff / absent-file; Ok(None) is a clean non-error signal (AC#3).; Change is purely additive (new public types+fn, no signature/lock-format change) — matches 'no version bump' operational impact.; Advisory: index() memoizes root via OnceLock while verify_lock re-evaluates registry_root(); keep the Match test registry-root-agnostic (no mid-process GROVE_REGISTRY mutation) to avoid divergence.; Advisory: decide malformed-entry handling (entry missing wasm/name) deliberately; avoid silent unwrap.; Advisory: verify_lock takes the lock file path (like locked_langs), not a project root — T07 must pass the resolved grove.lock path.; All five acceptance criteria addressed; no changes required before implementation.\nFindings: See key_changes — all findings mirrored there for schema compliance.\nFull artifact: PLAN_REVIEW.md\n\n---\n\n---\nrequirements:\n  reasoning: Medium\n  context: Medium\n  speed: Medium\naudience: subagent\nphase: implement\ncontext:\n  architecture: false\n  prior_summaries: delta\n  persona: summary\n  master_index: false\n  diff_mode: false\ndeps:\n  personas: [engineer]\n  skills: [engineer, generic]\n  templates: [PROGRESS_TEMPLATE]\n  sub_workflows: [review_code]\n  kb_docs: [architecture/stack.md, architecture/routing.md]\n  config_fields: [commands.test, paths.engineering]\n---\n\n\n# Implement Plan\n## Algorithm\n\n```\n\n0a. Pre-flight Gate Check:\n   - **Entity-mode resolution:** read the kickoff arguments. `--task {id}` → `entity_kind = \"task\"`, `record_id = {id}`. `--bug {id}` → `entity_kind = \"bug\"`, `record_id = {id}`. All store-cli calls below substitute `{entity_kind}` and `{record_id}` for the literal \"task\"/{taskId} placeholders.\n   - Run: `node .forge/tools/preflight-gate.cjs --phase implement --{entity_kind} {record_id}`\n   - Exit 1 (gate failed) → print stderr and HALT. Do not proceed; do not attempt to produce the artifact.\n   - Exit 2 (misconfiguration) → print stderr and HALT.\n   - Exit 0 → continue.\n\n0b. Pipeline Step Guard (user-invoked state check):\n   - If `--force` is present in the invocation arguments, skip this step entirely.\n   - If `entity_kind == \"bug\"`, skip this step entirely (bug state is managed by meta-fix-bug.md).\n   - Read current task state:\n     `node .forge/tools/store-cli.cjs read task {record_id} --fields status`\n   - Extract the `status` field from the JSON output.\n   - Allowed states for this phase: `plan-approved`.\n   - If the current status is NOT in the allowed set:\n     Print the following and HALT (do not proceed):\n     `× Task {record_id} is in state '{status}' — /forge:review-plan must complete first. To run the full pipeline: /forge:run-task {record_id}`\n\n1. Load Context:\n   - Read `.forge/personas/engineer.md` first; print the persona identity line (emoji, name, tagline) to stdout before any other tool use.\n   - store-cli verbs: `read` | `list` | `write` | `emit` | `update-status` | `set-summary` | `describe` | `nlp` | `query` | `delete` — there is no `get`/`set`/`find`. See `_fragments/store-cli-verbs.md` for full notes; run `--help` before improvising.\n   - Read the approved PLAN.md\n   - Read business domain docs relevant to the task\n\n2. Implementation:\n   - Execute plan steps incrementally\n   - Perform \"compile/check\" after each significant change\n   - Ensure all new code follows established project patterns\n\n3. Verification:\n   - Run syntax verification: {SYNTAX_CHECK}\n   - Run test suite using the **resolved test command** from `commands.test` in `.forge/config.json` (i.e. `` `${commands.test}` ``, e.g. `.venv/bin/python -m pytest`, `npm test`, `cargo test`). Do NOT invoke bare `python` / `python3` / `pytest` — the project interpreter is rarely on `$PATH`; using the resolved command avoids `python: command not found` and `No module named pytest`.\n   - Template placeholder: cargo test --release --locked (resolved at materialize time from `commands.test`).\n   - Run build if frontend assets modified: {BUILD_COMMAND}\n\n4. Documentation:\n   - Write PROGRESS.md via `forge_artifact`:\n     `forge_artifact({ command:\"write\", entity:\"{entity_kind}\", entityId:\"{record_id}\", artifact:\"progress\", content:\"<markdown>\" })`\n     Content must include: summary of changes, test evidence (copy of output), files changed manifest.\n\n5. Knowledge Writeback:\n   - Update architecture/domain/stack-checklist if discoveries were made\n   - Tag updates: `<!-- Discovered during {TASK_ID} — {date} -->`\n\n6. Finalize:\n   - Transitions:\n     - **Task mode** — legal predecessors are `planned`, `plan-approved`, or `implementing`; target is `implemented`.\n       - `planned`        → `implemented` (workflow-prose path — direct)\n       - `plan-approved`  → `implementing` → `implemented` (supervisor-review path)\n       - Out-of-band escapes (any state): `plan-revision-required`, `code-revision-required`, `blocked`, `escalated`, `abandoned`\n       Update status — check current state first:\n       - If predecessor is `planned` or `implementing`:\n         `node .forge/tools/store-cli.cjs update-status task {taskId} status implemented`\n       - If predecessor is `plan-approved` (two-step mandatory — FSM forbids skipping `implementing`):\n         `node .forge/tools/store-cli.cjs update-status task {taskId} status implementing`\n         `node .forge/tools/store-cli.cjs update-status task {taskId} status implemented`\n     - **Bug mode** — NO status write. The bug remains `in-progress` until the commit phase transitions it to `fixed`. Writing `bug.status` here violates `meta-fix-bug.md § Iron Laws #2`.\n   - **Do NOT emit a phase event yourself.** The orchestrator owns event emission — it composes the canonical event from runtime telemetry plus the SUMMARY you write next. Subagents that call `store-cli emit` for phase events hallucinate runtime facts (Plan 11 / Slice 2). Write the SUMMARY and return.\n\n7. Emit Summary Sidecar:\n   - Write `IMPLEMENTATION-SUMMARY.json` via `forge_artifact`:\n     `forge_artifact({ command:\"write\", entity:\"{entity_kind}\", entityId:\"{record_id}\", artifact:\"implementation-summary\", content:\"<JSON>\" })`\n     JSON shape: `{\"objective\":\"<one sentence>\", \"key_changes\":[\"<up to 12 bullets>\"], \"files_changed\":[\"<path>\"], \"verdict\":\"n/a\", \"written_at\":\"<ISO 8601>\", \"artifact_ref\":\"PROGRESS.md\"}`\n   - `files_changed`: every repo path this phase changed (one `git status --porcelain`); `commit-task.cjs` stages from it.\n   - Then link sidecar to store (task mode):\n     `forge_store({ command:\"set-summary\", args:[\"{taskId}\", \"implementation\"] })`\n     Or (bug mode):\n     `forge_store({ command:\"set-bug-summary\", args:[\"{bugId}\", \"implementation\"] })`\n     The sidecar path is auto-resolved from the record's `path` — never pass it.\n\n8. Post-Phase Output Guard: the `outputs` block below is the authoritative enforcer.\n   You MUST satisfy it before returning. If PROGRESS.md is missing or too small,\n   re-run the relevant step before emitting the complete event.\n```\n\n```outputs phase=implement\nartifact {engineering}/{sprint}/{task}/PROGRESS.md min=200\nrequire summaries.implementation.verdict == n/a\n```\n\n<!-- See _fragments/iron-laws.md for Iron Laws section structure guidance -->\n## Iron Laws\n\n- Follow the Algorithm step by step. Execute the approved PLAN.md exactly; do not invent scope or skip steps without updating the plan first.\n- Read `.forge/personas/engineer.md` first; print the persona identity line (emoji, name, tagline) to stdout before any other tool use.\n- All store I/O via `forge_store` (or `node .forge/tools/store-cli.cjs`). Never edit `.forge/store/*.json` directly.\n- Run the full test suite before declaring the task implemented. Silent continuation past test failures is never acceptable.\n\n## Store-Write Verification\n\n<!-- See _fragments/store-write-verification.md for the canonical block content -->\n\n## Friction Emit\nEmit `type:friction` `{workflow:implement, persona:engineer, issue}` per `_fragments/friction-emit.md`.\n\n<!-- See _fragments/generation-instructions.md for Generation Instructions template -->",
+  "model": "claude-sonnet-4-6",
+  "provider": "anthropic",
+  "exitCode": 0,
+  "stopReason": "stop",
+  "errorMessage": null,
+  "usage": {
+    "input": 29,
+    "output": 8335,
+    "cacheRead": 642112,
+    "cacheWrite": 22180,
+    "cost": 0.40092059999999996,
+    "contextTokens": 31915,
+    "turns": 27
+  },
+  "messageCount": 57,
+  "messages": [
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Let me start by running the banner and then following the workflow steps.",
+          "thinkingSignature": "EpECCmUIDxgCKkAj+3H0hyJTbuwCxwQT0n/9dLO1Zgq0oFbTHIz8HktJTOnt6vRLqQ1+/OvAqLiVM8Ffhl1W235x3+acNL40pG0YMhFjbGF1ZGUtc29ubmV0LTQtNjgAQgh0aGlua2luZxIMWnicTISEhQCypfkuGgwooSqSE/0ie1esIjQiMHBob6jMWNhBoQX2enm9RY5qeJKtiawdwYjPHEaioyPp+FvRnQojbVsknnCusajHtCpa0tRvyPhA7uoqi1BAiOAqQPmXKGW6gfZKRnEA+tFwanWhpuUnIqd8lUPQsIAl5jY5o/MYj4y3HNc74E5n1ynv0wlftA7V0tzSpSGMGzdhCQmkCLW0sWQhnXXUGAE="
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01Q6wQy7yP5x4jf6Jqe8Sq5y",
+          "name": "forge_banner",
+          "arguments": {
+            "name": "forge"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 3,
+        "output": 82,
+        "cacheRead": 9273,
+        "cacheWrite": 3236,
+        "totalTokens": 12594,
+        "cost": {
+          "input": 0.000009,
+          "output": 0.00123,
+          "cacheRead": 0.0027819,
+          "cacheWrite": 0.012135,
+          "total": 0.0161559
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 26
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195055928,
+      "responseId": "msg_015rD37xpFbM91ecZ7gYjQ1k"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01Q6wQy7yP5x4jf6Jqe8Sq5y",
+      "toolName": "forge_banner",
+      "content": [
+        {
+          "type": "text",
+          "text": "\n  \u001b[38;2;255;230;80m✦  \u001b[38;2;200;80;20m▄\u001b[38;2;230;100;30m▓▓▓▓▓\u001b[38;2;200;80;20m▄  \u001b[38;2;255;160;40m≋ ≋ ≋\u001b[0m\n  🔨  \u001b[1m\u001b[38;2;255;160;40mFORGE\u001b[0m  \u001b[2m\u001b[38;2;255;160;40m鍛冶\u001b[0m   \u001b[2m\u001b[38;2;255;160;40mmaking · heat · craft\u001b[0m\n\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783195058614
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01Xw4BrSwWpiQYwgrDJepaPt",
+          "name": "forge_preflight",
+          "arguments": {
+            "phase": "implement",
+            "task": "GROVE-S03-T06"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 78,
+        "cacheRead": 12509,
+        "cacheWrite": 258,
+        "totalTokens": 12846,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.00117,
+          "cacheRead": 0.0037527,
+          "cacheWrite": 0.0009675,
+          "total": 0.0058931999999999995
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195058614,
+      "responseId": "msg_01SUtkGKjwngX2Wx3ktVM8Ai"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01Xw4BrSwWpiQYwgrDJepaPt",
+      "toolName": "forge_preflight",
+      "content": [
+        {
+          "type": "text",
+          "text": "Preflight passed."
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783195060921
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01MzEYaU9qi22NrXjHMEeG3W",
+          "name": "forge_store",
+          "arguments": {
+            "command": "read",
+            "args": [
+              "task",
+              "GROVE-S03-T06",
+              "--json"
+            ]
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01TKWfMpox18BFdxhkVpWRY5",
+          "name": "read",
+          "arguments": {
+            "path": ".forge/personas/engineer.md",
+            "limit": 10
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 143,
+        "cacheRead": 12767,
+        "cacheWrite": 94,
+        "totalTokens": 13005,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.002145,
+          "cacheRead": 0.0038301,
+          "cacheWrite": 0.0003525,
+          "total": 0.0063306000000000005
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195060921,
+      "responseId": "msg_01CY55rQnw2J3JoW9LungHhi"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01MzEYaU9qi22NrXjHMEeG3W",
+      "toolName": "forge_store",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\n  \"taskId\": \"GROVE-S03-T06\",\n  \"title\": \"grove.lock wasm sha256 verify primitive (core)\",\n  \"status\": \"plan-approved\",\n  \"sprintId\": \"GROVE-S03\",\n  \"estimate\": \"S\",\n  \"pipeline\": \"default\",\n  \"latestPhase\": \"review_plan\",\n  \"latestSummary\": {\n    \"objective\": \"Assess the plan to add a read-only grove.lock wasm sha256 verify primitive (verify_lock + LockVerifyStatus/LockVerifyEntry) to core/src/registry.rs for grove doctor (T07).\",\n    \"verdict\": \"approved\",\n    \"key_changes\": [\n      \"Verified against actual code: lock JSON shape {version,grammars:[{name,version,wasm}]} matches write_lock_for@412; plan's parse of doc[grammars]/entry[wasm]/name is correct.\",\n      \"AC#2 holds: wasm_sha256@106 == sha256(self.wasm) and verify_lock recomputes sha256 over the same file bytes, so a fresh lock verifies all-Match.\",\n      \"Wasm path registry_root()/<name>/grammar.wasm equals resolve@219's idx.root.join(lang)/grammar.wasm in steady state (index root seeded from registry_root).\",\n      \"+6 more\"\n    ]\n  }\n}"
+        }
+      ],
+      "details": {
+        "compression": {
+          "tool": "store:read",
+          "before": 898,
+          "after": 275,
+          "saved": 69
+        }
+      },
+      "isError": false,
+      "timestamp": 1783195064143
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01TKWfMpox18BFdxhkVpWRY5",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "🌱 **grove Engineer** — I plan what will be built before any code is written. I do not move forward until the code is clean.\n\n## Identity\n\nI am the grove Engineer. I plan, implement, and document task work with test-first discipline. I read requirements, write code, run tests, and keep PROGRESS.md current.\n\nRun this command using the Bash tool as my first action (before any file reads or other tool use):\n```bash\nnode .forge/tools/banners.cjs forge\n```\n\n[35 more lines in file. Use offset=11 to continue.]"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783195064143
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "🌱 **grove Engineer** — I plan what will be built before any code is written. I do not move forward until the code is clean.\n\nNow let me read the approved PLAN.md for this task.",
+          "thinkingSignature": "Ev4CCmUIDxgCKkBdXT5Tm/PZGDzzIpDpBbtixAT9JYh+IIAd4LnxpHwFV2Ia1RwqWBr+St2C9x9cP7ZKNxFHLPH6DasGS6uFrOBfMhFjbGF1ZGUtc29ubmV0LTQtNjgAQgh0aGlua2luZxIMNzygsiFPUL7YrNPJGgwTns9j9s1MaqoD8mUiMJHtsp3Lz3mNAJSibXXmD48aLUmRjtyU7hP9Zl5+wx2CnPU/Onb7cQvhQtni4ZHZGCrGARqtOf0MaFkb42D4/XciAeNu50osAsF8rD2okYXZkWaN2O3ktyAnvAayfnP6WnvjJfAHLdVlNP4Iek/v6WJY1L1zDZBecKpZvkW4c0s8JQXIdpSzAdIrMZVxLNRBmX6CyPNSDza2PWnxtuGUEU6ZjEhUe+0wTLUrEKT6CG+tSH65qffvF66y3mSJiGDxNiR3gHCS9Rgtp+il6hIM44g3NENrD+lbcVpxU8aQMAMw3c2DJTD5kc2Pnm9hs/HCfzOXh4aHDdgKWRgB"
+        },
+        {
+          "type": "text",
+          "text": "🌱 **grove Engineer** — I plan what will be built before any code is written. I do not move forward until the code is clean.\n\nStatus is `plan-approved`. Let me read the approved PLAN.md and the relevant source files."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01MRj8epsttm7DB2trPDQC1s",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T06",
+            "artifact": "plan"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01TyrkzpavdGDw7BG8qitN4P",
+          "name": "mcp__grove__outline",
+          "arguments": {
+            "file": "core/src/registry.rs"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 275,
+        "cacheRead": 12861,
+        "cacheWrite": 681,
+        "totalTokens": 13818,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.004125,
+          "cacheRead": 0.0038583,
+          "cacheWrite": 0.00255375,
+          "total": 0.01054005
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 59
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195064143,
+      "responseId": "msg_01JpzgeGPqTcoWaVopj8bj7o"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01MRj8epsttm7DB2trPDQC1s",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "# GROVE-S03-T06 Plan: grove.lock wasm sha256 verify primitive (core)\n## Objective\n## Approach\n### Why in `registry.rs`, not a new `lock.rs`\n### Data types (new, public)\n```rust\n```\n### Function signature\n```rust\n```\n### Wasm-file resolution\n```\n```\n### Algorithm inside `verify_lock`\n```\n```\n### `lib.rs` re-export\n## Files to Modify\n| File | Change |\n| `core/src/registry.rs` | Add `LockVerifyStatus` enum, `LockVerifyEntry` struct, `verify_lock` function, and four unit tests |\n| `core/src/lib.rs` | Add `pub use registry::{LockVerifyEntry, LockVerifyStatus};` to the curated surface |\n## Data Model Changes\n## Testing Strategy\n| Test | What it proves |\n| `verify_lock_returns_none_when_file_absent` | `Ok(None)` for a path that does not exist |\n| `verify_lock_matches_after_write_lock_for` | Fresh lock written by `write_lock_for(&[\"rust\"], …)` verifies all `Match` |\n| `verify_lock_detects_tampered_hash` | Mutate the `wasm` field in the written lock JSON → entry status is `Mismatch` |\n| `verify_lock_detects_missing_wasm` | Hand-craft a lock JSON referencing `\"grove_nonexistent_lang_xyz\"` → entry status is `Missing` |\n## Acceptance Criteria\n## Operational Impact\n* **Version bump:** Not required (additive read-only primitive; ships inside an\n* **Regeneration:** None.\n* **Security scan:** Not required.\n* **Breaking changes:** None — new public types + function, no existing signatures\n* **T07 dependency:** T07 (`grove doctor` wasm integrity row) depends on this\n\n[117 body lines omitted — 152 total]"
+        }
+      ],
+      "details": {
+        "compression": {
+          "tool": "artifact:read",
+          "before": 1567,
+          "after": 409,
+          "saved": 74
+        }
+      },
+      "isError": false,
+      "timestamp": 1783195068795
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01TyrkzpavdGDw7BG8qitN4P",
+      "toolName": "mcp__grove__outline",
+      "content": [
+        {
+          "type": "text",
+          "text": "[{\"col\":12,\"id\":\"rust:core/src/registry.rs#Profile@20\",\"kind\":\"class\",\"line\":20,\"name\":\"Profile\",\"signature\":\"pub struct Profile {\"},{\"col\":12,\"id\":\"rust:core/src/registry.rs#is_call_kind@55\",\"kind\":\"method\",\"line\":55,\"name\":\"is_call_kind\",\"parent\":\"Profile\",\"signature\":\"pub fn is_call_kind(&self, kind: &str) -> bool {\"},{\"col\":12,\"id\":\"rust:core/src/registry.rs#Source@67\",\"kind\":\"class\",\"line\":67,\"name\":\"Source\",\"signature\":\"pub struct Source {\"},{\"col\":12,\"id\":\"rust:core/src/registry.rs#Manifest@74\",\"kind\":\"class\",\"line\":74,\"name\":\"Manifest\",\"signature\":\"pub struct Manifest {\"},{\"col\":12,\"id\":\"rust:core/src/registry.rs#Grammar@87\",\"kind\":\"class\",\"line\":87,\"name\":\"Grammar\",\"signature\":\"pub struct Grammar {\"},{\"col\":12,\"id\":\"rust:core/src/registry.rs#wasm_sha256@106\",\"kind\":\"method\",\"line\":106,\"name\":\"wasm_sha256\",\"parent\":\"Grammar\",\"signature\":\"pub fn wasm_sha256(&self) -> String {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#cache_root@115\",\"kind\":\"function\",\"line\":115,\"name\":\"cache_root\",\"signature\":\"pub fn cache_root() -> Option<PathBuf> {\"},{\"col\":4,\"id\":\"rust:core/src/registry.rs#dev_root@126\",\"kind\":\"function\",\"line\":126,\"name\":\"dev_root\",\"signature\":\"fn dev_root() -> PathBuf {\"},{\"col\":12,\"id\":\"rust:core/src/registry.rs#RootCandidate@134\",\"kind\":\"class\",\"line\":134,\"name\":\"RootCandidate\",\"signature\":\"pub struct RootCandidate {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#search_path@141\",\"kind\":\"function\",\"line\":141,\"name\":\"search_path\",\"signature\":\"pub fn search_path() -> Vec<RootCandidate> {\"},{\"col\":4,\"id\":\"rust:core/src/registry.rs#registry_root@169\",\"kind\":\"function\",\"line\":169,\"name\":\"registry_root\",\"signature\":\"fn registry_root() -> PathBuf {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#Index@182\",\"kind\":\"class\",\"line\":182,\"name\":\"Index\",\"signature\":\"struct Index {\"},{\"col\":4,\"id\":\"rust:core/src/registry.rs#index@188\",\"kind\":\"function\",\"line\":188,\"name\":\"index\",\"signature\":\"fn index() -> &'static Index {\"},{\"col\":4,\"id\":\"rust:core/src/registry.rs#cache@213\",\"kind\":\"function\",\"line\":213,\"name\":\"cache\",\"signature\":\"fn cache() -> &'static Mutex<HashMap<String, Grammar>> {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#resolve@219\",\"kind\":\"function\",\"line\":219,\"name\":\"resolve\",\"signature\":\"pub fn resolve(lang: &str) -> Result<Grammar> {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#lang_for_path@264\",\"kind\":\"function\",\"line\":264,\"name\":\"lang_for_path\",\"signature\":\"pub fn lang_for_path(path: &Path) -> Option<&'static str> {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#for_path@270\",\"kind\":\"function\",\"line\":270,\"name\":\"for_path\",\"signature\":\"pub fn for_path(path: &Path) -> Result<Grammar> {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#is_source@282\",\"kind\":\"function\",\"line\":282,\"name\":\"is_source\",\"signature\":\"pub fn is_source(path: &Path) -> bool {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#root@287\",\"kind\":\"function\",\"line\":287,\"name\":\"root\",\"signature\":\"pub fn root() -> &'static Path {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#available@292\",\"kind\":\"function\",\"line\":292,\"name\":\"available\",\"signature\":\"pub fn available() -> Vec<String> {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#extensions@299\",\"kind\":\"function\",\"line\":299,\"name\":\"extensions\",\"signature\":\"pub fn extensions() -> Vec<String> {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#manifests@306\",\"kind\":\"function\",\"line\":306,\"name\":\"manifests\",\"signature\":\"pub fn manifests() -> Vec<Manifest> {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#sha256@316\",\"kind\":\"function\",\"line\":316,\"name\":\"sha256\",\"signature\":\"pub fn sha256(bytes: &[u8]) -> String {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#build_index@330\",\"kind\":\"function\",\"line\":330,\"name\":\"build_index\",\"signature\":\"pub fn build_index(root: &Path, release_base: Option<&str>) -> Result<serde_json::Value> {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#write_index@391\",\"kind\":\"function\",\"line\":391,\"name\":\"write_index\",\"signature\":\"pub fn write_index(\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#write_lock@406\",\"kind\":\"function\",\"line\":406,\"name\":\"write_lock\",\"signature\":\"pub fn write_lock(path: &Path) -> Result<usize> {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#write_lock_for@412\",\"kind\":\"function\",\"line\":412,\"name\":\"write_lock_for\",\"signature\":\"pub fn write_lock_for(langs: &[String], path: &Path) -> Result<usize> {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#locked_langs@434\",\"kind\":\"function\",\"line\":434,\"name\":\"locked_langs\",\"signature\":\"pub fn locked_langs(path: &Path) -> Result<Vec<String>> {\"},{\"col\":5,\"id\":\"rust:core/src/registry.rs#tests@451\",\"kind\":\"module\",\"line\":451,\"name\":\"tests\",\"signature\":\"mod tests {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#empty_call_kinds_defaults_to_literal_call@455\",\"kind\":\"method\",\"line\":455,\"name\":\"empty_call_kinds_defaults_to_literal_call\",\"parent\":\"tests\",\"signature\":\"fn empty_call_kinds_defaults_to_literal_call() {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#call_kinds_drives_the_filter@465\",\"kind\":\"method\",\"line\":465,\"name\":\"call_kinds_drives_the_filter\",\"parent\":\"tests\",\"signature\":\"fn call_kinds_drives_the_filter() {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#toy_registry@475\",\"kind\":\"method\",\"line\":475,\"name\":\"toy_registry\",\"parent\":\"tests\",\"signature\":\"fn toy_registry(tag: &str) -> PathBuf {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#write_index_writes_catalog_and_returns_count@486\",\"kind\":\"method\",\"line\":486,\"name\":\"write_index_writes_catalog_and_returns_count\",\"parent\":\"tests\",\"signature\":\"fn write_index_writes_catalog_and_returns_count() {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#build_index_records_locals_scm_only_when_present@505\",\"kind\":\"method\",\"line\":505,\"name\":\"build_index_records_locals_scm_only_when_present\",\"parent\":\"tests\",\"signature\":\"fn build_index_records_locals_scm_only_when_present() {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#sha256_has_canonical_format@530\",\"kind\":\"method\",\"line\":530,\"name\":\"sha256_has_canonical_format\",\"parent\":\"tests\",\"signature\":\"fn sha256_has_canonical_format() {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#wasm_sha256_delegates_to_sha256@540\",\"kind\":\"method\",\"line\":540,\"name\":\"wasm_sha256_delegates_to_sha256\",\"parent\":\"tests\",\"signature\":\"fn wasm_sha256_delegates_to_sha256() {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#write_index_defaults_output_to_dir_index_json@556\",\"kind\":\"method\",\"line\":556,\"name\":\"write_index_defaults_output_to_dir_index_json\",\"parent\":\"tests\",\"signature\":\"fn write_index_defaults_output_to_dir_index_json() {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#build_index_records_release_asset_when_release_base_set@565\",\"kind\":\"method\",\"line\":565,\"name\":\"build_index_records_release_asset_when_release_base_set\",\"parent\":\"tests\",\"signature\":\"fn build_index_records_release_asset_when_release_base_set() {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#build_index_errors_on_missing_root@577\",\"kind\":\"method\",\"line\":577,\"name\":\"build_index_errors_on_missing_root\",\"parent\":\"tests\",\"signature\":\"fn build_index_errors_on_missing_root() {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#lang_for_path_maps_known_extensions@586\",\"kind\":\"method\",\"line\":586,\"name\":\"lang_for_path_maps_known_extensions\",\"parent\":\"tests\",\"signature\":\"fn lang_for_path_maps_known_extensions() {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#is_source_follows_extension@595\",\"kind\":\"method\",\"line\":595,\"name\":\"is_source_follows_extension\",\"parent\":\"tests\",\"signature\":\"fn is_source_follows_extension() {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#for_path_errors_on_unregistered_extension@602\",\"kind\":\"method\",\"line\":602,\"name\":\"for_path_errors_on_unregistered_extension\",\"parent\":\"tests\",\"signature\":\"fn for_path_errors_on_unregistered_extension() {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#resolve_errors_on_unknown_language@608\",\"kind\":\"method\",\"line\":608,\"name\":\"resolve_errors_on_unknown_language\",\"parent\":\"tests\",\"signature\":\"fn resolve_errors_on_unknown_language() {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#resolve_caches_and_loads_a_real_grammar@614\",\"kind\":\"method\",\"line\":614,\"name\":\"resolve_caches_and_loads_a_real_grammar\",\"parent\":\"tests\",\"signature\":\"fn resolve_caches_and_loads_a_real_grammar() {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#available_and_extensions_are_sorted_and_include_the_dev_stub@624\",\"kind\":\"method\",\"line\":624,\"name\":\"available_and_extensions_are_sorted_and_include_the_dev_stub\",\"parent\":\"tests\",\"signature\":\"fn available_and_extensions_are_sorted_and_include_the_dev_stub() {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#manifests_are_sorted_and_carry_versions@635\",\"kind\":\"method\",\"line\":635,\"name\":\"manifests_are_sorted_and_carry_versions\",\"parent\":\"tests\",\"signature\":\"fn manifests_are_sorted_and_carry_versions() {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#search_path_is_ordered_and_root_exists@645\",\"kind\":\"method\",\"line\":645,\"name\":\"search_path_is_ordered_and_root_exists\",\"parent\":\"tests\",\"signature\":\"fn search_path_is_ordered_and_root_exists() {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#write_lock_for_pins_versions_and_hashes@653\",\"kind\":\"method\",\"line\":653,\"name\":\"write_lock_for_pins_versions_and_hashes\",\"parent\":\"tests\",\"signature\":\"fn write_lock_for_pins_versions_and_hashes() {\"},{\"col\":8,\"id\":\"rust:core/src/registry.rs#manifest_deserializes_call_kinds_from_profile@666\",\"kind\":\"method\",\"line\":666,\"name\":\"manifest_deserializes_call_kinds_from_profile\",\"parent\":\"tests\",\"signature\":\"fn manifest_deserializes_call_kinds_from_profile() {\"}]"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783195068795
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Let me read the relevant parts of registry.rs to understand the existing code:\n1. The write_lock_for function to understand the JSON format\n2. The locked_langs function\n3. The sha256 function\n4. The end of the file where I'll add new code",
+          "thinkingSignature": "ErcDCmUIDxgCKkCwqFeQA/gmBMdrqnCWd5mC5jgKFo3iI7ZGOFt09KxB+QS7KNWlFNtLXFJeJGb3AYplif73v5fEkBJw6kTgHgBEMhFjbGF1ZGUtc29ubmV0LTQtNjgAQgh0aGlua2luZxIMOUZFBE8BJiYgxT19GgzF6GV2KlT0e47XS64iMMw5QWC7Qwrqpj86DCUPEUQA1kcdkYHOxwlBY+K24UxqTi0OcQ370VKoKMLHfURffCr/AaPI1bUKhpou4nHIHytQ4mYJ2lVHfMnnctCez3Hr0ALW4swTBpAbc++VrDBOUeuulrcV/+ilDsFs69VSK7W9kBsGdeE3DjsOTqx6PmarZFHN76TW5bATyfI+X8+gEHc0DT/SJKlEYd8D1gNZgbTvAAzOOJ+OVpW20OZkKNVNGmaDbqoRq+k709y+CP11a2TuKj+vVw295hqtFpJENUSTkMzM1ZUTP2nxDxuVk07lG5U9YOBa8YXOM1AX6kz+nltUhXV2+m/Q/Itw2OpbTtTnBjMj6LJD+qEREl86vd5dnkdyRk3rW0K32i0xVB9WHLdqRUXMh276126jjOKZb0QO+hgB"
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01E6wrKtuDaHiNQmTWkL3egm",
+          "name": "read",
+          "arguments": {
+            "path": "core/src/registry.rs",
+            "offset": 316,
+            "limit": 160
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_012Bk8jWrDEEuZ5Jysp1fCR6",
+          "name": "read",
+          "arguments": {
+            "path": "core/src/lib.rs"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 207,
+        "cacheRead": 13542,
+        "cacheWrite": 3877,
+        "totalTokens": 17627,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.003105,
+          "cacheRead": 0.0040625999999999995,
+          "cacheWrite": 0.01453875,
+          "total": 0.02170935
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 74
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195068796,
+      "responseId": "msg_01RemSNQj1EakjREfq2xNBHK"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01E6wrKtuDaHiNQmTWkL3egm",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "pub fn sha256(bytes: &[u8]) -> String {\n    let mut h = Sha256::new();\n    h.update(bytes);\n    format!(\"sha256:{:x}\", h.finalize())\n}\n\n/// Build the hosted catalog (`index.json`) for a registry directory: per\n/// language, its version, provenance, and a content hash of every served file.\n/// This is what registry CI runs to publish; `grove fetch` consumes it.\n///\n/// When `release_base` is set, `grammar.wasm` is recorded as a release **asset**\n/// (`<lang>.wasm`) served from that base, so the heavy binaries live in GitHub\n/// Releases and the repo stays small. `tags.scm`/`manifest.json` are always\n/// served from the repo alongside the catalog.\npub fn build_index(root: &Path, release_base: Option<&str>) -> Result<serde_json::Value> {\n    let mut dirs: Vec<PathBuf> = std::fs::read_dir(root)\n        .with_context(|| format!(\"reading registry {}\", root.display()))?\n        .flatten()\n        .map(|e| e.path())\n        .filter(|p| p.is_dir())\n        .collect();\n    dirs.sort();\n\n    let mut grammars = Vec::new();\n    for dir in dirs {\n        let mpath = dir.join(\"manifest.json\");\n        if !mpath.exists() {\n            continue;\n        }\n        let m: Manifest = serde_json::from_str(&std::fs::read_to_string(&mpath)?)\n            .with_context(|| format!(\"parsing {}\", mpath.display()))?;\n        let mut files = serde_json::Map::new();\n        for fname in [\"grammar.wasm\", \"tags.scm\", \"manifest.json\"] {\n            let bytes = std::fs::read(dir.join(fname))\n                .with_context(|| format!(\"hashing {}/{fname}\", m.name))?;\n            let mut fref = serde_json::json!({ \"sha256\": sha256(&bytes) });\n            if fname == \"grammar.wasm\" && release_base.is_some() {\n                fref[\"asset\"] = serde_json::json!(format!(\"{}.wasm\", m.name));\n            }\n            files.insert(fname.into(), fref);\n        }\n        // `locals.scm` / `imports.scm` are optional (scope-aware + import-edge\n        // resolution, ADR 0001): record each only when the grammar dir ships it,\n        // so `fetch` pulls it for languages that have it without breaking those\n        // that don't.\n        for fname in [\"locals.scm\", \"imports.scm\"] {\n            let path = dir.join(fname);\n            if path.exists() {\n                let bytes = std::fs::read(&path)\n                    .with_context(|| format!(\"hashing {}/{fname}\", m.name))?;\n                files.insert(fname.into(), serde_json::json!({ \"sha256\": sha256(&bytes) }));\n            }\n        }\n        let mut entry = serde_json::json!({\n            \"name\": m.name,\n            \"version\": m.version,\n            \"extensions\": m.extensions,\n            \"files\": files,\n        });\n        if let Some(src) = &m.source {\n            entry[\"source\"] = serde_json::json!({ \"repo\": src.repo, \"rev\": src.rev });\n        }\n        grammars.push(entry);\n    }\n    let mut catalog = serde_json::json!({ \"schema\": 2, \"grammars\": grammars });\n    if let Some(base) = release_base {\n        catalog[\"release_base\"] = serde_json::json!(base);\n    }\n    Ok(catalog)\n}\n\n/// Build the registry catalog and write it as JSON. `dir` defaults to the\n/// resolved registry root; `output` defaults to `<dir>/index.json`. Returns the\n/// path written and the grammar count, for the caller to report. Keeps path\n/// resolution and file I/O out of `main`, alongside its sibling verbs.\npub fn write_index(\n    dir: Option<PathBuf>,\n    output: Option<PathBuf>,\n    release_base: Option<&str>,\n) -> Result<(PathBuf, usize)> {\n    let dir = dir.unwrap_or_else(|| root().to_path_buf());\n    let out = output.unwrap_or_else(|| dir.join(\"index.json\"));\n    let catalog = build_index(&dir, release_base)?;\n    std::fs::write(&out, format!(\"{}\\n\", serde_json::to_string_pretty(&catalog)?))\n        .with_context(|| format!(\"writing {}\", out.display()))?;\n    let n = catalog[\"grammars\"].as_array().map_or(0, |a| a.len());\n    Ok((out, n))\n}\n\n/// Write a lockfile pinning every registry grammar's version + wasm hash.\npub fn write_lock(path: &Path) -> Result<usize> {\n    write_lock_for(&available(), path)\n}\n\n/// Write a lockfile pinning the given languages' version + wasm hash.\n/// Deterministic (sorted) so it is diff-friendly and commit-able.\npub fn write_lock_for(langs: &[String], path: &Path) -> Result<usize> {\n    let mut names: Vec<String> = langs.to_vec();\n    names.sort();\n    names.dedup();\n    let mut grammars = Vec::new();\n    for name in &names {\n        let g = resolve(name)?;\n        grammars.push(serde_json::json!({\n            \"name\": g.name,\n            \"version\": g.version,\n            \"wasm\": g.wasm_sha256(),\n        }));\n    }\n    let doc = serde_json::json!({ \"version\": 1, \"grammars\": grammars });\n    std::fs::write(path, format!(\"{}\\n\", serde_json::to_string_pretty(&doc)?))\n        .with_context(|| format!(\"writing {}\", path.display()))?;\n    Ok(grammars.len())\n}\n\n/// Read the grammar names pinned in a lockfile, in file order. The lock is the\n/// canonical list of the grammars a project needs; `grove init` reads it back to\n/// name those languages in the CLAUDE.md steering block after provisioning.\npub fn locked_langs(path: &Path) -> Result<Vec<String>> {\n    let text = std::fs::read_to_string(path)\n        .with_context(|| format!(\"reading {}\", path.display()))?;\n    let doc: serde_json::Value = serde_json::from_str(&text)\n        .with_context(|| format!(\"{} is not valid JSON\", path.display()))?;\n    let langs = doc[\"grammars\"]\n        .as_array()\n        .map(|gs| {\n            gs.iter()\n                .filter_map(|g| g[\"name\"].as_str().map(String::from))\n                .collect()\n        })\n        .unwrap_or_default();\n    Ok(langs)\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn empty_call_kinds_defaults_to_literal_call() {\n        // A manifest with no `call_kinds` (every grammar shipped before #10)\n        // must keep treating `@reference.call` as the call site.\n        let p = Profile::default();\n        assert!(p.is_call_kind(\"call\"));\n        assert!(!p.is_call_kind(\"send\"));\n        assert!(!p.is_call_kind(\"invocation\"));\n    }\n\n    #[test]\n    fn call_kinds_drives_the_filter() {\n        // A Ruby/Elixir-style grammar declares its own call suffixes; the\n        // literal \"call\" is no longer special once the field is set.\n        let p = Profile { call_kinds: vec![\"send\".into(), \"invocation\".into()], ..Default::default() };\n        assert!(p.is_call_kind(\"send\"));\n        assert!(p.is_call_kind(\"invocation\"));\n        assert!(!p.is_call_kind(\"call\"));\n    }\n\n    /// A minimal one-grammar registry dir that `build_index` can hash.\n    fn toy_registry(tag: &str) -> PathBuf {\n\n[202 more lines in file. Use offset=476 to continue.]"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783195074090
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_012Bk8jWrDEEuZ5Jysp1fCR6",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "//! grove-core — the structural code-intelligence library behind the grove CLI\n//! and MCP server.\n//!\n//! This crate hosts the tree-sitter AST engine, the grammar registry, grammar\n//! fetching, and source ingest. It is `clap`-free: command-line concerns live in\n//! the `grove` binary crate, which consumes this library via `grove_core::`.\n//!\n//! # Overview\n//!\n//! The consumer-facing surface is the [`ops`] module — a small set of structural\n//! queries that work for **any** registered language (grammars load from the\n//! [`registry`] as wasm, so nothing is compiled in):\n//!\n//! - [`ops::outline`] — the definitions in one file (its symbol skeleton).\n//! - [`ops::symbols`] — find symbols across a directory, gitignore-aware.\n//! - [`ops::source`] — the full source text of one symbol, by id or name.\n//! - [`ops::check`] — the syntactic defects (ERROR / MISSING) in one file.\n//! - [`ops::callers`] — every reference to a name, with its enclosing function.\n//! - [`ops::map`] — a directory's definitions and their outgoing references.\n//! - [`ops::definition`] / [`ops::definition_at`] — go-to-def by name or use site.\n//!\n//! [`init::provision_project`] is the grammar-provisioning entry point used by\n//! `grove init`. The lower-level [`engine`], [`fetch`], and [`ingest`] modules are\n//! public for hosts that need deeper access.\n//!\n//! # Example\n//!\n//! ```no_run\n//! use std::path::Path;\n//! use grove_core::ops;\n//!\n//! # fn main() -> Result<(), Box<dyn std::error::Error>> {\n//! // Every definition under `src/`, gitignore-aware.\n//! let symbols = ops::symbols(Path::new(\"src\"), None, None, false, false)?;\n//! for s in &symbols {\n//!     println!(\"{} {} — {}:{}\", s.kind, s.name, s.file, s.line);\n//! }\n//! # Ok(())\n//! # }\n//! ```\n\npub mod config;\npub mod engine;\npub mod explore;\npub mod init;\npub mod ops;\npub mod registry;\npub mod fetch;\npub mod ingest;\n\n// ---- Curated public surface ----\n//\n// Root re-exports so consumers can name the common return types and entry points\n// directly (e.g. `grove_core::Symbol`) instead of reaching through module paths.\n// The full module set above stays public for callers that need deeper access;\n// internal helpers (`Loaded`, `CapturedQuery`, `Index`, `Sources`, `Spec`,\n// `Catalog`, …) remain private to their modules and are not re-exported.\n\n/// Core symbol/defect types extracted by the [`engine`].\npub use engine::{Defect, Symbol};\n/// Return types of the [`ops`] structural queries.\npub use ops::{CallSite, FileMap, MapEntry, SourceResult};\n/// The grammar-provisioning entry point behind `grove init` (see [`init`]).\npub use init::provision_project;\n/// The explore subsystem configuration model (see [`explore`]).\npub use explore::{ExploreConfig, Provider, Steering};\n/// The grove project config type and integration mode (see [`config`]).\npub use config::{active_mode, GroveConfig, Mode, ModeChoice};\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783195074090
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Now let me read the end of the tests module to see where the tests are and also look at write_lock_for more carefully.",
+          "thinkingSignature": "EsACCmUIDxgCKkBPTdpL/w2832FFH9yEkNqViBf664/sJr2ddGo9OCfBJUG9ZguiaREAk+0rAD7VocgBP9xHRQT2M81ngoIlKq+XMhFjbGF1ZGUtc29ubmV0LTQtNjgAQgh0aGlua2luZxIMeAE43GnIN9iqA4jAGgwUIeAZoYqBjNfo2NgiMFbCxzGTTYAlmRSHlvpFCfnCxcBJzRHZQo5SBM9oXMfD2xdZIV2oe9NIv65n7hzvfSqIAeL4MKD0vqvJY39AYxNMI1zlasXYnIpRrmIwtX4gniQFBR+78Eu3Jp7qA1DEcv5CfxVtYcMomASgIX/NVkpEZ0Lwj502BS1KkHGPImqUair+xWrRckKcWxX1zt2BIMAqZBk0rJDS97sM/OLXyR2qfmyfCsx+UotGkS47Lm7abRJNfyRAbpPbSMgYAQ=="
+        },
+        {
+          "type": "text",
+          "text": "Now let me read the tests section of registry.rs to understand the pattern:"
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_017V9aPCBGHpKZSetoiPfC5v",
+          "name": "read",
+          "arguments": {
+            "path": "core/src/registry.rs",
+            "offset": 640,
+            "limit": 50
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01NiK7A1rzp3D62QXoA1Bs7E",
+          "name": "read",
+          "arguments": {
+            "path": "core/src/registry.rs",
+            "offset": 1,
+            "limit": 20
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 225,
+        "cacheRead": 17419,
+        "cacheWrite": 3250,
+        "totalTokens": 20895,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.003375,
+          "cacheRead": 0.0052257,
+          "cacheWrite": 0.0121875,
+          "total": 0.0207912
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 40
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195074090,
+      "responseId": "msg_01HiwQVooiLgCLkaaWNX8raW"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_017V9aPCBGHpKZSetoiPfC5v",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "        assert!(!rust.version.is_empty());\n        assert!(rust.extensions.contains(&\"rs\".to_string()));\n    }\n\n    #[test]\n    fn search_path_is_ordered_and_root_exists() {\n        let path = search_path();\n        assert!(!path.is_empty());\n        assert!(path.iter().any(|c| c.source == \"dev (source tree)\"), \"dev candidate always listed\");\n        assert!(root().is_dir(), \"the resolved root must exist\");\n    }\n\n    #[test]\n    fn write_lock_for_pins_versions_and_hashes() {\n        let out = std::env::temp_dir().join(format!(\"grove_lock_test_{}.lock\", std::process::id()));\n        let n = write_lock_for(&[\"rust\".into(), \"rust\".into()], &out).unwrap();\n        assert_eq!(n, 1, \"duplicate langs are deduped\");\n        let doc: serde_json::Value =\n            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();\n        assert_eq!(doc[\"version\"], serde_json::json!(1));\n        assert_eq!(doc[\"grammars\"][0][\"name\"], serde_json::json!(\"rust\"));\n        assert!(doc[\"grammars\"][0][\"wasm\"].as_str().unwrap().starts_with(\"sha256:\"));\n        std::fs::remove_file(&out).ok();\n    }\n\n    #[test]\n    fn manifest_deserializes_call_kinds_from_profile() {\n        // End-to-end of #10: a manifest's profile.call_kinds reaches the Profile.\n        let json = r#\"{\n            \"name\": \"ruby\", \"version\": \"1.0.0\", \"extensions\": [\"rb\"],\n            \"profile\": { \"function_kinds\": [\"method\"], \"call_kinds\": [\"call\", \"send\"] }\n        }\"#;\n        let m: Manifest = serde_json::from_str(json).unwrap();\n        assert_eq!(m.profile.call_kinds, vec![\"call\", \"send\"]);\n        assert!(m.profile.is_call_kind(\"send\"));\n    }\n}\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783195078310
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01NiK7A1rzp3D62QXoA1Bs7E",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "//! The grammar registry — Phase 2 spine.\n//!\n//! Resolves a language id (or a file path) to its wasm grammar + tags query,\n//! loaded at runtime. The local-directory stub here (`registry/<lang>/` with\n//! `grammar.wasm`, `tags.scm`, `manifest.json`) stands in for the future hosted\n//! WASM registry; nothing above this module knows grammars aren't compiled in.\n\nuse std::collections::HashMap;\nuse std::path::{Path, PathBuf};\nuse std::sync::{Arc, Mutex, OnceLock};\n\nuse anyhow::{Context, Result};\nuse serde::Deserialize;\nuse sha2::{Digest, Sha256};\n\n/// Language-specific node kinds that drive the structural niceties (parent\n/// grouping, enclosing-function for callers, go-to-def). Data, not code — so a\n/// new language is fully supported by dropping a manifest, with no recompile.\n#[derive(Deserialize, Clone, Default)]\npub struct Profile {\n\n[657 more lines in file. Use offset=21 to continue.]"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783195078310
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Now I have a good understanding of the codebase. Let me implement the plan:\n\n1. Add `LockVerifyStatus` enum, `LockVerifyEntry` struct, and `verify_lock` function to `core/src/registry.rs`\n2. Add `pub use registry::{LockVerifyEntry, LockVerifyStatus};` to `core/src/lib.rs`\n3. Add four unit tests\n\nLet me look at the full plan details for exact implementation guidance:",
+          "thinkingSignature": "EroECmUIDxgCKkDGOckSdT4u+lEKroTACy9voH5UPQML6eKcOfgw7B+DrIWBKh4JVXEmChgycV2hs3JluBAhBQMz1EHmKxnXufu1MhFjbGF1ZGUtc29ubmV0LTQtNjgAQgh0aGlua2luZxIMEo2iifP/TI0lO02aGgykVsQkMnejYFVYN8IiMJDYDk73LYnITqeX5WijDxbea5O9RfgMo8zpqne+ptcyrULfGbP5GtELZT14B2f/tyqCA5mK5Cd0vFNa6M5yXYyEWOr2iwHp0TmvtL99w0HNioy+n/x7iC4dC9KQvA8+lYRA5USDLCY6FVmTU9U+OeHT3H6q7tw0OKuRRRdzcZFNcSfHlFVut9kmCEi5Fw6CtC04nVX3E/mhd7XDeDpmK2s9Z4BIThtPuMN1foGCbC96lt84GPkj8K0jkDraHFOHsOYyF1LnWjrj1e+c0jDVNJTj/v4FLnUMRCu3/AUyUQ2VurHtVcCqcXGX7XLMFdJ2loACm+9LL5bkmAZo4Ztl0K/hktGn+ZAdP670fdH8NPgsAgbn2Emih9PqBOkttFc6nHpmG/6Mlc0gv2dnCot4Td18WBZGZUCPLFal5WkjERoZKjsPI2M7M3tsIL1ZNNo2YruvpE2i/aGhS4p0EB131Osk8OoIG183sm32OPImmXstazejwHSOxdYJ18I9F60ImcrxBjU6s/QCgElbj6SokS95QPkfvCRG/Gk1fmgCeT1D4Y8aCm1r0eQaLIO5YXElKgNDlR10GAE="
+        },
+        {
+          "type": "text",
+          "text": "Now let me read the full PLAN.md for implementation details:"
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_012zxipeBTEmyE2uowWN3JBA",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "outline",
+            "entity": "task",
+            "entityId": "GROVE-S03-T06",
+            "artifact": "plan"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 253,
+        "cacheRead": 20669,
+        "cacheWrite": 1099,
+        "totalTokens": 22022,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.003795,
+          "cacheRead": 0.0062007,
+          "cacheWrite": 0.00412125,
+          "total": 0.01411995
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 123
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195078310,
+      "responseId": "msg_014kjcfL8Hqp6jqKqeSnRhDS"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_012zxipeBTEmyE2uowWN3JBA",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "GROVE-S03-T06/plan\n# GROVE-S03-T06 Plan: grove.lock wasm sha256 verify primitive (core)  [1-152]\n  ## Objective  [3-11]\n  ## Approach  [12-92]\n    ### Why in registry.rs, not a new lock.rs  [14-20]\n    ### Data types (new, public)  [21-35]\n    ### Function signature  [36-48]\n    ### Wasm-file resolution  [49-66]\n    ### Algorithm inside verify_lock  [67-84]\n    ### lib.rs re-export  [85-92]\n  ## Files to Modify  [93-104]\n  ## Data Model Changes  [105-110]\n  ## Testing Strategy  [111-129]\n  ## Acceptance Criteria  [130-142]\n  ## Operational Impact  [143-152]"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783195085045
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01RaFUduDwT6v7hwyQn2HXtx",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T06",
+            "artifact": "plan",
+            "section": "Approach"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 130,
+        "cacheRead": 21768,
+        "cacheWrite": 482,
+        "totalTokens": 22381,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.0019500000000000001,
+          "cacheRead": 0.0065304,
+          "cacheWrite": 0.0018075,
+          "total": 0.0102909
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195085046,
+      "responseId": "msg_01U98uWqbKUXFvogwJba2zjB"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01RaFUduDwT6v7hwyQn2HXtx",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "## Approach\n\n### Why in `registry.rs`, not a new `lock.rs`\n\nAll lock-file concerns already live in `registry.rs`:\n`write_lock`, `write_lock_for`, `locked_langs`, and the `sha256` helper itself.\nAdding `verify_lock` here keeps the surface minimal; a future split can happen if\nthe file grows further. No new module → no new `lib.rs` `mod` declaration needed.\n\n### Data types (new, public)\n\n```rust\npub enum LockVerifyStatus { Match, Mismatch, Missing }\n\npub struct LockVerifyEntry {\n    pub lang:     String,          // language name from the lock\n    pub expected: String,          // \"sha256:…\" from the lock file\n    pub actual:   Option<String>,  // sha256 we computed; None when Missing\n    pub status:   LockVerifyStatus,\n}\n```\n\n`Option<String>` for `actual` conveys `Missing` naturally without a sentinel.\n\n### Function signature\n\n```rust\npub fn verify_lock(path: &Path) -> Result<Option<Vec<LockVerifyEntry>>>\n```\n\n* `path` is the lock file path (parallel to `write_lock_for(langs, path)` and\n  `locked_langs(path)` conventions — caller passes the exact file, not a project\n  root).\n* `Ok(None)` → lock file absent (non-error; caller renders as \"not present\").\n* `Ok(Some(vec))` → lock file parsed; every grammar has an entry.\n* `Err(_)` → I/O or parse failure (bad JSON, unexpected read error).\n\n### Wasm-file resolution\n\nEach lock entry's grammar wasm is found at:\n\n```\nregistry_root() / <name> / grammar.wasm\n```\n\nThis is identical to the path `resolve()` reads. It works for:\n* Dev / test: source-tree `registry/<lang>/grammar.wasm` (via `dev_root()`)\n* CI / docker: `GROVE_REGISTRY` override\n* Production: `cache_root()` (fallback in `registry_root()` when no other\n  candidate exists) — where `grove fetch` stores downloaded grammars.\n\nUsing this path lets us detect `Missing` without going through `resolve()` (which\nwould panic/error on unknown languages) and without loading the wasm into the\nGrammar cache (unnecessary for a read-only verify).\n\n### Algorithm inside `verify_lock`\n\n```\n1. let lock_path = path;\n2. If !lock_path.exists() → return Ok(None)\n3. Read and parse JSON   (reuse locked_langs read pattern for consistency)\n4. For each object in doc[\"grammars\"]:\n   a. Extract name (String), expected_hash = entry[\"wasm\"].as_str()\n   b. wasm_path = registry_root().join(&name).join(\"grammar.wasm\")\n   c. match std::fs::read(&wasm_path):\n        Ok(bytes)                      → actual = sha256(&bytes)\n                                         status = if actual == expected { Match } else { Mismatch }\n        Err(e) if NotFound             → actual = None, status = Missing\n        Err(e) other                   → return Err(e).with_context(...)\n   d. push LockVerifyEntry { lang: name, expected, actual, status }\n5. return Ok(Some(entries))\n```\n\n### `lib.rs` re-export\n\nAdd `pub use registry::{LockVerifyEntry, LockVerifyStatus};` so T07 (and any\nfuture consumer) can name these types at the crate root without repeating the\nmodule path.\n\n---\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783195087851
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Now I have all the information needed. Let me implement the plan.\n\nThe key things to add to `core/src/registry.rs`:\n1. `pub enum LockVerifyStatus { Match, Mismatch, Missing }` \n2. `pub struct LockVerifyEntry { pub lang: String, pub expected: String, pub actual: Option<String>, pub status: LockVerifyStatus }`\n3. `pub fn verify_lock(path: &Path) -> Result<Option<Vec<LockVerifyEntry>>>`\n4. Four unit tests\n\nAnd I need to export `LockVerifyEntry` and `LockVerifyStatus` from `core/src/lib.rs`. Let me check the testing strategy to see what the exact test cases should cover.",
+          "thinkingSignature": "EoMGCmUIDxgCKkAKEvWvuhpwvxNOPoFwlOXpGZ9ozYLr5r8Gi7OJriXI7VrmyAW62og1weJw0U4qG2q1l3dID2SULbe11jPc1cfTMhFjbGF1ZGUtc29ubmV0LTQtNjgAQgh0aGlua2luZxIMnVGnbimHuKjWfvmBGgyMJt15+6iIOQS7EU4iMA1JyjCDI5WX1VnXnd7/uj2YTMjlYhJYQwgBBeXXUlcq84x9Wj3N7zPKniznhY0wcSrLBDSJonTS0Z+5Q3aB4b+3J1GivIqW5hYCY74p/2SIylCEcqnOJQD5Y5cKME5JR95V+g1pDngDTtac/RlNpm1SKNcKclq46RQWCyNGi4vSqQN3LzuQKTexJmY1bOla/Kd/DLQLVVAlG+gjdhlsjYHFF7mWfOPc1OvqOBkAYchJNsbCV4ORNFObe3KpdSmZRMKleeP9P5FizcQORPB2rhW4zDxibcaP1Rz/h9tuczzNWg8JuHl9IRh8J+Q1B5NKwLdGT+E3Ywdwetch1y7b0ZcbJqMGWQJXWfDf9K7hN+ANykZMonKgWU8PcljQD4+1GBKri/p7jIViHkmb87Fd2HDYXLNj7Srk56838drV45re/KQvnccGaSVKORTUp2bjLnklMr09mDayns9FzHbNJgFDPp78PpmYKs1jTNhW5fpz+TLrDbEMdfAHsi8iNF1p7udsAEzpZYmf6kF1OXTMyRoL/xCU4VX0pUvZaB2xVQoYmdcKRmnJeCbTeusmtVjxplR+HwQG/JyivAUegZvhm7JZwyyLTXr0p13DwmKL5PO+3S7pUO+PUFEDfFBSI7tBWvJUkcnli4/tg5oMoORzy2x84Am4G1FdN6WMbh+d+vHKNG96v78u4L8J31IgtTB3mOAnP1dC+Sx+74P5LjMGYBwy4QHUj2DAB+BWy68JRh2J/K4IyGp2VMLwVksPxrZHXekz+XBCcJhIrb8GnuPAcMktRDx/12+csIed5CUGXXsLxK5AOrvn0cBzPXDMdZFplqBRA01tOVUoTU8kR+8wGAE="
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_015NQy7uuJwnetF2jTy3PpSv",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T06",
+            "artifact": "plan",
+            "section": "Testing Strategy"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 320,
+        "cacheRead": 22250,
+        "cacheWrite": 1018,
+        "totalTokens": 23589,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.0048000000000000004,
+          "cacheRead": 0.0066749999999999995,
+          "cacheWrite": 0.0038175,
+          "total": 0.0152955
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 187
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195087852,
+      "responseId": "msg_01G8HcCjUt9LXVqwpRebRcr9"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_015NQy7uuJwnetF2jTy3PpSv",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "## Testing Strategy\n\nFour unit tests inside `mod tests` in `registry.rs`, following the inline\npattern used throughout the module. **No `GROVE_REGISTRY` env override needed** —\ntests use the dev-stub registry (`dev_root()`) which includes the `rust` grammar,\nor construct a minimal lock JSON by hand.\n\n| Test | What it proves |\n|------|----------------|\n| `verify_lock_returns_none_when_file_absent` | `Ok(None)` for a path that does not exist |\n| `verify_lock_matches_after_write_lock_for` | Fresh lock written by `write_lock_for(&[\"rust\"], …)` verifies all `Match` |\n| `verify_lock_detects_tampered_hash` | Mutate the `wasm` field in the written lock JSON → entry status is `Mismatch` |\n| `verify_lock_detects_missing_wasm` | Hand-craft a lock JSON referencing `\"grove_nonexistent_lang_xyz\"` → entry status is `Missing` |\n\nAll tests write to `std::env::temp_dir()` with process-id-qualified paths to\navoid collisions between parallel test workers.\n\n---\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783195093821
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Now I have everything I need. Let me implement the changes:"
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01HYNGXhQjKEViAsLTNatWVj",
+          "name": "edit",
+          "arguments": {
+            "path": "core/src/registry.rs",
+            "edits": [
+              {
+                "oldText": "/// Read the grammar names pinned in a lockfile, in file order. The lock is the",
+                "newText": "/// The outcome of comparing a cached wasm's sha256 against the lock file.\n#[derive(Debug, PartialEq, Eq)]\npub enum LockVerifyStatus {\n    /// Computed hash matches the pinned hash in the lock.\n    Match,\n    /// Wasm file exists but its hash differs from the pinned value.\n    Mismatch,\n    /// Wasm file was not found at the expected registry path.\n    Missing,\n}\n\n/// A single grammar's verification result from [`verify_lock`].\n#[derive(Debug)]\npub struct LockVerifyEntry {\n    /// Language name as recorded in the lock file.\n    pub lang: String,\n    /// The sha256 hash pinned in the lock file (`\"sha256:…\"`).\n    pub expected: String,\n    /// The sha256 hash we recomputed from disk; `None` when the wasm is absent.\n    pub actual: Option<String>,\n    /// Match / Mismatch / Missing.\n    pub status: LockVerifyStatus,\n}\n\n/// Verify every grammar wasm recorded in a grove.lock file against the hashes\n/// it pins. Returns:\n/// * `Ok(None)` — the lock file does not exist (not an error; caller renders as\n///   "
+              }
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 1124,
+        "cacheRead": 23268,
+        "cacheWrite": 615,
+        "totalTokens": 25008,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.01686,
+          "cacheRead": 0.0069803999999999995,
+          "cacheWrite": 0.00230625,
+          "total": 0.02614965
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195093822,
+      "responseId": "msg_012zdGir2zKDT2e3t6CZ3r6M"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01HYNGXhQjKEViAsLTNatWVj",
+      "toolName": "edit",
+      "content": [
+        {
+          "type": "text",
+          "text": "Successfully replaced 1 block(s) in core/src/registry.rs."
+        }
+      ],
+      "details": {
+        "diff": "     ...\n 427         .with_context(|| format!(\"writing {}\", path.display()))?;\n 428     Ok(grammars.len())\n 429 }\n 430 \n-431 /// Read the grammar names pinned in a lockfile, in file order. The lock is the\n+431 /// The outcome of comparing a cached wasm's sha256 against the lock file.\n+432 #[derive(Debug, PartialEq, Eq)]\n+433 pub enum LockVerifyStatus {\n+434     /// Computed hash matches the pinned hash in the lock.\n+435     Match,\n+436     /// Wasm file exists but its hash differs from the pinned value.\n+437     Mismatch,\n+438     /// Wasm file was not found at the expected registry path.\n+439     Missing,\n+440 }\n+441 \n+442 /// A single grammar's verification result from [`verify_lock`].\n+443 #[derive(Debug)]\n+444 pub struct LockVerifyEntry {\n+445     /// Language name as recorded in the lock file.\n+446     pub lang: String,\n+447     /// The sha256 hash pinned in the lock file (`\"sha256:…\"`).\n+448     pub expected: String,\n+449     /// The sha256 hash we recomputed from disk; `None` when the wasm is absent.\n+450     pub actual: Option<String>,\n+451     /// Match / Mismatch / Missing.\n+452     pub status: LockVerifyStatus,\n+453 }\n+454 \n+455 /// Verify every grammar wasm recorded in a grove.lock file against the hashes\n+456 /// it pins. Returns:\n+457 /// * `Ok(None)` — the lock file does not exist (not an error; caller renders as\n+458 ///   \n 432 /// canonical list of the grammars a project needs; `grove init` reads it back to\n 433 /// name those languages in the CLAUDE.md steering block after provisioning.\n 434 pub fn locked_langs(path: &Path) -> Result<Vec<String>> {\n 435     let text = std::fs::read_to_string(path)\n     ...",
+        "patch": "--- core/src/registry.rs\n+++ core/src/registry.rs\n@@ -427,9 +427,36 @@\n         .with_context(|| format!(\"writing {}\", path.display()))?;\n     Ok(grammars.len())\n }\n \n-/// Read the grammar names pinned in a lockfile, in file order. The lock is the\n+/// The outcome of comparing a cached wasm's sha256 against the lock file.\n+#[derive(Debug, PartialEq, Eq)]\n+pub enum LockVerifyStatus {\n+    /// Computed hash matches the pinned hash in the lock.\n+    Match,\n+    /// Wasm file exists but its hash differs from the pinned value.\n+    Mismatch,\n+    /// Wasm file was not found at the expected registry path.\n+    Missing,\n+}\n+\n+/// A single grammar's verification result from [`verify_lock`].\n+#[derive(Debug)]\n+pub struct LockVerifyEntry {\n+    /// Language name as recorded in the lock file.\n+    pub lang: String,\n+    /// The sha256 hash pinned in the lock file (`\"sha256:…\"`).\n+    pub expected: String,\n+    /// The sha256 hash we recomputed from disk; `None` when the wasm is absent.\n+    pub actual: Option<String>,\n+    /// Match / Mismatch / Missing.\n+    pub status: LockVerifyStatus,\n+}\n+\n+/// Verify every grammar wasm recorded in a grove.lock file against the hashes\n+/// it pins. Returns:\n+/// * `Ok(None)` — the lock file does not exist (not an error; caller renders as\n+///   \n /// canonical list of the grammars a project needs; `grove init` reads it back to\n /// name those languages in the CLAUDE.md steering block after provisioning.\n pub fn locked_langs(path: &Path) -> Result<Vec<String>> {\n     let text = std::fs::read_to_string(path)\n",
+        "firstChangedLine": 431
+      },
+      "isError": false,
+      "timestamp": 1783195110551
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01WKHUV4WtuMrPdENcbWRcgv",
+          "name": "edit",
+          "arguments": {
+            "path": "core/src/registry.rs",
+            "edits": [
+              {
+                "oldText": "/// Verify every grammar wasm recorded in a grove.lock file against the hashes\n/// it pins. Returns:\n/// * `Ok(None)` — the lock file does not exist (not an error; caller renders as\n///   ",
+                "newText": "/// Verify every grammar wasm recorded in a grove.lock file against the hashes\n/// it pins. Returns:\n/// * `Ok(None)` — the lock file does not exist (not an error; caller renders as\n///   \"not present\").\n/// * `Ok(Some(entries))` — lock parsed; one [`LockVerifyEntry`] per grammar.\n/// * `Err(_)` — I/O or JSON parse failure.\n///\n/// The `path` argument is the lock **file** path (parallel to `write_lock_for`\n/// and `locked_langs`), not a project root. T07 must pass the resolved\n/// `grove.lock` path.\npub fn verify_lock(path: &Path) -> Result<Option<Vec<LockVerifyEntry>>> {\n    if !path.exists() {\n        return Ok(None);\n    }\n    let text = std::fs::read_to_string(path)\n        .with_context(|| format!(\"reading {}\", path.display()))?;\n    let doc: serde_json::Value = serde_json::from_str(&text)\n        .with_context(|| format!(\"{} is not valid JSON\", path.display()))?;\n    let grammars = doc[\"grammars\"]\n        .as_array()\n        .map(|a| a.as_slice())\n        .unwrap_or_default();\n    let mut entries = Vec::with_capacity(grammars.len());\n    for entry in grammars {\n        let name = match entry[\"name\"].as_str() {\n            Some(n) => n.to_string(),\n            None => continue,\n        };\n        let expected = match entry[\"wasm\"].as_str() {\n            Some(h) => h.to_string(),\n            None => continue,\n        };\n        let wasm_path = registry_root().join(&name).join(\"grammar.wasm\");\n        let (actual, status) = match std::fs::read(&wasm_path) {\n            Ok(bytes) => {\n                let hash = sha256(&bytes);\n                let s = if hash == expected {\n                    LockVerifyStatus::Match\n                } else {\n                    LockVerifyStatus::Mismatch\n                };\n                (Some(hash), s)\n            }\n            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (None, LockVerifyStatus::Missing),\n            Err(e) => {\n                return Err(anyhow::Error::new(e)\n                    .context(format!(\"reading {}\", wasm_path.display())));\n            }\n        };\n        entries.push(LockVerifyEntry { lang: name, expected, actual, status });\n    }\n    Ok(Some(entries))\n}\n\n/// Read the grammar names pinned in a lockfile, in file order. The lock is the"
+              }
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 885,
+        "cacheRead": 23883,
+        "cacheWrite": 477,
+        "totalTokens": 25246,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.013275,
+          "cacheRead": 0.0071649,
+          "cacheWrite": 0.00178875,
+          "total": 0.02223165
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195110551,
+      "responseId": "msg_01GYV2zVBzYKCuMfuGMijKE4"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01WKHUV4WtuMrPdENcbWRcgv",
+      "toolName": "edit",
+      "content": [
+        {
+          "type": "text",
+          "text": "Successfully replaced 1 block(s) in core/src/registry.rs."
+        }
+      ],
+      "details": {
+        "diff": "     ...\n 454 \n 455 /// Verify every grammar wasm recorded in a grove.lock file against the hashes\n 456 /// it pins. Returns:\n 457 /// * `Ok(None)` — the lock file does not exist (not an error; caller renders as\n-458 ///   \n+458 ///   \"not present\").\n+459 /// * `Ok(Some(entries))` — lock parsed; one [`LockVerifyEntry`] per grammar.\n+460 /// * `Err(_)` — I/O or JSON parse failure.\n+461 ///\n+462 /// The `path` argument is the lock **file** path (parallel to `write_lock_for`\n+463 /// and `locked_langs`), not a project root. T07 must pass the resolved\n+464 /// `grove.lock` path.\n+465 pub fn verify_lock(path: &Path) -> Result<Option<Vec<LockVerifyEntry>>> {\n+466     if !path.exists() {\n+467         return Ok(None);\n+468     }\n+469     let text = std::fs::read_to_string(path)\n+470         .with_context(|| format!(\"reading {}\", path.display()))?;\n+471     let doc: serde_json::Value = serde_json::from_str(&text)\n+472         .with_context(|| format!(\"{} is not valid JSON\", path.display()))?;\n+473     let grammars = doc[\"grammars\"]\n+474         .as_array()\n+475         .map(|a| a.as_slice())\n+476         .unwrap_or_default();\n+477     let mut entries = Vec::with_capacity(grammars.len());\n+478     for entry in grammars {\n+479         let name = match entry[\"name\"].as_str() {\n+480             Some(n) => n.to_string(),\n+481             None => continue,\n+482         };\n+483         let expected = match entry[\"wasm\"].as_str() {\n+484             Some(h) => h.to_string(),\n+485             None => continue,\n+486         };\n+487         let wasm_path = registry_root().join(&name).join(\"grammar.wasm\");\n+488         let (actual, status) = match std::fs::read(&wasm_path) {\n+489             Ok(bytes) => {\n+490                 let hash = sha256(&bytes);\n+491                 let s = if hash == expected {\n+492                     LockVerifyStatus::Match\n+493                 } else {\n+494                     LockVerifyStatus::Mismatch\n+495                 };\n+496                 (Some(hash), s)\n+497             }\n+498             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (None, LockVerifyStatus::Missing),\n+499             Err(e) => {\n+500                 return Err(anyhow::Error::new(e)\n+501                     .context(format!(\"reading {}\", wasm_path.display())));\n+502             }\n+503         };\n+504         entries.push(LockVerifyEntry { lang: name, expected, actual, status });\n+505     }\n+506     Ok(Some(entries))\n+507 }\n+508 \n+509 /// Read the grammar names pinned in a lockfile, in file order. The lock is the\n 459 /// canonical list of the grammars a project needs; `grove init` reads it back to\n 460 /// name those languages in the CLAUDE.md steering block after provisioning.\n 461 pub fn locked_langs(path: &Path) -> Result<Vec<String>> {\n 462     let text = std::fs::read_to_string(path)\n     ...",
+        "patch": "--- core/src/registry.rs\n+++ core/src/registry.rs\n@@ -454,9 +454,60 @@\n \n /// Verify every grammar wasm recorded in a grove.lock file against the hashes\n /// it pins. Returns:\n /// * `Ok(None)` — the lock file does not exist (not an error; caller renders as\n-///   \n+///   \"not present\").\n+/// * `Ok(Some(entries))` — lock parsed; one [`LockVerifyEntry`] per grammar.\n+/// * `Err(_)` — I/O or JSON parse failure.\n+///\n+/// The `path` argument is the lock **file** path (parallel to `write_lock_for`\n+/// and `locked_langs`), not a project root. T07 must pass the resolved\n+/// `grove.lock` path.\n+pub fn verify_lock(path: &Path) -> Result<Option<Vec<LockVerifyEntry>>> {\n+    if !path.exists() {\n+        return Ok(None);\n+    }\n+    let text = std::fs::read_to_string(path)\n+        .with_context(|| format!(\"reading {}\", path.display()))?;\n+    let doc: serde_json::Value = serde_json::from_str(&text)\n+        .with_context(|| format!(\"{} is not valid JSON\", path.display()))?;\n+    let grammars = doc[\"grammars\"]\n+        .as_array()\n+        .map(|a| a.as_slice())\n+        .unwrap_or_default();\n+    let mut entries = Vec::with_capacity(grammars.len());\n+    for entry in grammars {\n+        let name = match entry[\"name\"].as_str() {\n+            Some(n) => n.to_string(),\n+            None => continue,\n+        };\n+        let expected = match entry[\"wasm\"].as_str() {\n+            Some(h) => h.to_string(),\n+            None => continue,\n+        };\n+        let wasm_path = registry_root().join(&name).join(\"grammar.wasm\");\n+        let (actual, status) = match std::fs::read(&wasm_path) {\n+            Ok(bytes) => {\n+                let hash = sha256(&bytes);\n+                let s = if hash == expected {\n+                    LockVerifyStatus::Match\n+                } else {\n+                    LockVerifyStatus::Mismatch\n+                };\n+                (Some(hash), s)\n+            }\n+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (None, LockVerifyStatus::Missing),\n+            Err(e) => {\n+                return Err(anyhow::Error::new(e)\n+                    .context(format!(\"reading {}\", wasm_path.display())));\n+            }\n+        };\n+        entries.push(LockVerifyEntry { lang: name, expected, actual, status });\n+    }\n+    Ok(Some(entries))\n+}\n+\n+/// Read the grammar names pinned in a lockfile, in file order. The lock is the\n /// canonical list of the grammars a project needs; `grove init` reads it back to\n /// name those languages in the CLAUDE.md steering block after provisioning.\n pub fn locked_langs(path: &Path) -> Result<Vec<String>> {\n     let text = std::fs::read_to_string(path)\n",
+        "firstChangedLine": 458
+      },
+      "isError": false,
+      "timestamp": 1783195122709
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Now add the four unit tests before the closing `}` of the tests module:"
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_012N6a4TMx1vL7V79Qh8SgKU",
+          "name": "edit",
+          "arguments": {
+            "path": "core/src/registry.rs",
+            "edits": [
+              {
+                "oldText": "        assert_eq!(m.profile.call_kinds, vec![\"call\", \"send\"]);\n        assert!(m.profile.is_call_kind(\"send\"));\n    }\n}",
+                "newText": "        assert_eq!(m.profile.call_kinds, vec![\"call\", \"send\"]);\n        assert!(m.profile.is_call_kind(\"send\"));\n    }\n\n    #[test]\n    fn verify_lock_returns_none_when_file_absent() {\n        let absent = std::env::temp_dir().join(format!(\"grove_lock_none_{}.lock\", std::process::id()));\n        let result = verify_lock(&absent).unwrap();\n        assert!(result.is_none(), \"absent lock file must return Ok(None)\");\n    }\n\n    #[test]\n    fn verify_lock_matches_after_write_lock_for() {\n        let out = std::env::temp_dir().join(format!(\"grove_lock_match_{}.lock\", std::process::id()));\n        write_lock_for(&[\"rust\".into()], &out).unwrap();\n        let entries = verify_lock(&out).unwrap().expect(\"lock file must parse\");\n        assert_eq!(entries.len(), 1);\n        assert_eq!(entries[0].lang, \"rust\");\n        assert_eq!(entries[0].status, LockVerifyStatus::Match);\n        assert!(entries[0].actual.is_some());\n        std::fs::remove_file(&out).ok();\n    }\n\n    #[test]\n    fn verify_lock_detects_tampered_hash() {\n        let out = std::env::temp_dir().join(format!(\"grove_lock_mismatch_{}.lock\", std::process::id()));\n        write_lock_for(&[\"rust\".into()], &out).unwrap();\n        // Overwrite the wasm hash with a bogus value.\n        let text = std::fs::read_to_string(&out).unwrap();\n        let mut doc: serde_json::Value = serde_json::from_str(&text).unwrap();\n        doc[\"grammars\"][0][\"wasm\"] = serde_json::json!(\"sha256:deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef\");\n        std::fs::write(&out, serde_json::to_string_pretty(&doc).unwrap()).unwrap();\n        let entries = verify_lock(&out).unwrap().expect(\"lock file must parse\");\n        assert_eq!(entries[0].status, LockVerifyStatus::Mismatch);\n        assert!(entries[0].actual.is_some(), \"wasm exists so actual hash must be computed\");\n        std::fs::remove_file(&out).ok();\n    }\n\n    #[test]\n    fn verify_lock_detects_missing_wasm() {\n        let out = std::env::temp_dir().join(format!(\"grove_lock_missing_{}.lock\", std::process::id()));\n        // Hand-craft a lock for a language whose wasm is definitely not on disk.\n        let doc = serde_json::json!({\n            \"version\": 1,\n            \"grammars\": [{\"name\": \"grove_nonexistent_lang_xyz\", \"version\": \"0.0.0\",\n                          \"wasm\": \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"}]\n        });\n        std::fs::write(&out, serde_json::to_string_pretty(&doc).unwrap()).unwrap();\n        let entries = verify_lock(&out).unwrap().expect(\"lock file must parse\");\n        assert_eq!(entries.len(), 1);\n        assert_eq!(entries[0].status, LockVerifyStatus::Missing);\n        assert!(entries[0].actual.is_none());\n        std::fs::remove_file(&out).ok();\n    }\n}"
+              }
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 1143,
+        "cacheRead": 24360,
+        "cacheWrite": 932,
+        "totalTokens": 26436,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.017145,
+          "cacheRead": 0.007307999999999999,
+          "cacheWrite": 0.003495,
+          "total": 0.027950999999999997
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195122709,
+      "responseId": "msg_01S7UcPR2zFEnUeNLZbwqm86"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_012N6a4TMx1vL7V79Qh8SgKU",
+      "toolName": "edit",
+      "content": [
+        {
+          "type": "text",
+          "text": "Successfully replaced 1 block(s) in core/src/registry.rs."
+        }
+      ],
+      "details": {
+        "diff": "     ...\n 750         let m: Manifest = serde_json::from_str(json).unwrap();\n 751         assert_eq!(m.profile.call_kinds, vec![\"call\", \"send\"]);\n 752         assert!(m.profile.is_call_kind(\"send\"));\n 753     }\n+754 \n+755     #[test]\n+756     fn verify_lock_returns_none_when_file_absent() {\n+757         let absent = std::env::temp_dir().join(format!(\"grove_lock_none_{}.lock\", std::process::id()));\n+758         let result = verify_lock(&absent).unwrap();\n+759         assert!(result.is_none(), \"absent lock file must return Ok(None)\");\n+760     }\n+761 \n+762     #[test]\n+763     fn verify_lock_matches_after_write_lock_for() {\n+764         let out = std::env::temp_dir().join(format!(\"grove_lock_match_{}.lock\", std::process::id()));\n+765         write_lock_for(&[\"rust\".into()], &out).unwrap();\n+766         let entries = verify_lock(&out).unwrap().expect(\"lock file must parse\");\n+767         assert_eq!(entries.len(), 1);\n+768         assert_eq!(entries[0].lang, \"rust\");\n+769         assert_eq!(entries[0].status, LockVerifyStatus::Match);\n+770         assert!(entries[0].actual.is_some());\n+771         std::fs::remove_file(&out).ok();\n+772     }\n+773 \n+774     #[test]\n+775     fn verify_lock_detects_tampered_hash() {\n+776         let out = std::env::temp_dir().join(format!(\"grove_lock_mismatch_{}.lock\", std::process::id()));\n+777         write_lock_for(&[\"rust\".into()], &out).unwrap();\n+778         // Overwrite the wasm hash with a bogus value.\n+779         let text = std::fs::read_to_string(&out).unwrap();\n+780         let mut doc: serde_json::Value = serde_json::from_str(&text).unwrap();\n+781         doc[\"grammars\"][0][\"wasm\"] = serde_json::json!(\"sha256:deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef\");\n+782         std::fs::write(&out, serde_json::to_string_pretty(&doc).unwrap()).unwrap();\n+783         let entries = verify_lock(&out).unwrap().expect(\"lock file must parse\");\n+784         assert_eq!(entries[0].status, LockVerifyStatus::Mismatch);\n+785         assert!(entries[0].actual.is_some(), \"wasm exists so actual hash must be computed\");\n+786         std::fs::remove_file(&out).ok();\n+787     }\n+788 \n+789     #[test]\n+790     fn verify_lock_detects_missing_wasm() {\n+791         let out = std::env::temp_dir().join(format!(\"grove_lock_missing_{}.lock\", std::process::id()));\n+792         // Hand-craft a lock for a language whose wasm is definitely not on disk.\n+793         let doc = serde_json::json!({\n+794             \"version\": 1,\n+795             \"grammars\": [{\"name\": \"grove_nonexistent_lang_xyz\", \"version\": \"0.0.0\",\n+796                           \"wasm\": \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"}]\n+797         });\n+798         std::fs::write(&out, serde_json::to_string_pretty(&doc).unwrap()).unwrap();\n+799         let entries = verify_lock(&out).unwrap().expect(\"lock file must parse\");\n+800         assert_eq!(entries.len(), 1);\n+801         assert_eq!(entries[0].status, LockVerifyStatus::Missing);\n+802         assert!(entries[0].actual.is_none());\n+803         std::fs::remove_file(&out).ok();\n+804     }\n 754 }",
+        "patch": "--- core/src/registry.rs\n+++ core/src/registry.rs\n@@ -750,5 +750,56 @@\n         let m: Manifest = serde_json::from_str(json).unwrap();\n         assert_eq!(m.profile.call_kinds, vec![\"call\", \"send\"]);\n         assert!(m.profile.is_call_kind(\"send\"));\n     }\n+\n+    #[test]\n+    fn verify_lock_returns_none_when_file_absent() {\n+        let absent = std::env::temp_dir().join(format!(\"grove_lock_none_{}.lock\", std::process::id()));\n+        let result = verify_lock(&absent).unwrap();\n+        assert!(result.is_none(), \"absent lock file must return Ok(None)\");\n+    }\n+\n+    #[test]\n+    fn verify_lock_matches_after_write_lock_for() {\n+        let out = std::env::temp_dir().join(format!(\"grove_lock_match_{}.lock\", std::process::id()));\n+        write_lock_for(&[\"rust\".into()], &out).unwrap();\n+        let entries = verify_lock(&out).unwrap().expect(\"lock file must parse\");\n+        assert_eq!(entries.len(), 1);\n+        assert_eq!(entries[0].lang, \"rust\");\n+        assert_eq!(entries[0].status, LockVerifyStatus::Match);\n+        assert!(entries[0].actual.is_some());\n+        std::fs::remove_file(&out).ok();\n+    }\n+\n+    #[test]\n+    fn verify_lock_detects_tampered_hash() {\n+        let out = std::env::temp_dir().join(format!(\"grove_lock_mismatch_{}.lock\", std::process::id()));\n+        write_lock_for(&[\"rust\".into()], &out).unwrap();\n+        // Overwrite the wasm hash with a bogus value.\n+        let text = std::fs::read_to_string(&out).unwrap();\n+        let mut doc: serde_json::Value = serde_json::from_str(&text).unwrap();\n+        doc[\"grammars\"][0][\"wasm\"] = serde_json::json!(\"sha256:deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef\");\n+        std::fs::write(&out, serde_json::to_string_pretty(&doc).unwrap()).unwrap();\n+        let entries = verify_lock(&out).unwrap().expect(\"lock file must parse\");\n+        assert_eq!(entries[0].status, LockVerifyStatus::Mismatch);\n+        assert!(entries[0].actual.is_some(), \"wasm exists so actual hash must be computed\");\n+        std::fs::remove_file(&out).ok();\n+    }\n+\n+    #[test]\n+    fn verify_lock_detects_missing_wasm() {\n+        let out = std::env::temp_dir().join(format!(\"grove_lock_missing_{}.lock\", std::process::id()));\n+        // Hand-craft a lock for a language whose wasm is definitely not on disk.\n+        let doc = serde_json::json!({\n+            \"version\": 1,\n+            \"grammars\": [{\"name\": \"grove_nonexistent_lang_xyz\", \"version\": \"0.0.0\",\n+                          \"wasm\": \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"}]\n+        });\n+        std::fs::write(&out, serde_json::to_string_pretty(&doc).unwrap()).unwrap();\n+        let entries = verify_lock(&out).unwrap().expect(\"lock file must parse\");\n+        assert_eq!(entries.len(), 1);\n+        assert_eq!(entries[0].status, LockVerifyStatus::Missing);\n+        assert!(entries[0].actual.is_none());\n+        std::fs::remove_file(&out).ok();\n+    }\n }\n",
+        "firstChangedLine": 754
+      },
+      "isError": false,
+      "timestamp": 1783195137397
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Now add the re-export to `lib.rs`:"
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01AxHVEEkQN4ZpaYM8tSo52q",
+          "name": "edit",
+          "arguments": {
+            "path": "core/src/lib.rs",
+            "edits": [
+              {
+                "oldText": "/// The grove project config type and integration mode (see [`config`]).\npub use config::{active_mode, GroveConfig, Mode, ModeChoice};",
+                "newText": "/// The grove project config type and integration mode (see [`config`]).\npub use config::{active_mode, GroveConfig, Mode, ModeChoice};\n/// Lock-file verification types returned by [`registry::verify_lock`].\npub use registry::{LockVerifyEntry, LockVerifyStatus};"
+              }
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 212,
+        "cacheRead": 25292,
+        "cacheWrite": 1172,
+        "totalTokens": 26677,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.00318,
+          "cacheRead": 0.0075876,
+          "cacheWrite": 0.004395,
+          "total": 0.0151656
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195137397,
+      "responseId": "msg_01Ds5Po8cW82iqfAriehdEsw"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01AxHVEEkQN4ZpaYM8tSo52q",
+      "toolName": "edit",
+      "content": [
+        {
+          "type": "text",
+          "text": "Successfully replaced 1 block(s) in core/src/lib.rs."
+        }
+      ],
+      "details": {
+        "diff": "    ...\n 65 /// The explore subsystem configuration model (see [`explore`]).\n 66 pub use explore::{ExploreConfig, Provider, Steering};\n 67 /// The grove project config type and integration mode (see [`config`]).\n 68 pub use config::{active_mode, GroveConfig, Mode, ModeChoice};\n+69 /// Lock-file verification types returned by [`registry::verify_lock`].\n+70 pub use registry::{LockVerifyEntry, LockVerifyStatus};",
+        "patch": "--- core/src/lib.rs\n+++ core/src/lib.rs\n@@ -65,4 +65,6 @@\n /// The explore subsystem configuration model (see [`explore`]).\n pub use explore::{ExploreConfig, Provider, Steering};\n /// The grove project config type and integration mode (see [`config`]).\n pub use config::{active_mode, GroveConfig, Mode, ModeChoice};\n+/// Lock-file verification types returned by [`registry::verify_lock`].\n+pub use registry::{LockVerifyEntry, LockVerifyStatus};\n",
+        "firstChangedLine": 69
+      },
+      "isError": false,
+      "timestamp": 1783195142157
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Now let's check syntax and run the tests:"
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01JZGMwdRWkRTDSaGMyPLuoV",
+          "name": "mcp__grove__check",
+          "arguments": {
+            "file": "core/src/registry.rs"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 73,
+        "cacheRead": 26464,
+        "cacheWrite": 241,
+        "totalTokens": 26779,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.001095,
+          "cacheRead": 0.0079392,
+          "cacheWrite": 0.00090375,
+          "total": 0.00994095
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195142158,
+      "responseId": "msg_014CrCVtnNHFiA6ekqayXUjy"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01JZGMwdRWkRTDSaGMyPLuoV",
+      "toolName": "mcp__grove__check",
+      "content": [
+        {
+          "type": "text",
+          "text": "[]"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783195144500
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01AiyReiWxGztcP2yVJRNBq4",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && cargo test --release --locked 2>&1 | tail -40",
+            "timeout": 120
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 98,
+        "cacheRead": 26705,
+        "cacheWrite": 86,
+        "totalTokens": 26890,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.00147,
+          "cacheRead": 0.0080115,
+          "cacheWrite": 0.0003225,
+          "total": 0.009807
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195144500,
+      "responseId": "msg_01PmyfUV2KFTGGiATqyqsj5N"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01AiyReiWxGztcP2yVJRNBq4",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "running 29 tests\ntest bug1_serve_mcp_mode_ignores_stale_explore_json ... ok\ntest explore_mode_unhealthy_provider_falls_back_to_standard_surface ... ok\ntest index_writes_catalog ... ok\ntest lock_writes_grove_lock ... ok\ntest languages_lists_the_dev_stub ... ok\ntest init_provisions_and_wires_harness_per_target ... ok\ntest mcp_llm_dry_run_output_shape ... ok\ntest mcp_llm_dry_run_twice_is_stable ... ok\ntest mcp_llm_agents_md_created_and_appended ... ok\ntest naming_guard_no_fastcontext_in_source ... ok\ntest mcp_llm_mcp_json_no_duplicate_grove_entry ... ok\ntest mcp_llm_steering_block_idempotency ... ok\ntest registry_shows_resolved_root ... ok\ntest definition_at_resolves_across_files_python ... ok\ntest callers_finds_call_sites ... ok\ntest config_in_non_tty_fails_fast ... ok\ntest tap_enables_tracing_in_config ... ok\ntest tap_no_enable_leaves_config_untouched ... ok\ntest definition_at_resolves_across_files_javascript_aliased ... ok\ntest invalid_locals_query_is_non_fatal ... ok\ntest outline_kind_filter_narrows_results ... ok\ntest unknown_extension_errors ... ok\ntest definition_at_is_scope_aware ... ok\ntest outline_lists_definitions_human_and_json ... ok\ntest check_ok_succeeds_and_broken_exits_nonzero ... ok\ntest source_prints_a_symbol_body ... ok\ntest definition_by_name_and_by_position ... ok\ntest map_returns_definitions_with_references ... ok\ntest symbols_finds_across_dir ... ok\n\ntest result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s\n\n   Doc-tests grove_core\n\nrunning 1 test\ntest core/src/lib.rs - (line 28) - compile ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s\n\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783195179573
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "The 29 tests passed! But wait - I don't see the new unit tests I added (verify_lock_returns_none_when_file_absent, verify_lock_matches_after_write_lock_for, etc.). That's because the integration tests for `core` are in the top-level tests directory. Let me run just the core unit tests to see those:",
+          "thinkingSignature": "EvUDCmUIDxgCKkCJ5kZRo9afxwuz4zvKCIoDSXKZmRPvXVCg0hMHQMAG/tP5T7V0vmUc5LOJ06EvzYL1Qssi9gRHMw8PX3XD+BvTMhFjbGF1ZGUtc29ubmV0LTQtNjgAQgh0aGlua2luZxIMtjpfNw/fVCNPEM0PGgzywZK2UMhQcXVcntoiMJkRNIK8xLrdfC7dMMuU/Nd1BOWBl4eHGkyJ+VkHKzb7k2jv9Vmg95pTXFSIslrp2yq9AlW+pYW7VbP0lHNRNq9zyq6QOM+LWxHEZByn+znFjmtOVWl7CC2l786jQU8DMWs92gkpHnvj/SHgl3MTeFkAv0w8bkLwhm3z7tzrEHlPHvDllAK/ztHhmxRa5ktKwctquc4i4mk0S0Bk2q7GFYWsPPrscirRopUgtS58VemECFU3hqAeD1gzQjyPhMqKc4Y7wx/9ISYIka7gcjuqq8wS0G2inViQ7/raX0hZfLqk8fFRC6LvIU2aSKb29V5ZKl2qKTQyGfMuZQgKQQevq6LmyQtbTmu4KWDRbuCxZaLcgFQAr1fZ9gv2LcsptFYhdgcX0+Yz0C+AnGjSu2vmnnWYT80V/L78ngEDyI2U+f6jsOYit38472PofA0PkMVLFlZPhsBthi1FJkCTLrCCdJTWKi4H2p9rTHLKOpraJ7PzGAE="
+        },
+        {
+          "type": "text",
+          "text": "Wait - the new unit tests weren't in the output. Let me run the core unit tests specifically:"
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01UpSwbF6G6RsJHH2duv5i2d",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && cargo test --release --locked -p grove-core 2>&1 | tail -40",
+            "timeout": 120
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 222,
+        "cacheRead": 26791,
+        "cacheWrite": 681,
+        "totalTokens": 27695,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.00333,
+          "cacheRead": 0.008037299999999999,
+          "cacheWrite": 0.00255375,
+          "total": 0.01392405
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 94
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195179573,
+      "responseId": "msg_014XPWTSet8UGvKWo833cPP4"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01UpSwbF6G6RsJHH2duv5i2d",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "error: package ID specification `grove-core` did not match any packages\n\nhelp: a package with a similar name exists: `grove-cst`\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783195184558
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01FmdgMjuSrtjmKoyEdjqQ2f",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && cargo test --release --locked -p core 2>&1 | tail -40",
+            "timeout": 120
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 101,
+        "cacheRead": 27472,
+        "cacheWrite": 267,
+        "totalTokens": 27841,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.001515,
+          "cacheRead": 0.0082416,
+          "cacheWrite": 0.00100125,
+          "total": 0.01076085
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195184559,
+      "responseId": "msg_01H4wtPdscARPuRuyZUUVFTU"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01FmdgMjuSrtjmKoyEdjqQ2f",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "error: package ID specification `core` did not match any packages\n\nhelp: a package with a similar name exists: `cobs`\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783195186996
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_015MmX4QGHpgG6JvQ2oiCijk",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && cat core/Cargo.toml | head -5"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 78,
+        "cacheRead": 27739,
+        "cacheWrite": 142,
+        "totalTokens": 27960,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.00117,
+          "cacheRead": 0.0083217,
+          "cacheWrite": 0.0005325,
+          "total": 0.0100272
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195186996,
+      "responseId": "msg_019QPTafuHLAimb5YhnDuvHS"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_015MmX4QGHpgG6JvQ2oiCijk",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "[package]\nname = \"grove-cst\"\nversion = \"0.3.0\"\nedition = \"2021\"\ndescription = \"Core AST engine, grammar registry, fetch, and ingest for grove — the structural code-intelligence library behind the grove CLI and MCP server.\"\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783195188944
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01DMBTM2rPGe6La2wgswDiXi",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && cargo test --release --locked -p grove-cst 2>&1 | tail -50",
+            "timeout": 120
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 104,
+        "cacheRead": 27881,
+        "cacheWrite": 154,
+        "totalTokens": 28140,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.00156,
+          "cacheRead": 0.0083643,
+          "cacheWrite": 0.0005775,
+          "total": 0.0105048
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195188945,
+      "responseId": "msg_01LfPwTtw1kHtkYqKJ916dPY"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01DMBTM2rPGe6La2wgswDiXi",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "test ops::tests::id_line_selects_that_definition ... ok\ntest ops::tests::source_rejects_malformed_id ... ok\ntest ops::tests::map_across_multiple_files ... ok\ntest ops::tests::definition_finds_exact_name ... ok\ntest ops::tests::outline_filters_by_kind_and_skips_references ... ok\ntest ops::tests::map_returns_definitions_with_references ... ok\ntest registry::tests::available_and_extensions_are_sorted_and_include_the_dev_stub ... ok\ntest registry::tests::build_index_errors_on_missing_root ... ok\ntest registry::tests::build_index_records_locals_scm_only_when_present ... ok\ntest registry::tests::build_index_records_release_asset_when_release_base_set ... ok\ntest registry::tests::call_kinds_drives_the_filter ... ok\ntest registry::tests::empty_call_kinds_defaults_to_literal_call ... ok\ntest registry::tests::for_path_errors_on_unregistered_extension ... ok\ntest registry::tests::is_source_follows_extension ... ok\ntest registry::tests::lang_for_path_maps_known_extensions ... ok\ntest registry::tests::manifest_deserializes_call_kinds_from_profile ... ok\ntest registry::tests::manifests_are_sorted_and_carry_versions ... ok\ntest registry::tests::resolve_caches_and_loads_a_real_grammar ... ok\ntest registry::tests::resolve_errors_on_unknown_language ... ok\ntest registry::tests::search_path_is_ordered_and_root_exists ... ok\ntest registry::tests::sha256_has_canonical_format ... ok\ntest registry::tests::verify_lock_detects_missing_wasm ... ok\ntest registry::tests::verify_lock_detects_tampered_hash ... ok\ntest ops::tests::map_excludes_self_references ... ok\ntest registry::tests::verify_lock_matches_after_write_lock_for ... ok\ntest registry::tests::verify_lock_returns_none_when_file_absent ... ok\ntest registry::tests::wasm_sha256_delegates_to_sha256 ... ok\ntest registry::tests::write_index_defaults_output_to_dir_index_json ... ok\ntest registry::tests::write_index_writes_catalog_and_returns_count ... ok\ntest registry::tests::write_lock_for_pins_versions_and_hashes ... ok\ntest ops::tests::map_attributes_refs_to_innermost_definition ... ok\ntest ops::tests::source_errors_when_name_absent ... ok\ntest ops::tests::map_filters_by_kind_and_name ... ok\ntest ops::tests::symbols_honors_name_kind_and_refs_filters ... ok\ntest ops::tests::project_tiers_control_field_density ... ok\ntest ops::tests::symbols_name_exact_buries_substring_noise_issue_37 ... ok\ntest ops::tests::unmatched_line_falls_back_to_first ... ok\ntest ops::tests::symbols_skips_generated_declaration_files ... ok\ntest explore::agent::tests::balanced_recon_closes_grove_then_forces_submit_plan ... ok\ntest explore::agent::tests::turn_cap_forces_a_final_answer_not_a_sentinel ... ok\n\ntest result: ok. 165 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.53s\n\n   Doc-tests grove_core\n\nrunning 1 test\ntest core/src/lib.rs - (line 28) - compile ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s\n\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783195204140
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "All 4 new tests pass:\n- `verify_lock_returns_none_when_file_absent` ✓\n- `verify_lock_matches_after_write_lock_for` ✓\n- `verify_lock_detects_tampered_hash` ✓\n- `verify_lock_detects_missing_wasm` ✓\n\n165 total tests pass. Now let me transition the task status and write the artifacts:"
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01KjnD4bt94gfD1RpSjAdNgW",
+          "name": "forge_store",
+          "arguments": {
+            "command": "update-status",
+            "args": [
+              "task",
+              "GROVE-S03-T06",
+              "status",
+              "implementing"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 194,
+        "cacheRead": 28035,
+        "cacheWrite": 1031,
+        "totalTokens": 29261,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.0029100000000000003,
+          "cacheRead": 0.0084105,
+          "cacheWrite": 0.00386625,
+          "total": 0.01518975
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195204141,
+      "responseId": "msg_01RyQji4ex85B238av8E6fW7"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01KjnD4bt94gfD1RpSjAdNgW",
+      "toolName": "forge_store",
+      "content": [
+        {
+          "type": "text",
+          "text": "OK"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783195208528
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01GXwwGaXXSCf9sEx4fNLw2P",
+          "name": "forge_store",
+          "arguments": {
+            "command": "update-status",
+            "args": [
+              "task",
+              "GROVE-S03-T06",
+              "status",
+              "implemented"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 90,
+        "cacheRead": 29066,
+        "cacheWrite": 207,
+        "totalTokens": 29364,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.00135,
+          "cacheRead": 0.0087198,
+          "cacheWrite": 0.00077625,
+          "total": 0.010849049999999999
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195208528,
+      "responseId": "msg_01JU4RqgJn2VXfN3f5crkX3j"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01GXwwGaXXSCf9sEx4fNLw2P",
+      "toolName": "forge_store",
+      "content": [
+        {
+          "type": "text",
+          "text": "OK"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783195210548
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01JDbsuyE4ySXj4AdTqYYrKQ",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "write",
+            "entity": "task",
+            "entityId": "GROVE-S03-T06",
+            "artifact": "progress",
+            "content": "# GROVE-S03-T06 — Implementation Progress\n\n## Summary\n\nAdded a `verify_lock` function (plus `LockVerifyStatus` enum and `LockVerifyEntry` struct) to `core/src/registry.rs`, giving grove doctor (T07) a read-only primitive to recompute each cached grammar wasm's sha256 and compare it against the lock file.\n\n## Changes Made\n\n### `core/src/registry.rs`\n- Added `pub enum LockVerifyStatus { Match, Mismatch, Missing }` — the three-way outcome of comparing a cached wasm's sha256 against the pinned hash.\n- Added `pub struct LockVerifyEntry { lang, expected, actual: Option<String>, status }` — one entry per grammar in the lock.\n- Added `pub fn verify_lock(path: &Path) -> Result<Option<Vec<LockVerifyEntry>>>`:\n  - Returns `Ok(None)` when the lock file is absent (non-error signal).\n  - Returns `Ok(Some(entries))` when the lock file parses; each grammar gets an entry.\n  - Resolves the wasm path as `registry_root()/<name>/grammar.wasm` (same as `resolve()`).\n  - `std::io::ErrorKind::NotFound` → `Missing`; hash match → `Match`; mismatch → `Mismatch`.\n  - Other I/O errors are propagated with context.\n- Added four unit tests:\n  - `verify_lock_returns_none_when_file_absent` — `Ok(None)` for a non-existent path.\n  - `verify_lock_matches_after_write_lock_for` — fresh lock verifies all `Match`.\n  - `verify_lock_detects_tampered_hash` — mutated `wasm` field yields `Mismatch`.\n  - `verify_lock_detects_missing_wasm` — nonexistent lang → `Missing`.\n\n### `core/src/lib.rs`\n- Added `pub use registry::{LockVerifyEntry, LockVerifyStatus};` to the curated public surface.\n\n## Test Evidence\n\n```\ncargo test --release --locked -p grove-cst\n\ntest registry::tests::verify_lock_detects_missing_wasm ... ok\ntest registry::tests::verify_lock_detects_tampered_hash ... ok\ntest registry::tests::verify_lock_matches_after_write_lock_for ... ok\ntest registry::tests::verify_lock_returns_none_when_file_absent ... ok\n\ntest result: ok. 165 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.53s\n```\n\nAll 165 unit tests pass. All 4 new verify_lock tests pass. No regressions.\n\n## Files Changed\n\n- `core/src/registry.rs` — new enum, struct, function, and 4 tests (purely additive)\n- `core/src/lib.rs` — new `pub use registry::{LockVerifyEntry, LockVerifyStatus};`\n"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 862,
+        "cacheRead": 29273,
+        "cacheWrite": 103,
+        "totalTokens": 30239,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.01293,
+          "cacheRead": 0.0087819,
+          "cacheWrite": 0.00038625,
+          "total": 0.022101150000000003
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195210548,
+      "responseId": "msg_01PhTne4oFEthzMmyEqQa53C"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01JDbsuyE4ySXj4AdTqYYrKQ",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "Wrote 2290 bytes to engineering/sprints/GROVE-S03/GROVE-S03-T06/PROGRESS.md"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783195227804
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01SBfWtMekxUpvogpHvsEBxT",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "write",
+            "entity": "task",
+            "entityId": "GROVE-S03-T06",
+            "artifact": "implementation-summary",
+            "content": "{\n  \"objective\": \"Add verify_lock(path) -> Result<Option<Vec<LockVerifyEntry>>> plus LockVerifyStatus enum and LockVerifyEntry struct to core/src/registry.rs, enabling grove doctor (T07) to recompute each cached grammar wasm's sha256 and compare it against the lock file.\",\n  \"key_changes\": [\n    \"Added pub enum LockVerifyStatus { Match, Mismatch, Missing } to registry.rs\",\n    \"Added pub struct LockVerifyEntry { lang, expected, actual: Option<String>, status } to registry.rs\",\n    \"Added pub fn verify_lock(path: &Path) -> Result<Option<Vec<LockVerifyEntry>>> — Ok(None) when lock absent\",\n    \"Wasm resolved via registry_root()/<name>/grammar.wasm (same path as resolve())\",\n    \"NotFound I/O error → Missing; hash equality → Match; hash mismatch → Mismatch\",\n    \"Other I/O errors propagated via anyhow with context\",\n    \"Added verify_lock_returns_none_when_file_absent unit test\",\n    \"Added verify_lock_matches_after_write_lock_for unit test (fresh lock verifies all Match)\",\n    \"Added verify_lock_detects_tampered_hash unit test (mutated wasm field → Mismatch)\",\n    \"Added verify_lock_detects_missing_wasm unit test (nonexistent lang → Missing)\",\n    \"Added pub use registry::{LockVerifyEntry, LockVerifyStatus} to core/src/lib.rs curated surface\",\n    \"All 165 unit tests pass; 4 new verify_lock tests all green\"\n  ],\n  \"files_changed\": [\n    \"core/src/registry.rs\",\n    \"core/src/lib.rs\"\n  ],\n  \"verdict\": \"n/a\",\n  \"written_at\": \"2026-07-05T00:00:00Z\",\n  \"artifact_ref\": \"PROGRESS.md\"\n}"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 616,
+        "cacheRead": 29376,
+        "cacheWrite": 906,
+        "totalTokens": 30899,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.00924,
+          "cacheRead": 0.008812799999999999,
+          "cacheWrite": 0.0033975,
+          "total": 0.021453299999999998
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195227805,
+      "responseId": "msg_014qroHVWWToK3C73NQmxucZ"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01SBfWtMekxUpvogpHvsEBxT",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "Wrote 1513 bytes to engineering/sprints/GROVE-S03/GROVE-S03-T06/IMPLEMENTATION-SUMMARY.json"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783195236094
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01HBsYA5FKSFyDYiqgNVdVGW",
+          "name": "forge_store",
+          "arguments": {
+            "command": "set-summary",
+            "args": [
+              "GROVE-S03-T06",
+              "implementation"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 84,
+        "cacheRead": 30282,
+        "cacheWrite": 663,
+        "totalTokens": 31030,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.00126,
+          "cacheRead": 0.0090846,
+          "cacheWrite": 0.00248625,
+          "total": 0.01283385
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195236095,
+      "responseId": "msg_015XScUzyPnf4ELh3Zuj5rgR"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01HBsYA5FKSFyDYiqgNVdVGW",
+      "toolName": "forge_store",
+      "content": [
+        {
+          "type": "text",
+          "text": "OK"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783195244203
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01NxenvHJnHWrPtQqqQeGFza",
+          "name": "forge_verify_apply",
+          "arguments": {
+            "claimed_paths": [
+              "core/src/registry.rs",
+              "core/src/lib.rs"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 74,
+        "cacheRead": 30945,
+        "cacheWrite": 97,
+        "totalTokens": 31117,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.00111,
+          "cacheRead": 0.0092835,
+          "cacheWrite": 0.00036375,
+          "total": 0.010760249999999999
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195244204,
+      "responseId": "msg_01BqvJ1iyMfEA4UveFuiuNMJ"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01NxenvHJnHWrPtQqqQeGFza",
+      "toolName": "forge_verify_apply",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\n  \"modified\": [],\n  \"unchanged\": [],\n  \"untracked\": [\n    \"core/src/registry.rs\",\n    \"core/src/lib.rs\"\n  ],\n  \"missing\": []\n}"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783195246301
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Both files are \"untracked\" in the forge_verify_apply sense, which means they have no manifest entry — this is expected for source files outside .forge/. The tool says \"untracked (no manifest entry — ambiguous, treat as potentially modified)\" which is fine — these are source code files, not forge artifacts. The actual verification was done via cargo test which confirmed the changes work.\n\nLet me do a quick git status to confirm the changes are indeed on disk:",
+          "thinkingSignature": "Ep4FCmUIDxgCKkCB7FYyZY1ql/gCjn7c1skaCc47IDhQxOL2lhCghopCAJ94TF7Sr9s0owyK+4xtZmwJikRVg8nQEYLBzYYYxkLjMhFjbGF1ZGUtc29ubmV0LTQtNjgAQgh0aGlua2luZxIMZGYqYGVKQtzZtvSsGgxkF66gQ05Yui5Lp50iMLV0Xkwl9c7XYJRHeiTWD2O7stVFkUNhkzUMk12BMuwzlddz870n6blwC46Ht/XoIirmA5/1fAbuctS5W3F3IhAx0klQvQDGGQNBs9HTzTuGfK9vNvQTqsMbO7tsqKVHtPBOm1jQbtj44GTvn3sDfxuBG4Es7QE+OlXj8D4VaBINPh+m5OMXEfy/9muKpSv8zNO6jDs35riMr5zboWuIL/Fz/s0nOU9N8CBRAUvPPClFf1kUky336/hPNHv2B67EKG/y6/VCCnz8mAjD31zAbi+okwkBtEoXGT/vEmATtpoy4H+L1nTzTLDbIpA1cIaA7s+T5iHBfwMM69HePmsEqEu6k3BYCcGkIy7/btFLQYlG1+Mji5IOvs0MBt4HJYdRtMW/fzr2SWm90ogkojkh6Qnpd76uSFRTgSLgXlfz8n/fjOZabg882zoIgNrB2EI9wPV6rfvuA7jhxzaXy8zIMkrZ67/uqD+hEYLcAHOMaO6Iesz3ilwf92kW61j2PGPV+eBxf+yDy8wPMIEgdICHv3/LUdNI7zX+j84krfBPbWbQekEJfqpOOfmHx1BsmlhVaHktFnJ8TW7cdcFZtETu+7ea6NC6SJHi83uvenCB/8GHgL6IWJWDR2prDaavNnFOWb5JFWuxDh89glu4RXxptE9RovBzpp6biXfhu3n3qDw0ilzUNQzrpnF/zo5zOUoSTebzPcsEbf2r5BgB"
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01SJxXVMZGPRxcPqLNt7q4o5",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && git diff --stat HEAD core/src/registry.rs core/src/lib.rs"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 201,
+        "cacheRead": 31042,
+        "cacheWrite": 138,
+        "totalTokens": 31382,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.003015,
+          "cacheRead": 0.009312599999999999,
+          "cacheWrite": 0.0005175,
+          "total": 0.0128481
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 113
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783195246302,
+      "responseId": "msg_01B9r2izbQVmbsk7NpQ3pCVD"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01SJxXVMZGPRxcPqLNt7q4o5",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": " core/src/lib.rs      |   2 +\n core/src/registry.rs | 129 +++++++++++++++++++++++++++++++++++++++++++++++++++\n 2 files changed, 131 insertions(+)\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783195251851
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Both files are confirmed modified on disk. Implementation complete. Here's a summary:\n\n---\n\n## GROVE-S03-T06 — Implementation Complete ✅\n\n### What was built\n\n**`core/src/registry.rs`** — three purely additive additions:\n\n1. **`pub enum LockVerifyStatus`** — `Match` / `Mismatch` / `Missing` — the three-way outcome of comparing a cached wasm's sha256 against the pinned lock hash.\n\n2. **`pub struct LockVerifyEntry`** — `lang`, `expected`, `actual: Option<String>`, `status` — one record per grammar entry in the lock file.\n\n3. **`pub fn verify_lock(path: &Path) -> Result<Option<Vec<LockVerifyEntry>>>`** — reads the lock file, resolves each grammar's wasm at `registry_root()/<name>/grammar.wasm`, recomputes sha256, and compares. Returns `Ok(None)` when the lock is absent (non-error), `Ok(Some(entries))` when parsed, `Err` on I/O/parse failure.\n\n4. **Four unit tests** — all green:\n   - `verify_lock_returns_none_when_file_absent` — `Ok(None)` for a non-existent path\n   - `verify_lock_matches_after_write_lock_for` — fresh lock verifies all `Match`\n   - `verify_lock_detects_tampered_hash` — mutated `wasm` field → `Mismatch`\n   - `verify_lock_detects_missing_wasm` — nonexistent lang → `Missing`\n\n**`core/src/lib.rs`** — `pub use registry::{LockVerifyEntry, LockVerifyStatus}` added to curated public surface.\n\n### Test result\n```\n165 passed; 0 failed — cargo test --release --locked -p grove-cst\n```"
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 461,
+        "cacheRead": 31180,
+        "cacheWrite": 273,
+        "totalTokens": 31915,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.006915,
+          "cacheRead": 0.009354,
+          "cacheWrite": 0.00102375,
+          "total": 0.017295750000000002
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "stop",
+      "timestamp": 1783195251851,
+      "responseId": "msg_01PGQs9Ed5AubbiSPdEdTBfs"
+    }
+  ]
+}

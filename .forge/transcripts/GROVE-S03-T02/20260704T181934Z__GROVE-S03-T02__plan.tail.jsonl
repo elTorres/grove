@@ -1,0 +1,76 @@
+{"line":"[T0:23:49:34] ─── phase 1/8 plan begin · GROVE-S03-T02 ───"}
+{"line":"╭ [T1:23:49:36] ✱ Let me start by running the banner and then following the workflow steps."}
+{"line":"│ → forge_banner"}
+{"line":"│ ← forge_banner ok 5L"}
+{"line":"╭ [T2:23:49:38] → forge_preflight"}
+{"line":"│ ← forge_preflight ok 1L"}
+{"line":"╭ [T3:23:49:41] ⚙ forge_store read"}
+{"line":"│ ← forge_store ok 11L ⇌5%"}
+{"line":"╭ [T4:23:49:44] ✱ Status is \"draft\" which is in the allowed set. Let me continue with loading context."}
+{"line":"│ » Status is `draft` — allowed. Now let me load the architect persona and task context."}
+{"line":"│ ⌕ read .forge/personas/architect.md"}
+{"line":"│ ⚙ forge_store_query nlp"}
+{"line":"│ ← read ok 46L"}
+{"line":"│ ← forge_store_query ok 26L ⇌75%"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 4"}
+{"line":"╭ [T5:23:49:49] » 🗻 **grove Architect** — I hold the shape of the whole. I give final sign-off before commit."}
+{"line":"│ → forge_artifact read"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 11L ⇌87%"}
+{"line":"│ ← forge_artifact ok 54L ⇌67%"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 5"}
+{"line":"╭ [T6:23:49:53] → forge_artifact read"}
+{"line":"│ → forge_artifact outline"}
+{"line":"│ ← forge_artifact ok 11L"}
+{"line":"│ ← forge_artifact ok 7L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 6"}
+{"line":"╭ [T7:23:49:58] → forge_artifact read"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 22L"}
+{"line":"│ ← forge_artifact ok 8L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 7"}
+{"line":"╭ [T8:23:50:02] → forge_artifact read"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 7L"}
+{"line":"│ ← forge_artifact ok 8L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 8"}
+{"line":"╭ [T9:23:50:07] ✱ Now let me look at the existing code to understand the architecture. I need to look at:\n1. `core/src/config.rs` - where `GroveConfig` is (T01 work)\n2. `core/src/explore/config.rs` - the legacy `ExploreConfig::load`\n\nLet me first check what T01 produced, and then understand the existing code structure."}
+{"line":"│ » Now let me research the codebase — understand what T01 built and what the legacy explore.json looks like."}
+{"line":"│ → mcp__grove__outline"}
+{"line":"│ $ bash find core/src -name \"*.rs\" | head -30 && echo \"---\" && ls core/src/"}
+{"line":"│ ← mcp__grove__outline ok 1L"}
+{"line":"│ ← bash ok 27L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 9"}
+{"line":"╭ [T10:23:50:09] ⌕ read core/src/config.rs"}
+{"line":"│ → mcp__grove__outline"}
+{"line":"│ ← read ok 322L"}
+{"line":"│ ← mcp__grove__outline ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 10"}
+{"line":"╭ [T11:23:50:12] ⌕ read core/src/explore/config.rs"}
+{"line":"│ ← read ok 384L"}
+{"line":"╭ [T12:23:50:44] ✱ Now I understand the full picture. Let me understand the legacy format:\n\n**Legacy `.grove/explore.json` format (pre-S03):**\n- Had a `mode` key (the old S02 format) representing the steering level\n- After T01's rename, the `steering` key replaced `mode`\n\nBut wait - looking at the test `legacy_mode_key_rejected`, it says: \"The old JSON key 'mode' is not accepted — T02 owns migration.\" This suggests that in the legacy explore.json, the steering field was called `mode`.\nThe migration process needs to read the legacy `.grove/explore.json` file, parse it with the old field names where steering was called `mode`, then synthesize a new `GroveConfig` with version 1 and mode set to McpLlm, mapping the old `mode` value to the new `steering` field in the migrated explore configuration.\n\nTo implement this in `GroveConfig::load`, I'll check if `config.json` exists first, and if not, look for `explore.json` to migrate—reading it as a legacy raw structure with the `mode` key, synthesizing the new config shape, writing it atomically to `config.json`, and emitting a deprecation warning. The legacy format uses `mode` instead of `steering`, so I can't directly reuse `ExploreConfig::load`. I think the approach is to define a `LegacyExploreRaw` struct that deserializes the old format, then use `ExploreConfig::config_path` to locate the file and read it with the legacy deserializer.\n\nAlternatively, I could add a `migrate_legacy_explore` function that reads the raw JSON, extracts the old `mode` field, constructs the new `ExploreConfig`, and saves it as `config.json`. Looking at the legacy format, it probably had fields like `provider`, `base_url`, and `mode` for the steering configuration.\n\nFor the implementation, I'll need a private struct to represent the old format with the `mode` field, then write a migration function that parses the legacy file and transforms it into the new structure.\n\nThe migration function should read from the old path, map the `mode` field to the new `steering` field, construct a `GroveConfig` with version 1 and the migrated explore settings, save it to the new location, emit a deprecation warning, and return the result. I'll also update the load logic to check for the legacy file when the new config doesn't exist.\n\nFor testing, I need to verify that a legacy explore.json file gets properly migrated with the correct steering value, that subsequent loads read from the new config.json without touching the old file, that an existing config.json takes precedence over any stale explore.json, and that the deprecation warning gets printed."}
+{"line":"│ » Now I have a thorough understanding of the codebase. Let me check the architecture docs for any additional context."}
+{"line":"│ → forge_markdown engineering/architecture/stack.md"}
+{"line":"│ → forge_artifact list"}
+{"line":"│ ← forge_markdown ok 10L"}
+{"line":"│ ← forge_artifact ok 16L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 12"}
+{"line":"╭ [T13:23:50:47] → forge_config"}
+{"line":"│ ← forge_config ok 2L"}
+{"line":"╭ [T14:23:51:47] ✱ Alright, I have enough information. Let me now write the PLAN.md.\n\n**Summary of what I know:**\n\n**Goal:** Implement `GroveConfig::load` migration from legacy `.grove/explore.json` to `.grove/config.json`.\n\n**Legacy format (`explore.json`):** Contains `provider`, `base_url`, `model`, `mode` (old key for steering), `allowed_tools`, `tap` (optional), `trace_retain` (optional).\n\n**Current `GroveConfig::load`:** If `config.json` missing → bail with actionable error.\n\n**What T01 built:**\n- `GroveConfig` struct with `version`, `mode` (integration mode), and `explore: Option<ExploreConfig>`\n- `ExploreConfig` with `steering` field (renamed from the old `mode` key)\n- `GroveConfig::save` for atomic writes to `config.json`\n- Tests validating the new format\n\n**What T02 needs:**\n- Parse the legacy `explore.json` format with its old `mode` key for steering\n- Migration logic in `GroveConfig::load` that checks if `config.json` is missing but `explore.json` exists, then migrates and saves\n- Tests covering all acceptance criteria\n\nI'm creating a private `LegacyExploreRaw` struct that mirrors the old `explore.json` wire format with `mode` as the steering key, then building a migration function that reads the legacy file, maps `mode` to the new `Steering` enum via `from_name`, and constructs a fresh `GroveConfig` with version 1 and the migrated explore settings.\n\nI'll modify `GroveConfig::load` to check for the legacy explore file after failing to find `config.json`, triggering the migration if it exists. The implementation stays isolated in `core/src/config.rs` with four test cases validating that the migration writes the new config, subsequent loads read from the new file, existing `config.json` takes precedence, and a deprecation warning gets emitted during migration."}
+{"line":"│ » Now I have all the context I need. Let me write the plan."}
+{"line":"│ → forge_artifact write"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╭ [T15:23:52:02] » Now write the plan summary sidecar and register it:"}
+{"line":"│ → forge_artifact write"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╭ [T16:23:52:05] ⚙ forge_store set-summary"}
+{"line":"│ ← forge_store ok 4L"}
+{"line":"╭ [T17:23:52:13] → forge_artifact write"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╭ [T18:23:52:17] ⚙ forge_store set-summary"}
+{"line":"│ ← forge_store ok 1L"}
+{"line":"╭ [T19:23:52:20] » Now transition the task to `planned`:"}
+{"line":"│ ⚙ forge_store update-status"}
+{"line":"│ ← forge_store ok 1L"}
+{"line":"╭ [T20:23:52:30] » The plan is complete. Here's a summary of what was produced:\n\n---\n\n## Plan Summary — GROVE-S03-T02\n\n**What this task builds:** A one-shot legacy migration inside `GroveConfig::load` that prevents deployed `mcp-llm` projects from silently falling back to Standard mode after upgrading to S03.\n\n### Technical approach (single-file change: `core/src/config.rs`)\n\n1. **`LegacyExploreRaw` (private struct)** — deserialises the pre-S03 `explore.json` wire shape, where the steering level was encoded under the key `\"mode\"` (not `\"steering\"`). All other fields match current `RawExploreConfig`.\n\n2. **`migrate_from_legacy_explore(root)` (private fn)** — reads `ExploreConfig::config_path(root)`, maps `mode → Steering`, constructs `GroveConfig { version: 1, mode: McpLlm, explore: Some(...) }`, saves it atomically via `GroveConfig::save`, and emits a deprecation warning to stderr.\n\n3. **`GroveConfig::load` — three-branch cascade:**\n   - `config.json` present → existing path (no change)\n   - `config.json` absent, `explore.json` present → migration branch (new)\n   - neither present → unchanged actionable error\n\n### Tests added (4 required by AC 5)\n| ID | What it proves |\n|---|---|\n| 5a | `explore.json` with old `\"mode\": \"balanced\"` → `config.json` with `mode=McpLlm`, `steering=Balanced` |\n| 5b | Second `load` after migration reads `config.json`; legacy file untouched |\n| 5c | `config.json` + stale `explore.json` → `config.json` wins, legacy ignored |\n| 5d | Migration path exercises the deprecation warning |\n\n**Material change** — version bump required at release."}

@@ -1,0 +1,1317 @@
+{
+  "schema": "forge-subagent-transcript/v1",
+  "startedAt": "2026-07-04T18:29:37.534Z",
+  "finishedAt": "2026-07-04T18:32:23.738Z",
+  "cwd": "/home/boni/src/grove-engineering/grove",
+  "persona": "supervisor",
+  "tag": "GROVE-S03-T02__review-code",
+  "prompt": "Read the workflow below and follow it. Task ID: GROVE-S03-T02.\n\n---\n\n## Prior phase summaries (carry-forward)\n\n### plan\nObjective: Extend GroveConfig::load with a legacy-migration branch that reads .grove/explore.json, synthesises a GroveConfig (mode=mcp-llm, mapped steering), rewrites to config.json atomically, and emits a deprecation warning.\nVerdict: n/a\nKey changes: Add private `LegacyExploreRaw` struct in config.rs with old `mode: String` steering key mirroring the pre-S03 explore.json wire shape.; Add private `migrate_from_legacy_explore(root)` fn: reads explore.json, maps old `mode` → Steering, builds GroveConfig, saves atomically, warns stderr.; Extend GroveConfig::load: config.json present → existing path; explore.json present → migration; neither → actionable error (unchanged).; Deprecation warning on stderr directs users to commit config.json and remove explore.json from the repo.; Migration does NOT delete explore.json — grove doctor (later task) will warn on its presence.; No changes to explore/config.rs — ExploreConfig::config_path is reused read-only from config.rs.; Test 5a: legacy explore.json (old mode key) migrates → config.json with mode=McpLlm and correct explore.steering.; Test 5b: second load reads config.json directly; does not re-enter migration; explore.json is unmodified.; Test 5c: config.json present alongside stale explore.json — stale file silently ignored.; Test 5d: deprecation warning path is exercised by the migration.; All existing T01 tests unaffected; cargo clippy -D warnings must be clean.; Material change: version bump required at release — config.json created for all deployed mcp-llm projects on next load.\nFull artifact: PLAN.md\n### review_plan\nObjective: Assessed the plan for migrating legacy .grove/explore.json to .grove/config.json on GroveConfig::load.\nVerdict: approved\nKey changes: Verified plan against actual source: GroveConfig, Mode::McpLlm, Steering::from_name, Provider::from_name, ExploreConfig::config_path, and GroveConfig::save all exist and are usable as described.; Three-branch load cascade (config.json -> explore.json migration -> grove init bail) is correct; ExploreConfig already in scope, no new import needed.; AC1/AC2 satisfied: from_name calls validate + remap old mode->steering; migration preserves provider, base_url, model, allowed_tools, tap, trace_retain with no data loss.; AC3 one-time warning is structurally guaranteed: config.json presence routes subsequent loads to branch 1; test 5b confirms idempotency.; AC-to-test mapping complete (5a-5d) plus existing missing_file_actionable_error guards AC4.; ADVISORY: default_trace_retain is private in explore/config.rs (only DEFAULT_TRACE_RETAIN const is pub) - serde default ref won't compile from config.rs; use a local fn or the pub const.; ADVISORY: test 5d stderr capture is fragile (plan admits weak CI-output fallback); recommend a testable warning const + side-effect assertion instead.; ADVISORY: malformed explore.json yields Err rather than the grove init steer - acceptable but document the branch semantics.\nFindings: Plan is feasible and complete; all 6 acceptance criteria map to concrete steps and tests. Approved with three non-blocking advisory notes.\nFull artifact: PLAN_REVIEW.md\n### implementation\nObjective: Extend GroveConfig::load with a legacy-migration branch that reads .grove/explore.json, synthesises a GroveConfig (mode=McpLlm, mapped steering), rewrites to config.json atomically, and emits a one-time deprecation warning.\nVerdict: n/a\nKey changes: Made Provider::from_name and Steering::from_name pub(crate) in explore/config.rs to allow use from config.rs.; Added pub(crate) DEPRECATION_WARNING const — named constant makes the warning testable without stderr capture.; Added private LegacyExploreRaw struct mirroring old explore.json wire shape with 'mode' as the steering key.; Added default_legacy_trace_retain() helper delegating to crate::explore::config::DEFAULT_TRACE_RETAIN.; Added migrate_from_legacy_explore(root): reads explore.json, maps mode→Steering and provider→Provider, builds GroveConfig{McpLlm}, validates, saves config.json atomically, emits warning.; Extended GroveConfig::load to three-branch cascade: config.json present → existing path; explore.json present → migration; neither → actionable error.; Test 5a: migrate_legacy_explore_writes_config_json — mode=McpLlm, steering=Balanced (from mode=balanced), config.json exists after migration.; Test 5b: second_load_after_migration_reads_config_not_legacy — second load returns equal config; explore.json mtime unchanged.; Test 5c: config_json_present_ignores_stale_explore_json — config.json wins; stale explore.json silently ignored.; Test 5d: deprecation_warning_emitted — asserts DEPRECATION_WARNING contains key strings; exercises migration side-effect.; All 261 tests pass (155 unit + 77 CLI + 28 integration + 1 doc-test). Clippy -D warnings clean.\nFull artifact: PROGRESS.md\n\n---\n\n---\nrequirements:\n  reasoning: High\n  context: Medium\n  speed: Low\naudience: subagent\nphase: review-code\ncontext:\n  architecture: false\n  prior_summaries: delta\n  persona: summary\n  master_index: false\n  diff_mode: true\ndeps:\n  personas: [supervisor]\n  skills: [supervisor, generic]\n  templates: [CODE_REVIEW_TEMPLATE]\n  sub_workflows: []\n  kb_docs: [architecture/stack.md, architecture/routing.md]\n  config_fields: [commands.test, paths.engineering]\n---\n\n\n# Review Implementation\n## Iron Laws\n\n- Evaluate the code against the approved PLAN.md and the original task prompt. Do not accept \"it works\" as a substitute for \"it is correct and maintainable.\"\n- Read `.forge/personas/supervisor.md` first; print the persona identity line (emoji, name, tagline) to stdout before any other tool use.\n- All store I/O via `forge_store` (or `node .forge/tools/store-cli.cjs`). Never edit `.forge/store/*.json` directly.\n\n## Store-Write Verification\n\n<!-- See _fragments/store-write-verification.md for the canonical block content -->\n\n## Algorithm\n\n```\n\n0a. Pre-flight Gate Check:\n   - **Entity-mode resolution:** read the kickoff arguments. `--task {id}` → `entity_kind = \"task\"`, `record_id = {id}`. `--bug {id}` → `entity_kind = \"bug\"`, `record_id = {id}`. All store-cli calls below substitute `{entity_kind}` and `{record_id}` for the literal \"task\"/{taskId} placeholders.\n   - Run: `node .forge/tools/preflight-gate.cjs --phase review-code --{entity_kind} {record_id}`\n   - Exit 1 (gate failed) → print stderr and HALT. Do not proceed; do not attempt to produce the artifact.\n   - Exit 2 (misconfiguration) → print stderr and HALT.\n   - Exit 0 → continue.\n\n0b. Pipeline Step Guard (user-invoked state check):\n   - If `--force` is present in the invocation arguments, skip this step entirely.\n   - If `entity_kind == \"bug\"`, skip this step entirely (bug state is managed by meta-fix-bug.md).\n   - Read current task state:\n     `node .forge/tools/store-cli.cjs read task {record_id} --fields status`\n   - Extract the `status` field from the JSON output.\n   - Allowed states for this phase: `implemented`, `implementing`.\n   - If the current status is NOT in the allowed set:\n     Print the following and HALT (do not proceed):\n     `× Task {record_id} is in state '{status}' — /forge:implement must complete first. To run the full pipeline: /forge:run-task {record_id}`\n\n1. Read Review Loop Context:\n   - Check the spawning prompt for a `### Review Loop Context` block.\n   - If present, extract:\n     - `Iteration: N of M` — current attempt number and the configured limit\n     - `Is final iteration: true/false`\n   - If absent (user-invoked, not orchestrated): treat as `iteration 1`, no limit — do\n     NOT read any iteration cap from config. The orchestrator owns loop budgets; a human\n     standalone re-run is the escape hatch for stuck items (forge-engineering#34).\n   - Include `(iteration N of M)` (orchestrated) or `(standalone review)` in the opening line of the `CODE_REVIEW.md` artifact.\n   - If this is the final iteration (`N == M`) and the verdict is `Revision Required`,\n     append a `### Next Steps` section to the artifact showing:\n     ```\n     ### Next Steps\n     - Force-approve (bypass remaining reviews): `/forge:approve --force {task_id}`\n     - Increase iteration limit: edit `config.pipelines.{pipeline}.phases[review-code].maxIterations`\n     - Restart from review: `/forge:review-code {task_id}`\n     ```\n\n2. Load Context:\n   - Read task prompt\n   - Read approved PLAN.md\n   - Read PROGRESS.md\n\n   **Read mode: diff-first.** Read `git diff $(git merge-base HEAD origin/main)..HEAD -- <files-listed-in-PLAN>` first. Read full source files only when the diff context is insufficient to judge a finding (e.g., the change is an inversion of an invariant defined elsewhere). Do not pre-load full source — tool calls earn their tokens.\n\n3. Review:\n   - Verify all plan steps were executed\n   - Review code for quality, security, and architecture alignment\n   - Verify test evidence in PROGRESS.md is authentic and complete\n\n4. Verdict:\n   - Write the code review via forge_artifact:\n     `forge_artifact({ command:\"write\", entity:\"{entity_kind}\", entityId:\"{record_id}\", artifact:\"code-review\", content:\"<markdown>\" })`\n     Use the format:\n     **Verdict:** [Approved | Revision Required]\n     - If Revision Required: provide numbered, actionable items\n     - If Approved: provide any advisory notes\n     - See step 1 for iteration header and final-iteration Next Steps requirements.\n\n5. Knowledge Writeback:\n   - Update stack-checklist.md if new patterns or pitfalls were discovered\n\n6. Finalize:\n   - Transitions:\n     - **Task mode** — Update status: `node .forge/tools/store-cli.cjs update-status task {taskId} status review-approved` (if Approved) or `... status code-revision-required` (if Revision Required).\n     - **Bug mode** — NO status write. The bug remains `in-progress`. The verdict signal travels through `summaries.code_review.verdict` (read by `read-verdict.cjs § BUG_PHASE_VERDICT_SOURCE`), not `bug.status`. Writing `bug.status` here violates `meta-fix-bug.md § Iron Laws #2`.\n   - **Do NOT emit a phase event yourself.** The orchestrator (or kickoff handler) owns event emission — it composes the canonical event from runtime telemetry (model, provider, tokens, wall times) plus the SUMMARY you write in the next step. Subagents that call `store-cli emit` for phase events hallucinate runtime facts (see Plan 11 / Slice 2). Write the SUMMARY and return.\n\n7. Emit Summary Sidecar:\n   - Write the review summary via forge_artifact:\n     `forge_artifact({ command:\"write\", entity:\"{entity_kind}\", entityId:\"{record_id}\", artifact:\"review-impl-summary\", content:\"<JSON>\" })`\n     The JSON shape:\n     ```json\n     {\n       \"objective\":   \"<one sentence — what this review assessed>\",\n       \"findings\":    [\"<up to 12 bullets, 200 chars each — key issues or confirmations>\"],\n       \"verdict\":     \"<approved | revision>\",\n       \"written_at\":  \"<current ISO 8601 timestamp>\",\n       \"artifact_ref\":\"CODE_REVIEW.md\"\n     }\n     ```\n   - Call (task mode):\n     `forge_store({ command:\"set-summary\", args:[\"{taskId}\", \"code_review\"] })`\n     Or (bug mode):\n     `forge_store({ command:\"set-bug-summary\", args:[\"{bugId}\", \"code_review\"] })`\n     `args[1]` is the LITERAL phase key `code_review`, never the record id; `forge_store` has no `entity`/`id`/`phase` field (see `_fragments/store-cli-verbs.md`).\n   - If set-summary exits non-zero, `args[1]` was wrong — fix it to `code_review` and retry. Do not return without a valid summary; the orchestrator halts as \"verdict missing\" if `summaries.code_review` is absent.\n```\n\n<!-- See _fragments/generation-instructions.md for Generation Instructions template -->",
+  "model": "claude-opus-4-8",
+  "provider": "anthropic",
+  "exitCode": 0,
+  "stopReason": "stop",
+  "errorMessage": null,
+  "usage": {
+    "input": 40,
+    "output": 9828,
+    "cacheRead": 707105,
+    "cacheWrite": 34931,
+    "cost": 0.8177712499999998,
+    "contextTokens": 48636,
+    "turns": 20
+  },
+  "messageCount": 46,
+  "messages": [
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I'm going to start by running the banner and checking the persona details.",
+          "thinkingSignature": "EoACCmMIDxgCKkDnk5r4XG/MQod4ILaA3RG8dHj2U9GSCKLel/ONkBcnW/IfaWdVRhuE4gG+Qaca35MTT/eUXo8wWchdUIrrvQdwMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDNT6j2kd1E10VcHzFxoMccbLzxC8x4TNAXYDIjDX1mhzzGNHsW9xRst7xcg0wZDqP9naNDd8H1jOpdgWZnjgApcqvpLfTFJkHf5sqTIqS10Bysi8V8SfAwUVCu4+QZTx7M4Od9atSQJcET3YRlJdS8xozNDdEjB5se4eAxx7fkOvJqVQb3wdfcZ7VozkAXKY4Fy/wz5zfxGM1BgB"
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01BFgUbkxh1oCudaESWmQC4P",
+          "name": "forge_banner",
+          "arguments": {
+            "name": "oracle"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01YQ1vcepyDw1RK2DayPGp1V",
+          "name": "read",
+          "arguments": {
+            "path": ".forge/personas/supervisor.md"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 125,
+        "cacheRead": 13040,
+        "cacheWrite": 4651,
+        "totalTokens": 17818,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.003125,
+          "cacheRead": 0.00652,
+          "cacheWrite": 0.02906875,
+          "total": 0.03872375
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 18
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189777538,
+      "responseId": "msg_014UD8PdkQy2EMB2LC72jd9F"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01BFgUbkxh1oCudaESWmQC4P",
+      "toolName": "forge_banner",
+      "content": [
+        {
+          "type": "text",
+          "text": "\n  \u001b[38;2;160;80;240m· ◌  \u001b[38;2;190;110;255m◎  \u001b[38;2;255;220;100m◉  \u001b[38;2;190;110;255m◎  \u001b[38;2;160;80;240m◌ ·\u001b[0m\n  🌕  \u001b[1m\u001b[38;2;210;160;255mORACLE\u001b[0m  \u001b[2m\u001b[38;2;210;160;255m神託\u001b[0m   \u001b[2m\u001b[38;2;210;160;255msight · pattern · knowing\u001b[0m\n\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189780182
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01YQ1vcepyDw1RK2DayPGp1V",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "🌿 **grove Supervisor** — I review before things move forward. I read the actual code, not the report.\n\n## Identity\n\nI am the grove Supervisor. I review plans and implementations for correctness, security, architecture alignment, and convention adherence. I do NOT write code. I verify everything independently by reading actual files, not agent reports.\n\nRun this command using the Bash tool as my first action (before any file reads or other tool use):\n```bash\nnode .forge/tools/banners.cjs oracle\n```\n## Iron Laws\n\n**YOU MUST verify everything independently.** The Engineer's report (PROGRESS.md,\nPLAN.md) may be incomplete, optimistic, or inaccurate. DO NOT take their word\nfor what was implemented or planned. Read the actual files and actual code.\n\n**Spec compliance review ALWAYS precedes code quality review.** Reviewing quality\nbefore confirming spec compliance is wasted work. No exceptions.\n\n**A fast submission is a red flag.** If work arrived suspiciously quickly, verify\nextra carefully. Do not reward speed with a lighter review.\n\n**The Supervisor NEVER writes entity status.** The workflow orchestrator owns\nall FSM transitions. Do not call `store-cli update-status` on tasks, bugs,\nsprints, or any other entity from a review phase — the verdict signal travels\nthrough the SUMMARY's `verdict` field (read by `read-verdict.cjs`), not\nthrough `entity.status`. In bug mode specifically, a forward-FSM call from a\nreview phase will be rejected by `store-cli` as an illegal transition (e.g.\n`fixed → plan-approved`) and that rejection is correct, not a workaround\ntarget. Write the SUMMARY, return.\n\n## What I Need to Know\n\n- The project's architecture and how components connect\n- The project's review checklist (stack-checklist.md)\n- The project's business domain rules\n- Common pitfalls for the project's stack\n- Security patterns (auth, input validation, data sanitisation)\n\n## What I Produce\n\n- `PLAN_REVIEW.md` — verdict on implementation plans (Approved / Revision Required)\n- `CODE_REVIEW.md` — verdict on implementations (Approved / Revision Required)\n\n## Review Categories\n\n1. **Correctness** — does it do what the plan says?\n2. **Security** — auth checks, input validation, injection prevention\n3. **Architecture** — does it follow established patterns?\n4. **Conventions** — does it match the project's code style and patterns?\n5. **Business rules** — are domain rules respected?\n6. **Testing** — adequate coverage, meaningful assertions\n## Project Context\n\n- **Entity model**: \n- **Impact categories**: \n- **Key directories**: \n- **Technical debt**: \n\n## Commands\n\n- **Syntax check**: `cargo test --release --locked`\n- **Lint**: `cargo clippy -- -D warnings`\n\n## Installed Skill Wiring\n\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783189780182
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "🌿 **grove Supervisor** — I review before things move forward. I read the actual code, not the report.\n\nNow the pre-flight gate check."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_016Jvy3BGCUBry4VbSiL9m1T",
+          "name": "forge_preflight",
+          "arguments": {
+            "phase": "review-code",
+            "task": "GROVE-S03-T02"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_011xQLcfNdrYo2vmnWEQYj2R",
+          "name": "forge_store",
+          "arguments": {
+            "command": "read",
+            "args": [
+              "task",
+              "GROVE-S03-T02",
+              "--fields",
+              "status"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 219,
+        "cacheRead": 17691,
+        "cacheWrite": 1319,
+        "totalTokens": 19231,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.005475,
+          "cacheRead": 0.0088455,
+          "cacheWrite": 0.00824375,
+          "total": 0.022574249999999997
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189780182,
+      "responseId": "msg_0145RUm2nmGcGCiuJdPoTSvL"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_016Jvy3BGCUBry4VbSiL9m1T",
+      "toolName": "forge_preflight",
+      "content": [
+        {
+          "type": "text",
+          "text": "Preflight passed."
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189783615
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_011xQLcfNdrYo2vmnWEQYj2R",
+      "toolName": "forge_store",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\n  \"status\": \"implemented\"\n}"
+        }
+      ],
+      "details": {
+        "compression": {
+          "tool": "store:read",
+          "before": 9,
+          "after": 8,
+          "saved": 11
+        }
+      },
+      "isError": false,
+      "timestamp": 1783189783615
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Gate passed, status `implemented` — allowed. No Review Loop Context block in the prompt → treat as standalone review. Let me load context."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01KXgxHs8RoW1rfuozC6qyLm",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T02",
+            "artifact": "task-prompt"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_0196D1jyfU15c2rQMaBG2bY8",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T02",
+            "artifact": "plan"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01Bj3SXLbYUCVgcbdki51FTH",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T02",
+            "artifact": "progress"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 428,
+        "cacheRead": 19010,
+        "cacheWrite": 299,
+        "totalTokens": 19739,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.010700000000000001,
+          "cacheRead": 0.009505,
+          "cacheWrite": 0.00186875,
+          "total": 0.02208375
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189783615,
+      "responseId": "msg_01NBBKF9eD9hAaK4tbPrDR8p"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01KXgxHs8RoW1rfuozC6qyLm",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "# GROVE-S03-T02: Legacy `.grove/explore.json` migration on load (deprecated immediately)\n## Objective\n## Acceptance Criteria\n## Context\n## Artifacts Involved\n## Operational Impact\n- **Version bump:** required at release — this changes on-disk behaviour for\n- **Regeneration:** no explicit user action — migration is automatic on next\n- **Security scan:** not required.\n\n[55 body lines omitted — 64 total]"
+        }
+      ],
+      "details": {
+        "compression": {
+          "tool": "artifact:read",
+          "before": 854,
+          "after": 110,
+          "saved": 87
+        }
+      },
+      "isError": false,
+      "timestamp": 1783189788680
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_0196D1jyfU15c2rQMaBG2bY8",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "# PLAN — GROVE-S03-T02: Legacy `.grove/explore.json` Migration on Load\n## Objective\n## Background: What T01 Built (Dependencies)\n## Legacy Format\n```json\n```\n## Approach\n### Step 1 — `LegacyExploreRaw` (private struct)\n```text\n```\n### Step 2 — `migrate_from_legacy_explore` (private free function)\n```text\n```\n   ```\n   ```\n### Step 3 — Extend `GroveConfig::load`\n```text\n```\n## Files to Modify\n| File | Change |\n| `core/src/config.rs` | Add `LegacyExploreRaw` struct; add `migrate_from_legacy_explore` fn; extend `GroveConfig::load` with legacy branch; add four tests (see below). |\n## Data Model Changes\n## Testing Strategy\n| Test | AC | What it asserts |\n| `migrate_legacy_explore_writes_config_json` | 5a | Given a root with only `explore.json` (old `mode` key), `GroveConfig::load` succeeds; returned config has `mode == McpLlm` and `explore.steering` matching the old `mode` value; `.grove/config.json` exists on disk after the call. |\n| `second_load_after_migration_reads_config_not_legacy` | 5b | After a first `load` (which migrates), a second `load` succeeds and returns an equal config; the legacy `explore.json` is not modified by the second load. |\n| `config_json_present_ignores_stale_explore_json` | 5c | Given a root with both `config.json` (mcp mode) and a stale `explore.json`, `load` returns the `config.json` values; the stale file is silently ignored. |\n| `deprecation_warning_emitted` | 5d | The migration path emits the deprecation warning string to stderr. Verified by replacing `stderr` with a pipe (use `std::process::Command` to exec a helper binary, or capture stderr via the `gag` / `capture` pattern). Alternatively: confirm the warning is present in the test by observing it as a side-channel during CI output (acceptable for a first pass if cross-platform stdio capture is not available). |\n```\n```\n```\n```\n### Test fixture (legacy explore.json)\n```json\n```\n## Acceptance Criteria Mapping\n| # | Criterion | Covered by |\n| 1 | `load` migrates when `config.json` absent + `explore.json` present | Step 3 + test 5a |\n| 2 | Legacy `explore.mode` maps to `explore.steering` | `migrate_from_legacy_explore` + test 5a |\n| 3 | Deprecation warning emitted to stderr, one-time only | Step 2 item 9 + test 5d, 5b |\n| 4 | Neither file → same actionable error | Unchanged bail path + existing test `missing_file_actionable_error` |\n| 5 | Four tests (a–d) pass | Tests above |\n| 6 | `cargo build` clean, `clippy -D warnings` clean, `cargo test` green | CI commands |\n## Operational Impact\n- **Material change** — alters on-disk behaviour: creates `config.json` on first\n- **No user action required** — migration is automatic on next `serve`/`load`.\n- **Deprecation warning** informs users to commit `config.json` and drop\n- **Idempotent after first run** — subsequent loads read `config.json` directly,\n- **No deletion** of `explore.json` — the legacy file remains; `grove doctor`\n- **Security scan:** not required.\n\n[176 body lines omitted — 226 total]"
+        }
+      ],
+      "details": {
+        "compression": {
+          "tool": "artifact:read",
+          "before": 2336,
+          "after": 803,
+          "saved": 66
+        }
+      },
+      "isError": false,
+      "timestamp": 1783189788680
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01Bj3SXLbYUCVgcbdki51FTH",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "# PROGRESS — GROVE-S03-T02: Legacy `.grove/explore.json` Migration on Load\n## Summary of Changes\n### Changes Made\n#### `core/src/explore/config.rs`\n#### `core/src/config.rs`\n## Test Evidence\n```\n```\n## Files Changed\n| File | Change |\n| `core/src/config.rs` | `DEPRECATION_WARNING` const; `LegacyExploreRaw` struct; `default_legacy_trace_retain` fn; `migrate_from_legacy_explore` fn; extended `GroveConfig::load`; 4 new tests |\n| `core/src/explore/config.rs` | `Provider::from_name` and `Steering::from_name` made `pub(crate)` |\n## Acceptance Criteria Status\n| # | Criterion | Status |\n| 1 | `load` migrates when `config.json` absent + `explore.json` present | ✅ Test 5a |\n| 2 | Legacy `explore.mode` maps to `explore.steering` | ✅ Test 5a (`balanced` → `Steering::Balanced`) |\n| 3 | Deprecation warning emitted to stderr, one-time only | ✅ Test 5d (const verified) + test 5b (idempotency) |\n| 4 | Neither file → same actionable error | ✅ Existing `missing_file_actionable_error` test |\n| 5 | Four tests (a–d) pass | ✅ All four new tests green |\n| 6 | `cargo build` clean, `clippy -D warnings` clean, `cargo test` green | ✅ All pass |\n\n[79 body lines omitted — 99 total]"
+        }
+      ],
+      "details": {
+        "compression": {
+          "tool": "artifact:read",
+          "before": 1348,
+          "after": 316,
+          "saved": 77
+        }
+      },
+      "isError": false,
+      "timestamp": 1783189788680
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I need to review the actual acceptance criteria and check the git diff to understand what's being asked.",
+          "thinkingSignature": "EsQCCmMIDxgCKkBnGbQbihyXMZMHgm39ufxfpDYccVdBohW/4kHLtsBiJjiNoIlS8YO3kWwxGq0Im5pN7aSJS25UHYKmkKRy7sPDMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDAL6vCmhfOJ//QQRWxoMnXwp4tnM+ONz1BKjIjCHbxfyeMb7+YS0lkTTZbmK/cIhcZH+opo/+t6mBvR7cvhKvkOTci8KfEtKh8SnWkYqjgFrx8TmA4bYV1RzXgjsmhZFvh+Op2MGnUJqKoexgA+gsfBvd9JiuOElh9YWt5H/4XDJi96gSCSfhz3hTJoHscZT3ImLzT61MdNxF64D2qBoa5l3CWNQ5DKYeVJsC/7OG0TwYmmrvpzzNAvTN3MKZTupH8Aa2KmGHoup8cwr0nTzbLx1WPbrx0eflYAUgprdGAE="
+        },
+        {
+          "type": "text",
+          "text": "Let me read the acceptance criteria in full and the actual git diff."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_014jRky3C6EygJsJ7WSpbwVr",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T02",
+            "artifact": "task-prompt",
+            "section": "Acceptance Criteria"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01DnPbT9mnL3LMjho7nirBtV",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && git diff $(git merge-base HEAD origin/main)..HEAD -- core/src/config.rs core/src/explore/config.rs | head -600"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 340,
+        "cacheRead": 19309,
+        "cacheWrite": 2411,
+        "totalTokens": 22062,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.0085,
+          "cacheRead": 0.0096545,
+          "cacheWrite": 0.01506875,
+          "total": 0.03323325
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 45
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189788680,
+      "responseId": "msg_01FXFRJMxq8DjTLJc2xeYKMV"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_014jRky3C6EygJsJ7WSpbwVr",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "## Acceptance Criteria\n\n1. `GroveConfig::load(root)`: if `config.json` exists, load it (T01 behaviour);\n   else if legacy `.grove/explore.json` exists, load + validate it, synthesise a\n   `GroveConfig { version: 1, mode: mcp-llm, explore: Some(<migrated>) }`, and\n   **rewrite forward** to `.grove/config.json` atomically.\n2. The migration maps the legacy `explore.mode` steering key to\n   `explore.steering` (the T01 rename), preserving the steering level.\n3. On migration, a **deprecation warning** is emitted (stderr) stating the\n   legacy `.grove/explore.json` is deprecated and that grove has migrated it to\n   `.grove/config.json`; the warning is a one-time consequence of the rewrite\n   (subsequent loads read `config.json` and do not warn).\n4. When neither file exists, `load` returns the same actionable\n   \"run `grove init`\" steer, unchanged.\n5. Tests: (a) a legacy `explore.json` fixture (with old `mode` key) migrates to a\n   `config.json` with `mode: mcp-llm` and `explore.steering` set; (b) after\n   migration, `config.json` exists and a second `load` reads it without touching\n   the legacy file; (c) a project with `config.json` already present ignores any\n   stale `explore.json`; (d) the deprecation warning path is exercised.\n6. `cargo build` warning-clean, `cargo clippy -- -D warnings` clean, `cargo test`\n   green. Files end with a newline.\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189793422
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01DnPbT9mnL3LMjho7nirBtV",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "diff --git a/core/src/config.rs b/core/src/config.rs\nnew file mode 100644\nindex 0000000..920ce75\n--- /dev/null\n+++ b/core/src/config.rs\n@@ -0,0 +1,321 @@\n+//! Grove project configuration — `.grove/config.json`.\n+//!\n+//! [`GroveConfig`] is the top-level project configuration record. It specifies\n+//! the integration [`Mode`] (which grove surface to activate) and optionally\n+//! carries an [`ExploreConfig`] section for the mcp-llm explorer subsystem.\n+//!\n+//! Persistence is atomic (temp-file + rename) and fail-fast:\n+//! - [`GroveConfig::load`] yields an actionable error when the file is absent.\n+//! - [`GroveConfig::save`] creates `.grove/` on first write.\n+//! - [`GroveConfig::validate`] rejects unknown versions and illegal mode values.\n+\n+use std::fs;\n+use std::path::{Path, PathBuf};\n+\n+use anyhow::{bail, Context, Result};\n+use serde::{Deserialize, Serialize};\n+\n+use crate::explore::ExploreConfig;\n+\n+/// The integration mode — which grove surface is active for a project.\n+///\n+/// On-disk spellings use kebab-case (e.g. `\"mcp-llm\"`). Use [`Mode::LEGAL`]\n+/// and [`Mode::from_name`] for parse / enumeration. Serialized with\n+/// `serde(rename_all = \"kebab-case\")`.\n+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]\n+#[serde(rename_all = \"kebab-case\")]\n+pub enum Mode {\n+    /// Standard MCP structural surface (outline, symbols, source, …).\n+    Mcp,\n+    /// Skill-server surface.\n+    Skill,\n+    /// Both MCP and skill surfaces active.\n+    Both,\n+    /// MCP + inner LLM explorer (the mcp-llm surface).\n+    McpLlm,\n+    /// Grammar-registry management surface.\n+    Grammars,\n+}\n+\n+impl Mode {\n+    /// The legal on-disk spellings, in declaration order.\n+    pub const LEGAL: &'static [&'static str] = &[\"mcp\", \"skill\", \"both\", \"mcp-llm\", \"grammars\"];\n+\n+    /// Parse a mode from its on-disk spelling, yielding a descriptive error on\n+    /// failure that names the field and lists legal values.\n+    pub fn from_name(s: &str) -> Result<Self> {\n+        match s {\n+            \"mcp\" => Ok(Mode::Mcp),\n+            \"skill\" => Ok(Mode::Skill),\n+            \"both\" => Ok(Mode::Both),\n+            \"mcp-llm\" => Ok(Mode::McpLlm),\n+            \"grammars\" => Ok(Mode::Grammars),\n+            other => bail!(\n+                \"invalid `mode` value `{other}`: expected one of {}\",\n+                Self::LEGAL.join(\", \")\n+            ),\n+        }\n+    }\n+}\n+\n+/// The grove project configuration, persisted to `.grove/config.json`.\n+///\n+/// Construct with [`GroveConfig::default`] (mode = `mcp`, no explore section),\n+/// then persist with [`GroveConfig::save`].\n+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]\n+pub struct GroveConfig {\n+    /// Wire version. The only valid value today is `1`; [`validate`] rejects\n+    /// other values to ensure future migrations are explicit.\n+    pub version: u32,\n+    /// Which grove integration surface is active.\n+    pub mode: Mode,\n+    /// Optional mcp-llm explorer configuration. Omitted from the serialized\n+    /// form when `None` (see `skip_serializing_if`).\n+    #[serde(skip_serializing_if = \"Option::is_none\")]\n+    pub explore: Option<ExploreConfig>,\n+}\n+\n+impl Default for GroveConfig {\n+    fn default() -> Self {\n+        GroveConfig {\n+            version: 1,\n+            mode: Mode::Mcp,\n+            explore: None,\n+        }\n+    }\n+}\n+\n+/// Raw wire shape: `mode` kept as `String` so parse failures can name the\n+/// offending field and enumerate legal values — serde's stock unknown-variant\n+/// error does neither.\n+#[derive(Deserialize)]\n+struct RawGroveConfig {\n+    version: u32,\n+    mode: String,\n+    #[serde(default)]\n+    explore: Option<ExploreConfig>,\n+}\n+\n+impl TryFrom<RawGroveConfig> for GroveConfig {\n+    type Error = anyhow::Error;\n+\n+    fn try_from(raw: RawGroveConfig) -> Result<Self> {\n+        if raw.version != 1 {\n+            bail!(\n+                \"`version` must be 1 (found {}); migrate via `grove upgrade`\",\n+                raw.version\n+            );\n+        }\n+        Ok(GroveConfig {\n+            version: raw.version,\n+            mode: Mode::from_name(&raw.mode)?,\n+            explore: raw.explore,\n+        })\n+    }\n+}\n+\n+impl<'de> serde::Deserialize<'de> for GroveConfig {\n+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>\n+    where\n+        D: serde::Deserializer<'de>,\n+    {\n+        let raw = RawGroveConfig::deserialize(deserializer)?;\n+        GroveConfig::try_from(raw).map_err(serde::de::Error::custom)\n+    }\n+}\n+\n+impl GroveConfig {\n+    /// The canonical config path for a project rooted at `root`:\n+    /// `<root>/.grove/config.json`.\n+    pub fn config_path(root: &Path) -> PathBuf {\n+        root.join(\".grove\").join(\"config.json\")\n+    }\n+\n+    /// Read, deserialize, and validate the config under `root`.\n+    ///\n+    /// A missing file yields an actionable error message; a bad `mode` value\n+    /// or unknown version fails fast, naming the offending field.\n+    pub fn load(root: &Path) -> Result<Self> {\n+        let path = Self::config_path(root);\n+        if !path.exists() {\n+            bail!(\n+                \"no grove config at {} — run `grove init` to create one, \\\n+                 or `grove config` to set it up\",\n+                path.display()\n+            );\n+        }\n+        let text = fs::read_to_string(&path)\n+            .with_context(|| format!(\"reading {}\", path.display()))?;\n+        let cfg: GroveConfig = serde_json::from_str(&text)\n+            .with_context(|| format!(\"{} is not a valid grove config\", path.display()))?;\n+        cfg.validate()?;\n+        Ok(cfg)\n+    }\n+\n+    /// Validate, then persist to `<root>/.grove/config.json` atomically.\n+    ///\n+    /// The write goes to a sibling temp file in the same directory and is then\n+    /// `rename`d into place. Creates `.grove/` if absent.\n+    pub fn save(&self, root: &Path) -> Result<()> {\n+        self.validate()?;\n+        let dir = root.join(\".grove\");\n+        fs::create_dir_all(&dir)\n+            .with_context(|| format!(\"creating {}\", dir.display()))?;\n+        let path = dir.join(\"config.json\");\n+        let tmp = dir.join(format!(\"config.json.tmp.{}\", std::process::id()));\n+        let body = format!(\"{}\\n\", serde_json::to_string_pretty(self)?);\n+        fs::write(&tmp, body).with_context(|| format!(\"writing {}\", tmp.display()))?;\n+        fs::rename(&tmp, &path)\n+            .with_context(|| format!(\"renaming {} -> {}\", tmp.display(), path.display()))?;\n+        Ok(())\n+    }\n+\n+    /// Reject structurally invalid state:\n+    /// - `version` must be `1` (the only supported wire version).\n+    pub fn validate(&self) -> Result<()> {\n+        if self.version != 1 {\n+            bail!(\n+                \"`version` must be 1 (found {}); migrate via `grove upgrade`\",\n+                self.version\n+            );\n+        }\n+        Ok(())\n+    }\n+}\n+\n+// ---------------------------------------------------------------------------\n+// Unit tests\n+// ---------------------------------------------------------------------------\n+\n+#[cfg(test)]\n+mod tests {\n+    use super::*;\n+\n+    /// A unique, per-process temp project root; caller cleans up.\n+    fn temp_root(tag: &str) -> PathBuf {\n+        std::env::temp_dir().join(format!(\"grove_cfg_{}_{tag}\", std::process::id()))\n+    }\n+\n+    // T1 — round-trip each integration Mode variant.\n+    #[test]\n+    fn serde_round_trip_each_mode() {\n+        for &name in Mode::LEGAL {\n+            let mode = Mode::from_name(name).unwrap();\n+            let cfg = GroveConfig { version: 1, mode, explore: None };\n+            let json = serde_json::to_string(&cfg).unwrap();\n+            let back: GroveConfig = serde_json::from_str(&json).unwrap();\n+            assert_eq!(cfg, back, \"round-trip failed for mode={name}\");\n+        }\n+    }\n+\n+    // T2 — explore absent when None.\n+    #[test]\n+    fn explore_section_absent_when_none() {\n+        let cfg = GroveConfig::default();\n+        let v = serde_json::to_value(&cfg).unwrap();\n+        assert!(\n+            v.get(\"explore\").is_none(),\n+            \"explore key must be absent when None: {v}\"\n+        );\n+    }\n+\n+    // T3 — explore section round-trips when Some.\n+    #[test]\n+    fn explore_section_present_when_some() {\n+        use crate::explore::{ExploreConfig, Provider, Steering};\n+        let explore = ExploreConfig {\n+            provider: Provider::Ollama,\n+            base_url: \"http://localhost:11434/v1\".to_string(),\n+            model: \"qwen2.5-coder:7b\".to_string(),\n+            steering: Steering::Standard,\n+            allowed_tools: vec![\"grove\".to_string()],\n+            tap: false,\n+            trace_retain: 50,\n+        };\n+        let cfg = GroveConfig { version: 1, mode: Mode::McpLlm, explore: Some(explore.clone()) };\n+        let json = serde_json::to_string(&cfg).unwrap();\n+        let back: GroveConfig = serde_json::from_str(&json).unwrap();\n+        assert_eq!(cfg, back);\n+        assert_eq!(back.explore.unwrap(), explore);\n+    }\n+\n+    // T4 — bad mode names the field and lists legal values.\n+    #[test]\n+    fn bad_mode_error_names_field_and_legal_values() {\n+        let json = r#\"{\"version\":1,\"mode\":\"unknown\"}\"#;\n+        let err = serde_json::from_str::<GroveConfig>(json).unwrap_err();\n+        let msg = err.to_string();\n+        assert!(msg.contains(\"mode\"), \"should name the field: {msg}\");\n+        for legal in Mode::LEGAL {\n+            assert!(msg.contains(legal), \"should list legal value {legal}: {msg}\");\n+        }\n+    }\n+\n+    // T5 — steering key in explore section deserializes correctly.\n+    #[test]\n+    fn steering_key_in_explore_section() {\n+        let json = r#\"{\n+            \"version\": 1,\n+            \"mode\": \"mcp-llm\",\n+            \"explore\": {\n+                \"provider\": \"ollama\",\n+                \"base_url\": \"http://localhost:11434/v1\",\n+                \"model\": \"x\",\n+                \"steering\": \"balanced\",\n+                \"allowed_tools\": [\"grove\"]\n+            }\n+        }\"#;\n+        let cfg: GroveConfig = serde_json::from_str(json).unwrap();\n+        use crate::explore::Steering;\n+        assert_eq!(cfg.explore.unwrap().steering, Steering::Balanced);\n+    }\n+\n+    // T6 — save + load round-trip; no leftover temp file.\n+    #[test]\n+    fn save_load_round_trip_atomic() {\n+        let root = temp_root(\"save_load\");\n+        let _ = fs::remove_dir_all(&root);\n+        let cfg = GroveConfig::default();\n+\n+        cfg.save(&root).unwrap();\n+\n+        let path = GroveConfig::config_path(&root);\n+        assert!(path.exists(), \"config.json should exist after save\");\n+\n+        // No leftover temp file.\n+        let dir = root.join(\".grove\");\n+        let leftovers: Vec<_> = fs::read_dir(&dir)\n+            .unwrap()\n+            .filter_map(|e| e.ok())\n+            .map(|e| e.file_name().to_string_lossy().into_owned())\n+            .filter(|n| n.contains(\".tmp.\"))\n+            .collect();\n+        assert!(leftovers.is_empty(), \"temp file leaked: {leftovers:?}\");\n+\n+        let loaded = GroveConfig::load(&root).unwrap();\n+        assert_eq!(cfg, loaded);\n+\n+        fs::remove_dir_all(&root).unwrap();\n+    }\n+\n+    // T7 — missing file gives actionable error.\n+    #[test]\n+    fn missing_file_actionable_error() {\n+        let root = temp_root(\"missing\");\n+        let err = GroveConfig::load(&root).unwrap_err();\n+        let msg = format!(\"{err:#}\");\n+        assert!(\n+            msg.contains(\"grove init\") || msg.contains(\"grove config\"),\n+            \"error should steer user to setup: {msg}\"\n+        );\n+    }\n+\n+    // version != 1 rejected by validate().\n+    #[test]\n+    fn bad_version_rejected() {\n+        let json = r#\"{\"version\":2,\"mode\":\"mcp\"}\"#;\n+        let err = serde_json::from_str::<GroveConfig>(json).unwrap_err();\n+        let msg = err.to_string();\n+        assert!(msg.contains(\"version\"), \"should name the field: {msg}\");\n+    }\n+}\ndiff --git a/core/src/explore/config.rs b/core/src/explore/config.rs\nindex bf07bd5..d0fe29c 100644\n--- a/core/src/explore/config.rs\n+++ b/core/src/explore/config.rs\n@@ -52,7 +52,7 @@ impl Provider {\n /// only names the three levels. Serialized lowercase.\n #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]\n #[serde(rename_all = \"lowercase\")]\n-pub enum Mode {\n+pub enum Steering {\n     /// Merit-based steering — the default, least intrusive.\n     Standard,\n     /// Plan-first steering.\n@@ -61,17 +61,17 @@ pub enum Mode {\n     Aggressive,\n }\n \n-impl Mode {\n+impl Steering {\n     /// The legal on-disk spellings, in declaration order.\n     pub const LEGAL: &'static [&'static str] = &[\"standard\", \"balanced\", \"aggressive\"];\n \n     fn from_name(s: &str) -> Result<Self> {\n         match s {\n-            \"standard\" => Ok(Mode::Standard),\n-            \"balanced\" => Ok(Mode::Balanced),\n-            \"aggressive\" => Ok(Mode::Aggressive),\n+            \"standard\" => Ok(Steering::Standard),\n+            \"balanced\" => Ok(Steering::Balanced),\n+            \"aggressive\" => Ok(Steering::Aggressive),\n             other => bail!(\n-                \"invalid `mode` value `{other}`: expected one of {}\",\n+                \"invalid `steering` value `{other}`: expected one of {}\",\n                 Self::LEGAL.join(\", \")\n             ),\n         }\n@@ -91,7 +91,7 @@ pub struct ExploreConfig {\n     /// The model identifier the provider serves.\n     pub model: String,\n     /// The steering level.\n-    pub mode: Mode,\n+    pub steering: Steering,\n     /// The tools the inner explorer is permitted to invoke.\n     pub allowed_tools: Vec<String>,\n     /// When true, `grove serve --explore` records every LLM request/response of\n@@ -113,14 +113,14 @@ fn default_trace_retain() -> u32 {\n }\n \n /// Raw wire shape with `String` enum fields, so enum parse failures can name\n-/// the offending field (`provider` / `mode`) and enumerate legal values —\n+/// the offending field (`provider` / `steering`) and enumerate legal values —\n /// serde's stock unknown-variant error names neither the field nor the struct.\n #[derive(Deserialize)]\n struct RawExploreConfig {\n     provider: String,\n     base_url: String,\n     model: String,\n-    mode: String,\n+    steering: String,\n     #[serde(default)]\n     allowed_tools: Vec<String>,\n     #[serde(default)]\n@@ -137,7 +137,7 @@ impl TryFrom<RawExploreConfig> for ExploreConfig {\n             provider: Provider::from_name(&raw.provider)?,\n             base_url: raw.base_url,\n             model: raw.model,\n-            mode: Mode::from_name(&raw.mode)?,\n+            steering: Steering::from_name(&raw.steering)?,\n             allowed_tools: raw.allowed_tools,\n             tap: raw.tap,\n             trace_retain: raw.trace_retain,\n@@ -161,7 +161,7 @@ impl Default for ExploreConfig {\n             provider: Provider::Ollama,\n             base_url: \"http://localhost:11434/v1\".to_string(),\n             model: \"qwen2.5-coder:7b\".to_string(),\n-            mode: Mode::Standard,\n+            steering: Steering::Standard,\n             allowed_tools: vec![\n                 \"grove\".to_string(),\n                 \"rg\".to_string(),\n@@ -257,12 +257,12 @@ mod tests {\n             \"provider\": \"llamacpp\",\n             \"base_url\": \"http://localhost:8080/v1\",\n             \"model\": \"custom\",\n-            \"mode\": \"aggressive\",\n+            \"steering\": \"aggressive\",\n             \"allowed_tools\": [\"grove\"]\n         }\"#;\n         let cfg: ExploreConfig = serde_json::from_str(json).unwrap();\n         assert_eq!(cfg.provider, Provider::LlamaCpp);\n-        assert_eq!(cfg.mode, Mode::Aggressive);\n+        assert_eq!(cfg.steering, Steering::Aggressive);\n         assert_eq!(cfg.base_url, \"http://localhost:8080/v1\");\n         assert_eq!(cfg.model, \"custom\");\n         assert_eq!(cfg.allowed_tools, vec![\"grove\".to_string()]);\n@@ -274,7 +274,7 @@ mod tests {\n         assert_eq!(cfg.provider, Provider::Ollama);\n         assert_eq!(cfg.base_url, \"http://localhost:11434/v1\");\n         assert_eq!(cfg.model, \"qwen2.5-coder:7b\");\n-        assert_eq!(cfg.mode, Mode::Standard);\n+        assert_eq!(cfg.steering, Steering::Standard);\n         assert_eq!(cfg.allowed_tools, vec![\"grove\", \"rg\", \"grep\", \"find\"]);\n         assert_eq!(cfg.trace_retain, DEFAULT_TRACE_RETAIN);\n     }\n@@ -287,7 +287,7 @@ mod tests {\n             \"provider\": \"ollama\",\n             \"base_url\": \"http://localhost:11434/v1\",\n             \"model\": \"x\",\n-            \"mode\": \"standard\",\n+            \"steering\": \"standard\",\n             \"allowed_tools\": [\"grove\"]\n         }\"#;\n         let cfg: ExploreConfig = serde_json::from_str(json).unwrap();\n@@ -298,7 +298,7 @@ mod tests {\n     fn provider_serializes_lowercase() {\n         assert_eq!(serde_json::to_string(&Provider::Ollama).unwrap(), \"\\\"ollama\\\"\");\n         assert_eq!(serde_json::to_string(&Provider::LlamaCpp).unwrap(), \"\\\"llamacpp\\\"\");\n-        assert_eq!(serde_json::to_string(&Mode::Standard).unwrap(), \"\\\"standard\\\"\");\n+        assert_eq!(serde_json::to_string(&Steering::Standard).unwrap(), \"\\\"standard\\\"\");\n     }\n \n     #[test]\n@@ -318,7 +318,7 @@ mod tests {\n             \"provider\": \"gpt4all\",\n             \"base_url\": \"http://localhost:11434/v1\",\n             \"model\": \"x\",\n-            \"mode\": \"standard\",\n+            \"steering\": \"standard\",\n             \"allowed_tools\": []\n         }\"#;\n         let err = serde_json::from_str::<ExploreConfig>(json).unwrap_err();\n@@ -364,4 +364,20 @@ mod tests {\n \n         fs::remove_dir_all(&root).unwrap();\n     }\n+\n+    #[test]\n+    fn legacy_mode_key_rejected() {\n+        // The old JSON key \"mode\" is not accepted — T02 owns migration.\n+        // Missing \"steering\" field must fail deserialization.\n+        let json = r#\"{\n+            \"provider\": \"ollama\",\n+            \"base_url\": \"http://localhost:11434/v1\",\n+            \"model\": \"x\",\n+            \"mode\": \"standard\",\n+            \"allowed_tools\": []\n+        }\"#;\n+        let err = serde_json::from_str::<ExploreConfig>(json).unwrap_err();\n+        let msg = err.to_string();\n+        assert!(msg.contains(\"steering\") || msg.contains(\"missing\"), \"should fail on missing steering: {msg}\");\n+    }\n }\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783189793422
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I'm noticing the diff for config.rs shows it as a newly created file with 321 lines, but the output appears truncated—the migration function and deprecation warning content aren't visible in what was displayed, cutting off mid-word at \"LegacyExplo\".\n\nLooking at what's actually shown in the diff, the `load()` function only has two branches: one for when config.json exists and one that bails, with no migration logic or `LegacyExploreRaw` struct present. This is odd since the T02 work should include that migration code. The diff is against the merge-base between HEAD and origin/main, which only shows committed changes—the T02 implementation might still be uncommitted working tree changes. I should check git status and look at the actual current file content to see what's really there.",
+          "thinkingSignature": "EocKCmMIDxgCKkD6uAn3A2R4MGeK3/D5IxvJ/2snfYpY/NE3yfRlomdPlya/sFuyr6qkIQqkfSwDwn6MWfzAZwTg5mvpY44KGwRgMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDFbV3ZVvvqXvHdBc6RoMEEAAaI0S2UZtOhOrIjARCjvoEtUi46l+fjwqVKaIkJA3ICHdrR3P0al3MMqQ1+uQoavNrxv8JIXJmqoAaccq0QjDPTqI5d6V0MfTF23YfajAuCgRhjB6GiKS6ml5VLr+FSwi5bJXfhBvjH1P/KBpBK8dg5WImDFCleAUy3oF8N54YfxT0R830JZv+QATzE/yw4wpgYmwBlOwpAJ1ew4+d61u7IFb8pg7IKtyMtoAJhL2ztp1jvi6ScgQmEUjqMHjNIRXhzYTh1Xnae4TBw/46vnXkd4ikKHMvyjgvY/xssR9fmohThClzaq9ia/Cl1kYjlA97fueA3EDNYZ4l54yx7gECR0qLk/tGpwkoOSw06WHDzrd0XBGFHtG6ffxYEBq72jqG6V/1a3Kl24w6uuBFggKZEJCSWhRHnMUVo+GH3KZO7eIPUv8WHWAWf7QvN1L9q0uR+HbLgHYTlsjvDXXNtBwbfbWcb0iUUHCKM9qgrO5WQr61JmsFK/blU3bjXBA+kqXVL0LnvjGFczUojRY5PfMBfP1/v18ofNtpTD73glTx0O99JMsZV8DBk4SuiSf55OCtde5QDxxZdCFjabUERryye6kJFTwZP9ujxUwxzGmr9bbH4vuxnQI9Cg7Eh1zCKsEYoNDamg3v+8tgpLOr2Qpyu3g6DiDJmTRzPRpVf6ppCAb4L+WJKMVGTy2BjExGr7PiAgF73+lJ6GttrWfPkCNGmSOhzmRy8GMAgTud66+0K67FggppDFv2SLiKzFm5R39ZhA1+uF/BO0ukOlq5jIhfHwcgJqOmzCArlwXewv22naJynenuXP1AmAGOJebBT/W11BU0hGZMqnoSEegx8yxbqlWsbKvdkQYJqCRWvDqFAPYEycKlVYPzRVxZTN3mgQ8E6jNrTu0D6w9YRblzI0fOZHUnY7cBV5IOspt+WuTWSjURH3XtGDfl7eWZiyt9ntwUm92il3WAsPEa6g2IGh9o90MZ+s8DYqmVUVgSY8xU7kQnQLu1ctL9H1YTfjjE+yarICnd/YIJ9UNVoa+fIepfakYOAVbhKFj2nMbaT4SDDnHeb+NhWw1tX9ubM01ds6Jy4BIlYEFpAwD1Gy76A8di2RW4BpeOR7MlEP1ldwuXhonqTihGSZq8nBoGkOExqtMmqHTmiWwOPHtetJeb0+5+joraqI8JHvGDT9Tzg52xqvAkkgiixpLmLTdpRO5MNm9oUMe0shHoqp3fZkwAJAkcvSfo1+s4jFp4uE+UHcvgaZ4t4yGSWTjSmMmet/iKKW6WG32feK1b5+QmgtTrFm7fLeXHxQmz8+VMygJkq6M+EbXIvUfZXX0ugVPLdHKYZIh/dHzcjXJK1ZRoSIXlKSmH14G2OIob0Cr3NzZpQwLLiKLXp67497DcRnnKgCYCNckeXF20IUZ89CVhyHkbjfa0OeP00+AFuirZK5z9dl2zE1LtxG4bXwiTqFd5gmn/9AytO/chBIiIKh3/no4IIByKEoBvq1QTggxQsj2oaX6F0fxv74jsHNQaJLa3qmsOWQl2uPCjgn1487u7ai618TuGAE="
+        },
+        {
+          "type": "text",
+          "text": "The committed diff shows only T01's config.rs (no migration branch, no `LegacyExploreRaw`, no `DEPRECATION_WARNING`). The T02 work must be uncommitted. Let me check working tree."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01QVD9jMnt996ALUmeNXeq82",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && git status --short && echo \"---LOG---\" && git log --oneline -5"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 543,
+        "cacheRead": 21720,
+        "cacheWrite": 8576,
+        "totalTokens": 30841,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.013575,
+          "cacheRead": 0.01086,
+          "cacheWrite": 0.0536,
+          "total": 0.078045
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 380
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189793423,
+      "responseId": "msg_01SwqMgPGA6ZsGFW1cC4DbpW"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01QVD9jMnt996ALUmeNXeq82",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": " M .forge/cache/context-pack.json\n M .forge/cache/context-pack.md\n M .forge/cache/preflight-status.json\n M .forge/config.json\n M .forge/store/tasks/GROVE-S03-T01.json\n M .forge/store/tasks/GROVE-S03-T02.json\n M .forge/update-check-cache.json\n M CLAUDE.md\n M core/src/config.rs\n M core/src/explore/config.rs\n M engineering/MASTER_INDEX.md\n?? .forge/cache/run-sprint-state-GROVE-S03.json\n?? .forge/cache/run-task-debug-GROVE-S03-T01.jsonl\n?? .forge/cache/run-task-debug-GROVE-S03-T02.jsonl\n?? .forge/cache/run-task-state-GROVE-S03-T02.json\n?? .forge/pi-settings.json\n?? .forge/store/COLLATION_STATE.json\n?? .forge/transcripts/GROVE-S03-T01/\n?? .forge/transcripts/GROVE-S03-T02/\n?? .pi/\n?? engineering/features/\n?? engineering/sprints/GROVE-S03/COST_REPORT.md\n?? engineering/sprints/GROVE-S03/GROVE-S03-T02/IMPLEMENTATION-SUMMARY.json\n?? engineering/sprints/GROVE-S03/GROVE-S03-T02/INDEX.md\n?? engineering/sprints/GROVE-S03/GROVE-S03-T02/PLAN-SUMMARY.json\n?? engineering/sprints/GROVE-S03/GROVE-S03-T02/PLAN.md\n?? engineering/sprints/GROVE-S03/GROVE-S03-T02/PLAN_REVIEW.md\n?? engineering/sprints/GROVE-S03/GROVE-S03-T02/PROGRESS.md\n?? engineering/sprints/GROVE-S03/GROVE-S03-T02/REVIEW-PLAN-SUMMARY.json\n?? engineering/sprints/GROVE-S03/GROVE-S03-T03/INDEX.md\n?? engineering/sprints/GROVE-S03/GROVE-S03-T04/INDEX.md\n?? engineering/sprints/GROVE-S03/GROVE-S03-T05/INDEX.md\n?? engineering/sprints/GROVE-S03/GROVE-S03-T06/INDEX.md\n?? engineering/sprints/GROVE-S03/GROVE-S03-T07/INDEX.md\n?? engineering/sprints/GROVE-S03/INDEX.md\n?? engineering/sprints/GROVE-S03/WRITEBACK-SUMMARY.json\n---LOG---\na445b72 feat(config): introduce GroveConfig + integration Mode; rename explore Mode→Steering [GROVE-S03-T01]\nf769544 docs(sprint): plan GROVE-S03 — .grove/config.json declared mode + grove doctor\n6c8071f feat(tap): tier the trace request view — collapse system + context, surface the prompt\n4976fe6 Merge pull request #56 from Entelligentsia/chore/code-quality-review-2026-07-03\n820b544 test: seed grammar cache portably so init tests pass on macOS\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783189802984
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "T01 is already committed, but T02 only exists as uncommitted changes in the working tree, so I need to diff against HEAD to see what T02 actually modifies.",
+          "thinkingSignature": "Et4CCmMIDxgCKkD05ox1DAco3LteZkniJdFNDaKIJRvqxsFD05j8W6flKM/P/K2TPegKFeDzOO1ydLoCrmNd8lcggpryEikyfOLTMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDJiYChSVd9lm9N5/mxoMGSxH8Ml7hrMh1G1pIjD/2GsJrEq0XIfbmW4lHELMclax7802Pi7+ZdaOrz5UtaIibrBdTYQk2Y2niNBjZnsqqAGKtMHbIHhAeM8upsTkmeJm23nRMg9aYijBHxh+LZd8BMPjRItUiVnASXpSkykkaRH0C6KFq6Cxcn7B0Yfanumc7uC+2U8s9S/W9omo7XhYG9+xMjwhmmdluxbFUcSQperfcnAvHbKu1s7lgc2fudkjwZAQ1NErykNd3ijiIFBtKzV7kb5zOVvQDsxgFXp1Q3K/izxvlYoEefkpfwQNhoHqvyP/osL7Ii4YAQ=="
+        },
+        {
+          "type": "text",
+          "text": "T02 is uncommitted. Let me diff working tree against HEAD to see the actual T02 changes."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01SPLFcMvSYs7rjdaMSyFLoA",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && git diff HEAD -- core/src/config.rs core/src/explore/config.rs"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 187,
+        "cacheRead": 30296,
+        "cacheWrite": 1698,
+        "totalTokens": 32183,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.004675,
+          "cacheRead": 0.015148,
+          "cacheWrite": 0.0106125,
+          "total": 0.0304455
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 58
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189802984,
+      "responseId": "msg_01GbrC7Xdc8JPGcFqbf6QBuC"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01SPLFcMvSYs7rjdaMSyFLoA",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "diff --git a/core/src/config.rs b/core/src/config.rs\nindex 920ce75..af027cd 100644\n--- a/core/src/config.rs\n+++ b/core/src/config.rs\n@@ -15,7 +15,16 @@ use std::path::{Path, PathBuf};\n use anyhow::{bail, Context, Result};\n use serde::{Deserialize, Serialize};\n \n-use crate::explore::ExploreConfig;\n+use crate::explore::{ExploreConfig, Provider, Steering};\n+\n+/// Deprecation warning emitted once when `.grove/explore.json` is migrated to\n+/// `.grove/config.json`. Kept as a named constant so tests can assert on its\n+/// content without capturing stderr.\n+pub(crate) const DEPRECATION_WARNING: &str = \"\\\n+warning: .grove/explore.json is deprecated and will be removed in a future \\\n+version of grove. Your configuration has been automatically migrated to \\\n+.grove/config.json. Please commit the new file and remove \\\n+.grove/explore.json from your repository.\";\n \n /// The integration mode — which grove surface is active for a project.\n ///\n@@ -114,6 +123,65 @@ impl TryFrom<RawGroveConfig> for GroveConfig {\n     }\n }\n \n+/// Wire shape of the legacy `.grove/explore.json` file.  The old key for\n+/// steering level was `mode` (not `steering`); this struct mirrors that shape\n+/// exactly so we can deserialize without touching `ExploreConfig`'s own raw\n+/// struct (which correctly rejects `mode`).\n+#[derive(Deserialize)]\n+struct LegacyExploreRaw {\n+    provider: String,\n+    base_url: String,\n+    model: String,\n+    /// The old steering-level key.  Maps to `ExploreConfig::steering` after\n+    /// parsing.\n+    mode: String,\n+    #[serde(default)]\n+    allowed_tools: Vec<String>,\n+    #[serde(default)]\n+    tap: bool,\n+    #[serde(default = \"default_legacy_trace_retain\")]\n+    trace_retain: u32,\n+}\n+\n+fn default_legacy_trace_retain() -> u32 {\n+    crate::explore::config::DEFAULT_TRACE_RETAIN\n+}\n+\n+/// Read `.grove/explore.json`, map its old wire shape to a full [`GroveConfig`]\n+/// (mode = `McpLlm`, `explore.steering` from the legacy `mode` key), persist\n+/// `config.json` atomically, and emit a one-time deprecation warning to stderr.\n+///\n+/// This function is the only code path that reads `explore.json`.  It does not\n+/// delete `explore.json` — removal is left to the user; `grove doctor` will\n+/// warn about its presence.\n+fn migrate_from_legacy_explore(root: &Path) -> Result<GroveConfig> {\n+    let path = ExploreConfig::config_path(root);\n+    let text = fs::read_to_string(&path)\n+        .with_context(|| format!(\"reading legacy explore config {}\", path.display()))?;\n+    let raw: LegacyExploreRaw = serde_json::from_str(&text)\n+        .with_context(|| format!(\"{} is not a valid legacy explore config\", path.display()))?;\n+    let steering = Steering::from_name(&raw.mode)?;\n+    let provider = Provider::from_name(&raw.provider)?;\n+    let explore_cfg = ExploreConfig {\n+        provider,\n+        base_url: raw.base_url,\n+        model: raw.model,\n+        steering,\n+        allowed_tools: raw.allowed_tools,\n+        tap: raw.tap,\n+        trace_retain: raw.trace_retain,\n+    };\n+    let config = GroveConfig {\n+        version: 1,\n+        mode: Mode::McpLlm,\n+        explore: Some(explore_cfg),\n+    };\n+    config.validate()?;\n+    config.save(root)?;\n+    eprintln!(\"{DEPRECATION_WARNING}\");\n+    Ok(config)\n+}\n+\n impl<'de> serde::Deserialize<'de> for GroveConfig {\n     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>\n     where\n@@ -133,23 +201,30 @@ impl GroveConfig {\n \n     /// Read, deserialize, and validate the config under `root`.\n     ///\n-    /// A missing file yields an actionable error message; a bad `mode` value\n-    /// or unknown version fails fast, naming the offending field.\n+    /// Three-branch cascade:\n+    /// 1. `config.json` present → read, deserialize, validate (normal path).\n+    /// 2. `explore.json` present → one-time legacy migration: synthesise a\n+    ///    [`GroveConfig`] from the old wire shape, write `config.json`\n+    ///    atomically, emit a deprecation warning, and return the config.\n+    /// 3. Neither → actionable `grove init` error (unchanged).\n     pub fn load(root: &Path) -> Result<Self> {\n         let path = Self::config_path(root);\n-        if !path.exists() {\n+        if path.exists() {\n+            let text = fs::read_to_string(&path)\n+                .with_context(|| format!(\"reading {}\", path.display()))?;\n+            let cfg: GroveConfig = serde_json::from_str(&text)\n+                .with_context(|| format!(\"{} is not a valid grove config\", path.display()))?;\n+            cfg.validate()?;\n+            Ok(cfg)\n+        } else if ExploreConfig::config_path(root).exists() {\n+            migrate_from_legacy_explore(root)\n+        } else {\n             bail!(\n                 \"no grove config at {} — run `grove init` to create one, \\\n                  or `grove config` to set it up\",\n                 path.display()\n-            );\n+            )\n         }\n-        let text = fs::read_to_string(&path)\n-            .with_context(|| format!(\"reading {}\", path.display()))?;\n-        let cfg: GroveConfig = serde_json::from_str(&text)\n-            .with_context(|| format!(\"{} is not a valid grove config\", path.display()))?;\n-        cfg.validate()?;\n-        Ok(cfg)\n     }\n \n     /// Validate, then persist to `<root>/.grove/config.json` atomically.\n@@ -318,4 +393,162 @@ mod tests {\n         let msg = err.to_string();\n         assert!(msg.contains(\"version\"), \"should name the field: {msg}\");\n     }\n+\n+    // -----------------------------------------------------------------------\n+    // T-5a: legacy explore.json (old `mode` key) migrates → config.json.\n+    // -----------------------------------------------------------------------\n+    #[test]\n+    fn migrate_legacy_explore_writes_config_json() {\n+        use crate::explore::Steering;\n+        let root = temp_root(\"legacy_migrate\");\n+        let _ = fs::remove_dir_all(&root);\n+        let grove_dir = root.join(\".grove\");\n+        fs::create_dir_all(&grove_dir).unwrap();\n+\n+        // Write the legacy explore.json with old `mode` key (\"balanced\")\n+        let legacy = r#\"{\n+            \"provider\": \"ollama\",\n+            \"base_url\": \"http://localhost:11434/v1\",\n+            \"model\": \"qwen2.5-coder:7b\",\n+            \"mode\": \"balanced\",\n+            \"allowed_tools\": [\"grove\"],\n+            \"tap\": false,\n+            \"trace_retain\": 50\n+        }\"#;\n+        fs::write(grove_dir.join(\"explore.json\"), legacy).unwrap();\n+\n+        // Load should trigger migration.\n+        let cfg = GroveConfig::load(&root).unwrap();\n+\n+        // Returned config: mode = McpLlm, steering = Balanced.\n+        assert_eq!(cfg.mode, Mode::McpLlm, \"mode should be McpLlm after migration\");\n+        let explore = cfg.explore.as_ref().expect(\"explore section must be present\");\n+        assert_eq!(explore.steering, Steering::Balanced, \"steering should be Balanced (mapped from legacy mode=balanced)\");\n+\n+        // config.json must exist on disk after migration.\n+        let config_path = GroveConfig::config_path(&root);\n+        assert!(config_path.exists(), \"config.json should exist after migration\");\n+\n+        fs::remove_dir_all(&root).unwrap();\n+    }\n+\n+    // -----------------------------------------------------------------------\n+    // T-5b: second load reads config.json directly; explore.json unmodified.\n+    // -----------------------------------------------------------------------\n+    #[test]\n+    fn second_load_after_migration_reads_config_not_legacy() {\n+        let root = temp_root(\"legacy_second_load\");\n+        let _ = fs::remove_dir_all(&root);\n+        let grove_dir = root.join(\".grove\");\n+        fs::create_dir_all(&grove_dir).unwrap();\n+\n+        let legacy = r#\"{\n+            \"provider\": \"ollama\",\n+            \"base_url\": \"http://localhost:11434/v1\",\n+            \"model\": \"qwen2.5-coder:7b\",\n+            \"mode\": \"standard\",\n+            \"allowed_tools\": [\"grove\"]\n+        }\"#;\n+        let legacy_path = grove_dir.join(\"explore.json\");\n+        fs::write(&legacy_path, legacy).unwrap();\n+\n+        // First load triggers migration.\n+        let cfg1 = GroveConfig::load(&root).unwrap();\n+\n+        // Record explore.json mtime before second load.\n+        let mtime_before = fs::metadata(&legacy_path).unwrap().modified().unwrap();\n+\n+        // Second load reads config.json — no migration re-runs.\n+        let cfg2 = GroveConfig::load(&root).unwrap();\n+        assert_eq!(cfg1, cfg2, \"second load must return an equal config\");\n+\n+        // explore.json must not have been touched by the second load.\n+        let mtime_after = fs::metadata(&legacy_path).unwrap().modified().unwrap();\n+        assert_eq!(mtime_before, mtime_after, \"explore.json must not be modified by the second load\");\n+\n+        fs::remove_dir_all(&root).unwrap();\n+    }\n+\n+    // -----------------------------------------------------------------------\n+    // T-5c: config.json present alongside stale explore.json — stale ignored.\n+    // -----------------------------------------------------------------------\n+    #[test]\n+    fn config_json_present_ignores_stale_explore_json() {\n+        let root = temp_root(\"stale_explore\");\n+        let _ = fs::remove_dir_all(&root);\n+        let grove_dir = root.join(\".grove\");\n+        fs::create_dir_all(&grove_dir).unwrap();\n+\n+        // Write a proper config.json with mode=mcp.\n+        let cfg_json = r#\"{\"version\":1,\"mode\":\"mcp\"}\"#;\n+        fs::write(grove_dir.join(\"config.json\"), cfg_json).unwrap();\n+\n+        // Write a stale (but parseable) explore.json alongside it.\n+        let stale = r#\"{\n+            \"provider\": \"ollama\",\n+            \"base_url\": \"http://localhost:11434/v1\",\n+            \"model\": \"old-model\",\n+            \"mode\": \"aggressive\",\n+            \"allowed_tools\": []\n+        }\"#;\n+        fs::write(grove_dir.join(\"explore.json\"), stale).unwrap();\n+\n+        // Load must use config.json, not explore.json.\n+        let cfg = GroveConfig::load(&root).unwrap();\n+        assert_eq!(cfg.mode, Mode::Mcp, \"should read config.json, not migrate from explore.json\");\n+        assert!(cfg.explore.is_none(), \"explore section should not be populated from stale file\");\n+\n+        fs::remove_dir_all(&root).unwrap();\n+    }\n+\n+    // -----------------------------------------------------------------------\n+    // T-5d: deprecation warning is structurally correct.\n+    // -----------------------------------------------------------------------\n+    // We verify via the named DEPRECATION_WARNING const that the warning text\n+    // is complete and contains the key information users need. The warning IS\n+    // emitted to stderr during migration (tests 5a and 5b run the migration\n+    // path and exercise the eprintln! call); here we assert content quality.\n+    #[test]\n+    fn deprecation_warning_emitted() {\n+        // The const must reference both file paths so the message is actionable.\n+        assert!(\n+            DEPRECATION_WARNING.contains(\"explore.json\"),\n+            \"warning should mention explore.json: {DEPRECATION_WARNING}\"\n+        );\n+        assert!(\n+            DEPRECATION_WARNING.contains(\"config.json\"),\n+            \"warning should mention config.json: {DEPRECATION_WARNING}\"\n+        );\n+        assert!(\n+            DEPRECATION_WARNING.contains(\"deprecated\"),\n+            \"warning should contain the word 'deprecated': {DEPRECATION_WARNING}\"\n+        );\n+        assert!(\n+            DEPRECATION_WARNING.contains(\"migrated\"),\n+            \"warning should mention migration: {DEPRECATION_WARNING}\"\n+        );\n+\n+        // Confirm the migration path is reached when only explore.json is present\n+        // (side-effect of eprintln! being called — no stderr capture needed).\n+        let root = temp_root(\"warn_emitted\");\n+        let _ = fs::remove_dir_all(&root);\n+        let grove_dir = root.join(\".grove\");\n+        fs::create_dir_all(&grove_dir).unwrap();\n+        let legacy = r#\"{\n+            \"provider\": \"ollama\",\n+            \"base_url\": \"http://localhost:11434/v1\",\n+            \"model\": \"x\",\n+            \"mode\": \"standard\",\n+            \"allowed_tools\": []\n+        }\"#;\n+        fs::write(grove_dir.join(\"explore.json\"), legacy).unwrap();\n+        // migration runs → eprintln!(DEPRECATION_WARNING) is called.\n+        GroveConfig::load(&root).unwrap();\n+        // config.json written is our proof the warning branch was fully executed.\n+        assert!(\n+            GroveConfig::config_path(&root).exists(),\n+            \"config.json must exist after migration (proves warning path ran)\"\n+        );\n+        fs::remove_dir_all(&root).unwrap();\n+    }\n }\ndiff --git a/core/src/explore/config.rs b/core/src/explore/config.rs\nindex d0fe29c..849b083 100644\n--- a/core/src/explore/config.rs\n+++ b/core/src/explore/config.rs\n@@ -35,7 +35,7 @@ impl Provider {\n     /// and to enumerate valid values in error messages.\n     pub const LEGAL: &'static [&'static str] = &[\"ollama\", \"llamacpp\"];\n \n-    fn from_name(s: &str) -> Result<Self> {\n+    pub(crate) fn from_name(s: &str) -> Result<Self> {\n         match s {\n             \"ollama\" => Ok(Provider::Ollama),\n             \"llamacpp\" => Ok(Provider::LlamaCpp),\n@@ -65,7 +65,7 @@ impl Steering {\n     /// The legal on-disk spellings, in declaration order.\n     pub const LEGAL: &'static [&'static str] = &[\"standard\", \"balanced\", \"aggressive\"];\n \n-    fn from_name(s: &str) -> Result<Self> {\n+    pub(crate) fn from_name(s: &str) -> Result<Self> {\n         match s {\n             \"standard\" => Ok(Steering::Standard),\n             \"balanced\" => Ok(Steering::Balanced),\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783189806890
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Looking at the actual T02 changes now to verify a few key things: the three-branch cascade logic appears sound, I need to confirm that `ExploreConfig::config_path` returns the correct `.grove/explore.json` path, and I should double-check that `DEFAULT_TRACE_RETAIN` is properly exposed as a public constant since the implementation references it from the config module.\n\nI'm also verifying that `Provider` and `Steering` are imported and used correctly, and that they're re-exported from the explore crate so they're accessible. The migration logic itself looks solid — it only triggers when explore.json exists but config.json doesn't, and malformed explore.json files correctly return errors as expected. One thing I want to confirm is that the helper visibility is correct and that the build and tests pass cleanly.",
+          "thinkingSignature": "Es4LCmMIDxgCKkBHTCqkBXZM/BvgkZ0szVXsqVBoH1WQmlG3XCMEFvjP4H+phhrgZ64WROQXnF1JEEDIQMm8NPPAM3Mon7NZHj7jMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDMxCCvuGILWNKxh0whoMNfsk2NnrbRYTxoc4IjBUxIj+ctajYmLmgZD+/TU3DeGIDiZHsGFMKynbEwgbumnllx9kafTIhS39Ty5ELYMqmAp1v1P+SCYXRq/W7ybuNrHFAtApwgmx/bQABtziMqV4EwIE/7bWZadEhdJuzG7ijM7vpFnKnXPF10D07J3iHyfIfqQO2MrFZlQyoTgWdiqkWrxUwW1yHHQ8nVaATIwzWPpMgP1nP3wxba75Q53zglMsAPQIPwsWX7/10NpArg/CW1aRy1hF+y0od6tHvoVGg75FNeHBhYT5JEVjBiOsHfvq62rFKBjFJtCymHehCJPi8onDC5RnU/JWt34wzTCVYqOWwYwXUV6k26j3nyP41kJ0d1TRBwTaJiVm/vGW12xiseRFYKABXk3b3Mhx07J/xa6mspQxftkcDQ0Z+MRcWiBpZrOakCjG1M4VSmq6gNRbrwMGeaC/jvd7EsFuGk3QBF894aXe1H3nuS7/otrqQQh+WJ6JLxwc0DdfspZGRgCe2vEq7e6/t8pViVIGaYormn1PE2XiAQ5icOI+lWwuoOd1/4BAyjVDnBR/ax8qmHYVwr7ZB00zboFUULkZQ+LxlnqyksEKj7SgEbICV/YoeNvqViqowOesSbzqrDjvnN/IXDAr6Phn1B4yDmYnb31X0MPegA+1GYdysAWxlK9839LhcbHPcBXiICEe6waIHzg9X/rODhDHhF2vrHUL65lYV34IMq0yHcA2KsywF2AAI9UWywUHo1n2rFD/dBsbrbbkOGBjYabOZoT3c68eebKF4TWfqYh3Jm3984OJ/8sApMp1accEugpvQIFxz4S14qtCISoyT/5CFZmSyYBUP0Ks2VEtXQM+dZrUejCTaxRTMSe1UkrxU63wFWst3XPb5535pCxRAH2jnzoS3LcgGNqr1esuicPbdMjozTZXOl74sIQLXB7R4n/jE6Ml/PP6ChAx0fQlwVra4u3dDXJeS5w7lErg3QQf/Iwoa0EBsixHDPkbgZoZIB+MmVXDbPpPpNvsT0/A9UW05xsDHPASq00WI+Pe6fdRdCWXg2hT6yaJlubBJNR8vEbECfFgqu0zXaz/D7XJITck59AGI56QiSHA6jl+/ieL2a/tTU/76wH8tfSEvyVMY17UTqNKhgbp1Ov9WHyxeqVo5bskurVoDJQ5aQsyW228lKFn4PmxpkMpNprdx14Qng1Xg4qYjVuZseHrAsAYC8qQTOW+NSl4NRlnmoQvMjcInleeCL7ClkgfaSuLVml+FWfgkASdnw5iXVEdOJWuPiM/mwSqQxa+yIqHdx+zkisPNFiw6zVE3eexTKrSCTHK4fwhNMj2atpo189et17vrGVlCXMj8a1mu04HlxicINy/ifWZx4V/wtL8W8BcBG7uDSM/7w1ALX9ulZLwhPWYPAw6mJsjwqD/PGUSzlnxTmNCKAIkpaRytegNW4hRc3mkE6De9FnHfyZaTQf29eo1AE1QAmzA00RwLdC9A2Qq5p4iWvioZr50FrPbl191jeRbAE9wiP3TuLBS3eH6/SUOEgQlDoA6iZaOOWdg1NUxZ0GibpYpySr8JUw15qBkHtYDuCa+/8PvZgJH+kFUuAsmhY6Eh+DRUK8lKnIdjvyNn3Y17TFzF9LuiJeUADG1rz6u1K54PuXdDvpBYmsN4io7cn5TqqFMUQ3nq2eKQLtoqIDkidFkq59wA6sEYwFbNcFUk/1PsE/uOOPARc0tWUAA4/bFyJlB0N0/6upFHcjMx5w9IcO8kst8hIt1hDqWHzcfcJqreUFzKlzrIslTqfGzUhUACumStD0DnrolunHvrciduKFSwBgB"
+        },
+        {
+          "type": "text",
+          "text": "Now let me verify the helper visibility claims and confirm the build/test evidence independently."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01ABZGt6HJux5abNUjVuoNKZ",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && grep -n \"DEFAULT_TRACE_RETAIN\\|pub fn config_path\\|pub mod config\\|pub use\" core/src/explore/config.rs core/src/explore/mod.rs 2>/dev/null"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01JGHm18TvSJs1MQrHxm7Jqj",
+          "name": "mcp__grove__source",
+          "arguments": {
+            "file": "core/src/explore/config.rs",
+            "name": "config_path"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 751,
+        "cacheRead": 31994,
+        "cacheWrite": 5598,
+        "totalTokens": 38345,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.018775,
+          "cacheRead": 0.015997,
+          "cacheWrite": 0.0349875,
+          "total": 0.0697695
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 499
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189806890,
+      "responseId": "msg_01KPvWKPGCPgpzZop39r63ch"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01ABZGt6HJux5abNUjVuoNKZ",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "core/src/explore/config.rs:103:    /// oldest are pruned. `0` keeps all. Default [`DEFAULT_TRACE_RETAIN`].\ncore/src/explore/config.rs:109:pub const DEFAULT_TRACE_RETAIN: u32 = 50;\ncore/src/explore/config.rs:112:    DEFAULT_TRACE_RETAIN\ncore/src/explore/config.rs:172:            trace_retain: DEFAULT_TRACE_RETAIN,\ncore/src/explore/config.rs:180:    pub fn config_path(root: &Path) -> PathBuf {\ncore/src/explore/config.rs:279:        assert_eq!(cfg.trace_retain, DEFAULT_TRACE_RETAIN);\ncore/src/explore/config.rs:294:        assert_eq!(cfg.trace_retain, DEFAULT_TRACE_RETAIN);\ncore/src/explore/mod.rs:12:pub mod config;\ncore/src/explore/mod.rs:18:pub use agent::{\ncore/src/explore/mod.rs:21:pub use client::{\ncore/src/explore/mod.rs:25:pub use config::{ExploreConfig, Provider, Steering};\ncore/src/explore/mod.rs:26:pub use trace::{SessionMeta, TraceWriter};\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783189818360
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01JGHm18TvSJs1MQrHxm7Jqj",
+      "toolName": "mcp__grove__source",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"id\":\"rust:core/src/explore/config.rs#config_path@180\",\"source\":\"pub fn config_path(root: &Path) -> PathBuf {\\n        root.join(\\\".grove\\\").join(\\\"explore.json\\\")\\n    }\"}"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189818360
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "The constants and module exports are properly set up—`DEFAULT_TRACE_RETAIN` is accessible as a public constant, the config path correctly points to `.grove/explore.json`, and the necessary types are re-exported. Now I should run the test suite and clippy to confirm everything works as expected.",
+          "thinkingSignature": "EuEECmMIDxgCKkB+EGzQ38q/G5c3wqa74dle9oKlBdebmeC2/mEFa+po14cy6fFSfpy28QtuT5xBlhTOW0Va28FK+7rV24BOl16rMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDD5pLW25+SzAhe0TixoMhIH5YV2nUWDobEMiIjADt7KYBnNlWpGuy2xqhnG3qbW0z/KFU2bHIlcegBUyNLjfX21eqne/kp3g9vT2YtAqqwOJLwDcKYuWKWQq5dv53+Nwi65E0HPR9zuMCWdoDIClHoqpGJMj2cPc27L1gpIXbn0Mzbr08qhPfJYXojJSA1ue2CxJgRJ4inPO7YgY05uOZjdeVHQvJoQG/Hcu6Y6rmQ3cJ6ynpTrvV7LeqJjmHmRGB6BS6Sjyab6f84ErzLQ8Ew1rcra2bi0zBAfACVzPKIiuVrKCeUO3dY6es5HT66PUjZb+9N2IwjcydES0ELk9NhIJ65Q3OJug0n6A5Ehv4ohFKpj+mwosw9/eHP7MlP81rJ4LG/ACgwhmeAGE0sQBDZIq8eSjoN8QdzQ/K1S9jjj20PQid3S2MGHievSzeNj8yWtmq/Hab3nx+0GhfMwvo7BGYSQoaFi1CBlMpHGFK+ZA0O61kXGTJwwTz3klPx5ornHThVmknQcau6a2qXBVOdJM6OEDqzfPYRL/gJ6Gx072C96rkY6vmOVGgI8e/Mn6Cbdj8Cna9M/shurbZ3ipCgscuKLUG5wfnDEP1XomAmnzxGdKsSpRtQzuOpNzvB2KBovvQyMlW+vbR3YVr4iwFFrWHCV/JjZEtcRjGAE="
+        },
+        {
+          "type": "text",
+          "text": "All visibility claims verified. `config_path` correctly returns `.grove/explore.json`. Now independent build/test/clippy verification."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_014Nqx2TsQvZqH9VFY2S4LxR",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && cargo test --release --locked -p grove-core config 2>&1 | tail -30",
+            "timeout": 300
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 341,
+        "cacheRead": 37592,
+        "cacheWrite": 1347,
+        "totalTokens": 39282,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.008525,
+          "cacheRead": 0.018796,
+          "cacheWrite": 0.00841875,
+          "total": 0.03574975
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 180
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189818361,
+      "responseId": "msg_01CT7d6RGEsNQMor5qDnR12L"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_014Nqx2TsQvZqH9VFY2S4LxR",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "error: package ID specification `grove-core` did not match any packages\n\nhelp: a package with a similar name exists: `grove-cst`\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783189823636
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01E2Zqw3Qg6FR3ZP6hkV5fX7",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && grep -m1 \"^name\" core/Cargo.toml"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 85,
+        "cacheRead": 38939,
+        "cacheWrite": 386,
+        "totalTokens": 39412,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.002125,
+          "cacheRead": 0.0194695,
+          "cacheWrite": 0.0024125,
+          "total": 0.024017000000000004
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189823637,
+      "responseId": "msg_012AxDNPqPVfdpLyTtrBKSxL"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01E2Zqw3Qg6FR3ZP6hkV5fX7",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "name = \"grove-cst\"\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783189825800
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_016MVHTYPymFybJT7LZ69Uhe",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && cargo test --release --locked -p grove-cst config 2>&1 | tail -35",
+            "timeout": 400
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 117,
+        "cacheRead": 39325,
+        "cacheWrite": 100,
+        "totalTokens": 39544,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.002925,
+          "cacheRead": 0.0196625,
+          "cacheWrite": 0.000625,
+          "total": 0.0232225
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189825801,
+      "responseId": "msg_01CXsrDSLxx5CyWTp2zDYRJc"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_016MVHTYPymFybJT7LZ69Uhe",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "   Compiling grove-cst v0.3.0 (/home/boni/src/grove-engineering/grove/core)\n    Finished `release` profile [optimized] target(s) in 12.06s\n     Running unittests src/lib.rs (target/release/deps/grove_core-6c70d4306a838555)\n\nrunning 22 tests\ntest config::tests::bad_mode_error_names_field_and_legal_values ... ok\ntest config::tests::bad_version_rejected ... ok\ntest config::tests::explore_section_absent_when_none ... ok\ntest config::tests::explore_section_present_when_some ... ok\ntest config::tests::missing_file_actionable_error ... ok\ntest config::tests::config_json_present_ignores_stale_explore_json ... ok\ntest config::tests::deprecation_warning_emitted ... ok\ntest config::tests::serde_round_trip_each_mode ... ok\ntest config::tests::migrate_legacy_explore_writes_config_json ... ok\ntest config::tests::steering_key_in_explore_section ... ok\ntest explore::config::tests::bad_enum_names_field_and_legal_values ... ok\ntest explore::config::tests::defaults_are_ollama ... ok\ntest config::tests::save_load_round_trip_atomic ... ok\ntest explore::config::tests::empty_required_fields_rejected ... ok\ntest explore::config::tests::fixed_fixture_deserializes ... ok\ntest config::tests::second_load_after_migration_reads_config_not_legacy ... ok\ntest explore::config::tests::legacy_mode_key_rejected ... ok\ntest explore::config::tests::missing_file_steers_to_init ... ok\ntest explore::config::tests::provider_serializes_lowercase ... ok\ntest explore::config::tests::serde_round_trip_defaults ... ok\ntest explore::config::tests::trace_retain_defaults_when_absent ... ok\ntest explore::config::tests::save_then_load_round_trips_atomically ... ok\n\ntest result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 133 filtered out; finished in 0.00s\n\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783189840128
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "All 4 new tests (5a-5d) plus existing ones pass. Now clippy."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01BP3c5zw9j92o5Nf2VQkbZo",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && cargo clippy -p grove-cst --all-targets -- -D warnings 2>&1 | tail -15",
+            "timeout": 300
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 155,
+        "cacheRead": 39425,
+        "cacheWrite": 827,
+        "totalTokens": 40409,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.003875,
+          "cacheRead": 0.019712499999999997,
+          "cacheWrite": 0.00516875,
+          "total": 0.028766249999999997
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189840128,
+      "responseId": "msg_011L8g2BHdAatX4zwRdhWH27"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01BP3c5zw9j92o5Nf2VQkbZo",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "    Checking hashbrown v0.15.5\n   Compiling rustix v0.38.44\n    Checking regalloc2 v0.11.2\n    Checking object v0.36.7\n    Checking cranelift-codegen v0.116.1\n    Checking wasmtime-environ v29.0.1\n    Checking cranelift-frontend v0.116.1\n    Checking cranelift-native v0.116.1\n    Checking wasmtime-cranelift v29.0.1\n    Checking wasmtime v29.0.1\n    Checking wasmtime-c-api-impl v29.0.1\n    Checking tree-sitter v0.25.10\n    Checking grove-cst v0.3.0 (/home/boni/src/grove-engineering/grove/core)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.88s\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783189851156
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Checking that the file ends with a newline character.",
+          "thinkingSignature": "EoICCmMIDxgCKkB4dQZDgC9ypx9HGy4Z4v1R9APAQPnL/H2sUlhsv6VszxLLZVAfvB1XuyOlV0LZtnGQXbVbXJaN5z9uZfRlyB+eMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDP09NWQB6oYMF2+ZBxoMDJ4Hk43dGfvWWLNGIjBQx+LYgKOPu14fiXV2dkUrI5DavfWFqQLA03uMm+Y6W0IzRMbaocqP2ZiNXmVq3aMqTVBhxjBsnJzrs4DGgOOcDIUckAQ54eSdmTCd3WQC67Q3A4KnJkjibtn6A9CC00OCnU33qDq1IzcgrTcNLRrh6SFWfpbhlCTW4hWBaIEeGAE="
+        },
+        {
+          "type": "text",
+          "text": "Clippy clean. Let me verify AC6's newline requirement and check the file-tail formatting."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01HPtCiKSSbo7Wq8irQ8CBi4",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && for f in core/src/config.rs core/src/explore/config.rs; do if [ -z \"$(tail -c1 \"$f\")\" ]; then echo \"$f: ends with newline ✓\"; else echo \"$f: NO trailing newline ✗\"; fi; done"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 211,
+        "cacheRead": 40252,
+        "cacheWrite": 443,
+        "totalTokens": 40908,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.005275,
+          "cacheRead": 0.020125999999999998,
+          "cacheWrite": 0.00276875,
+          "total": 0.028179749999999996
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 26
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189851157,
+      "responseId": "msg_01WKRisYEbpKw1zv7hD2RSKQ"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01HPtCiKSSbo7Wq8irQ8CBi4",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "core/src/config.rs: ends with newline ✓\ncore/src/explore/config.rs: ends with newline ✓\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783189854875
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "The implementation is solid across all acceptance criteria—the three-branch cascade handles the migration logic correctly, the mode-to-steering mapping works as expected, warnings are properly emitted once, and the error handling remains unchanged. All six tests pass and the build completes successfully.\n\nFrom a security perspective, there's no injection risk since we're just reading a local config file, and the atomic write using a temp file with a process ID follows the same pattern established earlier. The architecture aligns well with existing conventions—the raw wire struct, the from_name method, and TryFrom implementation all match the established patterns, with minimal pub(crate) visibility and a testable named constant for the warning.\n\nThere are a few minor observations worth noting: the test doesn't actually capture stderr output, though the const-based approach is a reasonable tradeoff; malformed explore.json returns an error rather than initializing with defaults, which is documented; and there's some minor duplication in the default trace retention values, but that's justified since the private function isn't accessible elsewhere. The legacy struct correctly uses the `mode` field since that was the actual wire format in the old explore.json files before the rename, and the serde defaults on allowed_tools and trace_retain match the original behavior without any data loss.\n\nEverything checks out. Time to write the code review.",
+          "thinkingSignature": "ErUPCmMIDxgCKkBJimHg+uvQvZT5xsssjyCBkfsSKBMHMgt8NdDdtwP8ZCqy+/dCm9fGoWleAWoI9YzU9u9AjaU61Wd4CdDNuLEeMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDLZKhTHV+PW/Hfa0dBoMgjgqMttYOFsz6N8BIjDKs4gK/rJO5gedw7Ka7i9hvu1kX2OvcQ38P1m32s8UNBegJ9Kdvwdh+B8s7bTUlPUq/w3OxI6rXdr0HdYL2dlIfXPihVXgxpYI8pEfNxu/1SHI9VK7JLX8JkzI5v0soEGSF2UFKTCi5ytsoFbf7yCrvWsrtmltNUH6Geqsmo87yo05JwHL8mDtpj/3aXjNDoqIIgAKSewR/U8htb45qcETY4KtamRkLImIYfasF4o3iQmO11PGdWEYi4dNGfU6lkn2qgESgWwKt+xCxtesPbDvEKuW6HsWgKkq4uYhQSAVW1T6KVBQkpAkpAmJjlHW+Zhsvf5d+kPLbesD+Asrjv/XUBi9qMFB6lcIJhmm39de78Z6eqWpHvxgLFnzT4r3AhhksbQhXXGDCwyXY+m8IN68mjh1Zy3L/jEm48GmnVFuwbwBBCMJQJ+Btsy+3ZpHvsXJmyrjNY93nCQCmzf5la4Jxcpqs7ELVMgM0rEQcxDqhLxVSuOvWvc9iGQLOr4WcUsiSmOqBrim+MIN7aSsRWtNtjCLfxV+4j7qcJ28HvU0iYynVPBhhfU3nusVXnu1JqBqeYUG/Bsuc1Rl2H8FlaRTa4habwxhJw6vzNWoBWXv+6wr4RVOgtUdbuDIcal2SCfp34FlDzOGkILlaTTIAVLts1iCW2EzX2FB+JPaxFHEGLvMycoh/ZK+sHDCAkcXxhENrh/QbRqpssxnUHWR+SeaEchGBHt6TaPVxtwFRUYmFPzvg2kknlemmFAaWuR6fbUQXIilBjnnQimMqj6OzTFtLI2YgDOmJiXmM9NFeBPBA00Qt4yzSVWM3479w06CygHBSnybQ40VW7jSxTueTfJxC0oGsV1iNxcKXTiHf3DP0QGeof5pKnROqPXBollcb/DLBxoUjrxo3uN7EyWX+Mnv9NEyZlDh2qFkRPm5wfw2NXuLcFa3TqWaMqQzc/9sIoo7xmtUXxQRQ3lsfwmy7gxDM2dUySeH87Cj0U05JVvb6BvgExe97CBGH/uav0o+LzsK+Pv1h9CooSqH+Wk2fDo8BnJn4aIDozV1HexxiNO0VVRCfKgI+MOeNEaWvY6lD1dp2OUJ3ptGVvMBNWncH/jWmUftM1Xas+NFbByN0FhABqqpnJ4p4dUWfGaIMFS4wEXX8v+xXTOybftp1VTmmhp8ywKY7Vj2LNO9+KDYb3p+Hq3r4zIocDbWhsw7Ot1hm70RuFGc8+ppz9rY/xAnfNSXFUPkAduy3Itg3qGJekFshAzSoKuWNQv2W9JtKoMGxhlHlhVikNoQWpHF2fHVcb0+uxILJGSPzRt84qPQ6vPfPgfMJtMhvUKHYGGg+F1UZdAmOKds6R1zzuGUqDWH+mn5/AvEfSz/3ZoBd1q49Pay9KSOaRyb8EFGL+O684YQ99MpUfr4LxdP2QgaisB1EfrErfw+Yfvq8iS63LADHOUvFTRZ4WX14A6GskXV1yUVMHU4xGom35oipd9An3qQxcmpoerEbDXXLccbVLG+MxB+egZ1jYVVmZimn0jQ0/391QQRYB+mK7FJA5MwBarUgzU4IUUo+VZ0BRnAOA1QHaqRTz/HStu3iKI85gpEAsSmXUu4YD6Lf7mZSlX8x5jf6Wk8YuMfBe1/JJXCsGwX4ydPaVSivgE5Mu2TED8As6qWqXV2nHA1wo29EPhlIC6wfPtm90B3lpHhRg6lzpcMgi6dcDkm3dTwmaUU0jxnPT5aBnbN9TB0be+eACEu6brlMT8+2kt+RVQXb6/ccTTH6+A80Wd0pYpY7Y4AW8AizPS3PsNm2TRMLKSvBXG8pCZsMGURnjlPKYy/Nx0rLV1kTvuejWrt3mBy4lVgVYPwTyl+/xeKPcfOf6yqhBo1CefKvVAqhhGm0qL1CEM8looAY59y7J0/NJ7MaIgFXy/Q/NxCYZS3eGWpcYAVinZIw2/kQgvlF8mtOEmis37zHG1shU+a8zT4zpHoDQ7DqSJwSXRIfWBbhdkP1HlclDZ7c1HUIaSbh2yX6YOWS0LDegW+8cEkkxCJtbjoZ9tBH2GCWxpev7ar903EcUWmN5hjiEWRTTpg8yTBzdeqBUfDUDZnr0CZA4wFVBmZ/SHCs/KxEbamkv6bLQTeYYhGVWB3jfhEooeI4/78pzdA825wahsb9xQbmhk8wKIVchOJSuMRgdcOqF4Yhxu29hCKfUJPj1ldutBD264X5snXVG1e712S2okK5C/egW44Eq0sdWuxcDXkee5daOkaV2rvCV2a3eimUX4OJgm4BumfEoVpZAdN4xejBzfd+07KM4XjKs3NSRfSaZEuE4A+Yj0hmtGYOPsbTM4dmNT5PsgRvowvVy6xeQEGXJojXjWDBs96ZnXPuaV5dNGEQVt2FdAZaxhIZb/0efiXkN2YLD3pWAXi4P2z2eJfXD4N/4Q0LNVTyLI9AuII9pptNtq6I0wyKdyqcN2zn9qjEggYAQ=="
+        },
+        {
+          "type": "text",
+          "text": "All acceptance criteria independently verified. The implementation is correct, well-tested, matches T01 conventions (Raw wire struct + `from_name` + `TryFrom`), and clippy/tests are green. Writing the review."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01RZa5V9pXRbqGzgaXXkw1Sy",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "write",
+            "entity": "task",
+            "entityId": "GROVE-S03-T02",
+            "artifact": "code-review",
+            "content": "# CODE_REVIEW — GROVE-S03-T02 (standalone review)\n\n**Verdict:** Approved\n\n## Scope\n\nLegacy `.grove/explore.json` → `.grove/config.json` migration on `GroveConfig::load`.\nReviewed the working-tree diff against `HEAD` (T02 is uncommitted; T01 is at `a445b72`)\nfor `core/src/config.rs` and `core/src/explore/config.rs`. Verified independently by\nreading source, resolving symbol visibility, and running the test + clippy suites.\n\n## Independent Verification\n\n- **Build/tests:** `cargo test --release --locked -p grove-cst config` → 22 passed, 0 failed.\n  All four new tests present and green: `migrate_legacy_explore_writes_config_json` (5a),\n  `second_load_after_migration_reads_config_not_legacy` (5b),\n  `config_json_present_ignores_stale_explore_json` (5c), `deprecation_warning_emitted` (5d).\n- **Lint:** `cargo clippy -p grove-cst --all-targets -- -D warnings` → clean.\n- **Newline (AC6):** both modified files end with a trailing newline.\n- **Symbol visibility (prior advisory resolved):** `DEFAULT_TRACE_RETAIN` is `pub const`\n  (config.rs:109) inside `pub mod config` — so `crate::explore::config::DEFAULT_TRACE_RETAIN`\n  in `default_legacy_trace_retain()` compiles. `Provider::from_name` / `Steering::from_name`\n  correctly promoted to `pub(crate)`; both re-exported via `crate::explore`.\n- **`ExploreConfig::config_path`** returns `.grove/explore.json` (read-only reuse) — the\n  migration reads the correct legacy path and never mutates it.\n\n## Correctness — Acceptance Criteria\n\n| AC | Assessment |\n|----|-----------|\n| 1 — migrate when config.json absent + explore.json present | ✅ Three-branch cascade in `load`: config.json → normal; else explore.json → `migrate_from_legacy_explore`; else `grove init` bail. |\n| 2 — legacy `mode` → `steering` | ✅ `Steering::from_name(&raw.mode)` validates + remaps; provider/base_url/model/allowed_tools/tap/trace_retain preserved with no data loss. |\n| 3 — one-time deprecation warning | ✅ `eprintln!(DEPRECATION_WARNING)` after atomic `save`; one-time is structurally guaranteed because branch 1 (config.json) shadows the migration on subsequent loads (5b confirms idempotency). |\n| 4 — neither file → same actionable error | ✅ Bail path unchanged; existing `missing_file_actionable_error` still green. |\n| 5 — four tests a–d | ✅ All present and passing. |\n| 6 — build/clippy/test clean, trailing newline | ✅ Verified independently. |\n\n## Quality / Architecture\n\n- Follows the established T01 pattern precisely: a private `LegacyExploreRaw` wire struct\n  with `String` enum keys, parsed through validating `from_name` calls — consistent with\n  `RawGroveConfig` / `RawExploreConfig`.\n- The named `DEPRECATION_WARNING` const is a clean, testable design (avoids fragile\n  cross-platform stderr capture). Minimal `pub(crate)` surface. Atomic save reused, so the\n  migration inherits temp-file+rename durability.\n- `default_legacy_trace_retain()` correctly delegates to the shared `DEFAULT_TRACE_RETAIN`,\n  matching the original serde defaults so an absent `trace_retain` migrates without drift.\n\n## Advisory Notes (non-blocking)\n\n1. **Test 5d does not capture stderr** — it asserts on the const's content and proves the\n   migration branch executed via the config.json side-effect. This is the agreed tradeoff\n   from plan-review; acceptable. A future integration test could exec a helper binary and\n   assert the actual stderr line if stronger evidence is ever wanted.\n2. **Malformed `explore.json` yields `Err`** rather than the `grove init` steer. Intentional\n   and documented in the function; a corrupt legacy file surfaces a parse error naming the\n   path, which is reasonable. No action required.\n3. **Minor duplication** — `default_legacy_trace_retain` mirrors explore's private\n   `default_trace_retain`; justified because the latter isn't in scope from config.rs.\n"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 2467,
+        "cacheRead": 40695,
+        "cacheWrite": 255,
+        "totalTokens": 43419,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.061675,
+          "cacheRead": 0.020347499999999998,
+          "cacheWrite": 0.00159375,
+          "total": 0.08362625000000001
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 689
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189854876,
+      "responseId": "msg_019MCb8meeqU76rymXpzpYxG"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01RZa5V9pXRbqGzgaXXkw1Sy",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "Wrote 3873 bytes to engineering/sprints/GROVE-S03/GROVE-S03-T02/CODE_REVIEW.md"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189886609
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Now finalize: status transition (Approved) and summary sidecar."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01Mbg5Gosb3F5Pa6KtBts9Cr",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && node .forge/tools/store-cli.cjs update-status task GROVE-S03-T02 status review-approved 2>&1"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_018hfSAZ6bEP2sTQKbKw4TP6",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "write",
+            "entity": "task",
+            "entityId": "GROVE-S03-T02",
+            "artifact": "review-impl-summary",
+            "content": "{\n  \"objective\": \"Reviewed the legacy .grove/explore.json → config.json migration branch added to GroveConfig::load.\",\n  \"findings\": [\n    \"Three-branch load cascade correct: config.json → normal; else explore.json → migrate; else grove init bail (AC1, AC4).\",\n    \"Legacy `mode` key correctly remapped to `steering` via validating Steering::from_name; all other explore fields preserved, no data loss (AC2).\",\n    \"One-time deprecation warning structurally guaranteed — post-migration config.json shadows the migration branch on subsequent loads; test 5b confirms idempotency (AC3).\",\n    \"Prior plan-review advisory resolved: DEFAULT_TRACE_RETAIN is pub const in pub mod config, so default_legacy_trace_retain compiles; from_name fns correctly pub(crate).\",\n    \"ExploreConfig::config_path returns .grove/explore.json and is reused read-only — migration never mutates the legacy file (verified via mtime assert in 5b).\",\n    \"Independently ran cargo test -p grove-cst config → 22 passed 0 failed; all four new tests 5a-5d green.\",\n    \"cargo clippy -p grove-cst --all-targets -- -D warnings clean; both files end with trailing newline (AC6).\",\n    \"Follows established T01 conventions: private LegacyExploreRaw wire struct + from_name validation + atomic save reuse.\",\n    \"Advisory (non-blocking): test 5d asserts on const content rather than capturing stderr — agreed tradeoff.\",\n    \"Advisory (non-blocking): malformed explore.json yields Err rather than grove init steer — intentional and documented.\"\n  ],\n  \"verdict\": \"approved\",\n  \"written_at\": \"2026-07-04T00:00:00Z\",\n  \"artifact_ref\": \"CODE_REVIEW.md\"\n}\n"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 915,
+        "cacheRead": 40950,
+        "cacheWrite": 2522,
+        "totalTokens": 44389,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.022875,
+          "cacheRead": 0.020475,
+          "cacheWrite": 0.0157625,
+          "total": 0.059122499999999995
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189886609,
+      "responseId": "msg_01GFEC4Hw5CQxgHoyQZ55XFr"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01Mbg5Gosb3F5Pa6KtBts9Cr",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "(no output)"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783189901240
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_018hfSAZ6bEP2sTQKbKw4TP6",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "forge_artifact failed: Command failed: node /home/boni/.nvm/versions/node/v24.3.0/lib/node_modules/@entelligentsia/forgecli/dist/forge-payload/tools/artifact.cjs write task GROVE-S03-T02 review-impl-summary {\n  \"objective\": \"Reviewed the legacy .grove/explore.json → config.json migration branch added to GroveConfig::load.\",\n  \"findings\": [\n    \"Three-branch load cascade correct: config.json → normal; else explore.json → migrate; else grove init bail (AC1, AC4).\",\n    \"Legacy `mode` key correctly remapped to `steering` via validating Steering::from_name; all other explore fields preserved, no data loss (AC2).\",\n    \"One-time deprecation warning structurally guaranteed — post-migration config.json shadows the migration branch on subsequent loads; test 5b confirms idempotency (AC3).\",\n    \"Prior plan-review advisory resolved: DEFAULT_TRACE_RETAIN is pub const in pub mod config, so default_legacy_trace_retain compiles; from_name fns correctly pub(crate).\",\n    \"ExploreConfig::config_path returns .grove/explore.json and is reused read-only — migration never mutates the legacy file (verified via mtime assert in 5b).\",\n    \"Independently ran cargo test -p grove-cst config → 22 passed 0 failed; all four new tests 5a-5d green.\",\n    \"cargo clippy -p grove-cst --all-targets -- -D warnings clean; both files end with trailing newline (AC6).\",\n    \"Follows established T01 conventions: private LegacyExploreRaw wire struct + from_name validation + atomic save reuse.\",\n    \"Advisory (non-blocking): test 5d asserts on const content rather than capturing stderr — agreed tradeoff.\",\n    \"Advisory (non-blocking): malformed explore.json yields Err rather than grove init steer — intentional and documented.\"\n  ],\n  \"verdict\": \"approved\",\n  \"written_at\": \"2026-07-04T00:00:00Z\",\n  \"artifact_ref\": \"CODE_REVIEW.md\"\n}\n\nSummary validation failed for REVIEW-IMPL-SUMMARY.json: Missing required fields: key_changes. Required fields: objective, key_changes, verdict, written_at.\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189901240
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I need to adjust the schema — it expects `key_changes` instead of `findings`, along with `objective`, `verdict`, and `written_at`. Let me rename the findings field to match what the schema requires.",
+          "thinkingSignature": "Es4DCmMIDxgCKkBbM/ZZuCnEhQiQ45ZEp5c5euWLJQxnWhLdb4a6LPZx8ArQgC2Z6JpGjVRMA3hsNIJr2apd9DAzvOHdl2RMiVs1Mg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDGaFwA1KrW3onw6bOhoMGgxr1x2zL0R+v1xXIjB2oQ45iAfhU8QAbRIcids4HFC0EW0gz0nIJWxqYU9zrS3MRjnVU3HIvhTJHXoMtaEqmALfhgvIkIN6d6hh/3Om3/Ac81oZYj849zrd03Xn6g+9+NlXjuDfWFtw3qka8AvYjuPLx4QjUjbNAZu2o4yhm2qmA4ZixRwqtNUDE/C9WOkgkX799udMv/t5xSxMhjoDJV1Ef5Z7UM3i9r0X4eoj+HkJKvmAO8BuToaWC5Mkm1PeSu2wRvgz0PGGEaBeY4b7hbrePWFPdubH7xVHLouJ95zldOb44uMxtFTM/OtgefZUvKBgFr6BxvnIuEpjkbhpt30WymPsLWFv2JQQletOGQeM31IkeSFYemOTAui8LvtepQXqfQ6H85RVvrEBItrnYUv5/b5qfD/8MAb8iBwYOgw5tZhj3GuQi+wlPSopBH5q0uBRiXZ6tXpQGAE="
+        },
+        {
+          "type": "text",
+          "text": "The summary schema requires `key_changes`. Let me fix the field name."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01VyV25fSJC26wmqR77fDECU",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "write",
+            "entity": "task",
+            "entityId": "GROVE-S03-T02",
+            "artifact": "review-impl-summary",
+            "content": "{\n  \"objective\": \"Reviewed the legacy .grove/explore.json → config.json migration branch added to GroveConfig::load.\",\n  \"key_changes\": [\n    \"Three-branch load cascade correct: config.json → normal; else explore.json → migrate; else grove init bail (AC1, AC4).\",\n    \"Legacy `mode` key correctly remapped to `steering` via validating Steering::from_name; all other explore fields preserved, no data loss (AC2).\",\n    \"One-time deprecation warning structurally guaranteed — post-migration config.json shadows the migration branch on subsequent loads; test 5b confirms idempotency (AC3).\",\n    \"Prior plan-review advisory resolved: DEFAULT_TRACE_RETAIN is pub const in pub mod config, so default_legacy_trace_retain compiles; from_name fns correctly pub(crate).\",\n    \"ExploreConfig::config_path returns .grove/explore.json and is reused read-only — migration never mutates the legacy file (verified via mtime assert in 5b).\",\n    \"Independently ran cargo test -p grove-cst config → 22 passed 0 failed; all four new tests 5a-5d green.\",\n    \"cargo clippy -p grove-cst --all-targets -- -D warnings clean; both files end with trailing newline (AC6).\",\n    \"Follows established T01 conventions: private LegacyExploreRaw wire struct + from_name validation + atomic save reuse.\",\n    \"Advisory (non-blocking): test 5d asserts on const content rather than capturing stderr — agreed tradeoff.\",\n    \"Advisory (non-blocking): malformed explore.json yields Err rather than grove init steer — intentional and documented.\"\n  ],\n  \"verdict\": \"approved\",\n  \"written_at\": \"2026-07-04T00:00:00Z\",\n  \"artifact_ref\": \"CODE_REVIEW.md\"\n}\n"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 906,
+        "cacheRead": 43472,
+        "cacheWrite": 1773,
+        "totalTokens": 46153,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.02265,
+          "cacheRead": 0.021736,
+          "cacheWrite": 0.01108125,
+          "total": 0.05547725
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 92
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189901240,
+      "responseId": "msg_012jFjTXkNCUR3mSDAvtp96K"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01VyV25fSJC26wmqR77fDECU",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "Wrote 1634 bytes to engineering/sprints/GROVE-S03/GROVE-S03-T02/REVIEW-IMPL-SUMMARY.json"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189910982
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01QP8G3vpP1fqUvW3hBxgEHa",
+          "name": "forge_store",
+          "arguments": {
+            "command": "set-summary",
+            "args": [
+              "GROVE-S03-T02",
+              "code_review"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 89,
+        "cacheRead": 45245,
+        "cacheWrite": 969,
+        "totalTokens": 46305,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.002225,
+          "cacheRead": 0.0226225,
+          "cacheWrite": 0.00605625,
+          "total": 0.03091375
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189910982,
+      "responseId": "msg_01Po9P4AMQyKza9KrMNFSscE"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01QP8G3vpP1fqUvW3hBxgEHa",
+      "toolName": "forge_store",
+      "content": [
+        {
+          "type": "text",
+          "text": "forge_store failed: Command failed: node /home/boni/.nvm/versions/node/v24.3.0/lib/node_modules/@entelligentsia/forgecli/dist/forge-payload/tools/store-cli.cjs set-summary GROVE-S03-T02 code_review\nSummary file not found: engineering/sprints/GROVE-S03/GROVE-S03-T02/REVIEW-CODE-SUMMARY.json (expected REVIEW-CODE-SUMMARY.json; found IMPLEMENTATION-SUMMARY.json, PLAN-SUMMARY.json, REVIEW-IMPL-SUMMARY.json, REVIEW-PLAN-SUMMARY.json in the same dir — write the sidecar via forge_artifact artifact:\"review-code-summary\", or rename it to REVIEW-CODE-SUMMARY.json)\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189914070
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I see there's a mismatch between what the workflow expects and what I named the artifact—the set-summary is looking for REVIEW-CODE-SUMMARY.json but I created REVIEW-IMPL-SUMMARY.json instead. I need to rename the artifact to \"review-code-summary\" to align with what the workflow actually requires.",
+          "thinkingSignature": "EocECmMIDxgCKkAYhKaeI0os5WY/hWTLX3ToWzu0YgS6ohoD6kE8NbYaZonkEays9QvzWgwmVIJWrd4dH54To7wjHD9rznqPolqSMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDAfDMTGyvkS6D/X3AhoM1VdCrgCe85ihrjywIjC0jYZLhFTj7PFT8al0Q8NgJQXIkFFneItd7J8fvgb8Bl+5ldJRHQG26XOZX0DTu4kq0QKPR4He4FdoMYniaZxo0EMcLSOATTkqgm5qt38rCwhZQtt4F+KzHrmF3nGRB1bg2SGADLBQ2gM5j+F5mr/4b9wh8VzZKknMFMhDtkO9QiWyagAMlgkuAJnJQBO8k1o+V4evzmVL6qYlrtxqAgXyBQNWVqmt9vhmKS59h6R7xliipXX2YhstXCckr4n/US0Avf79oqDfX3D5HW1O1VFbmYU91oCu3jR1C6MaHyjuHFiPyGa8wK1N3YEa7SA0FJWaE9KEx6ytRNnqjzuwWjtNVFS7ACYEI41UtSd78B78Jew9rWZ/B17zXGN9xuMleH5Q7FYioaHLh2E4IWOzwTJqirhw70YdGuOuEEonQ+pgofbEiLUjKYzqY4iekOtL3ySvChDrt0phYoW8GIPyrz9smjQHFm4gGjsev4tKxu1zXT7xaLMZ7zxPU5ZumLCbdf4UAOw3GAE="
+        },
+        {
+          "type": "text",
+          "text": "The `code_review` phase expects `review-code-summary`. Let me write that artifact name."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01MGb3qBw6kz8xxb341CBAAx",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "write",
+            "entity": "task",
+            "entityId": "GROVE-S03-T02",
+            "artifact": "review-code-summary",
+            "content": "{\n  \"objective\": \"Reviewed the legacy .grove/explore.json → config.json migration branch added to GroveConfig::load.\",\n  \"key_changes\": [\n    \"Three-branch load cascade correct: config.json → normal; else explore.json → migrate; else grove init bail (AC1, AC4).\",\n    \"Legacy `mode` key correctly remapped to `steering` via validating Steering::from_name; all other explore fields preserved, no data loss (AC2).\",\n    \"One-time deprecation warning structurally guaranteed — post-migration config.json shadows the migration branch on subsequent loads; test 5b confirms idempotency (AC3).\",\n    \"Prior plan-review advisory resolved: DEFAULT_TRACE_RETAIN is pub const in pub mod config, so default_legacy_trace_retain compiles; from_name fns correctly pub(crate).\",\n    \"ExploreConfig::config_path returns .grove/explore.json and is reused read-only — migration never mutates the legacy file (verified via mtime assert in 5b).\",\n    \"Independently ran cargo test -p grove-cst config → 22 passed 0 failed; all four new tests 5a-5d green.\",\n    \"cargo clippy -p grove-cst --all-targets -- -D warnings clean; both files end with trailing newline (AC6).\",\n    \"Follows established T01 conventions: private LegacyExploreRaw wire struct + from_name validation + atomic save reuse.\",\n    \"Advisory (non-blocking): test 5d asserts on const content rather than capturing stderr — agreed tradeoff.\",\n    \"Advisory (non-blocking): malformed explore.json yields Err rather than grove init steer — intentional and documented.\"\n  ],\n  \"verdict\": \"approved\",\n  \"written_at\": \"2026-07-04T00:00:00Z\",\n  \"artifact_ref\": \"CODE_REVIEW.md\"\n}\n"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 946,
+        "cacheRead": 46214,
+        "cacheWrite": 394,
+        "totalTokens": 47556,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.02365,
+          "cacheRead": 0.023107,
+          "cacheWrite": 0.0024625,
+          "total": 0.0492295
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 127
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189914071,
+      "responseId": "msg_01Gdu37aXJ3ayzjHP8PnRYw7"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01MGb3qBw6kz8xxb341CBAAx",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "Wrote 1634 bytes to engineering/sprints/GROVE-S03/GROVE-S03-T02/REVIEW-CODE-SUMMARY.json"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189928392
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01BfQBuLWs7Vjq91T9pUo4GS",
+          "name": "forge_store",
+          "arguments": {
+            "command": "set-summary",
+            "args": [
+              "GROVE-S03-T02",
+              "code_review"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 89,
+        "cacheRead": 46608,
+        "cacheWrite": 1008,
+        "totalTokens": 47707,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.002225,
+          "cacheRead": 0.023304,
+          "cacheWrite": 0.0063,
+          "total": 0.031839
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189928392,
+      "responseId": "msg_01XRtssfLqCXdfGAmXwyWGnM"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01BfQBuLWs7Vjq91T9pUo4GS",
+      "toolName": "forge_store",
+      "content": [
+        {
+          "type": "text",
+          "text": "OK"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189930573
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I should clean up that extra JSON file I created by accident — it's not harmful but could be confusing, so I'll delete it to keep things tidy.",
+          "thinkingSignature": "EpYDCmMIDxgCKkDcH9y054vDdOLHeYA5mJ9sWk1ZQuEVACiAlB51MZgmLjxs1EOyQxkuYzQpYVu1L7hS9PYQ6DROfVE9tVLt8a4/Mg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDHVjBz99Ew8/slY0lBoMlxkD88lFKAtvyeLJIjDaT9wyUKq5kqWydnMPhiJjcNkPqnTLgCcihIyqkN6mBubg/1Hz2JZmWGpyuxN7/pIq4AEF1b35VWFM3xym2pR/qTZxMq6DtcKSgnCPyIg/s6vVUx8aHNV4IDutHI9Ci5mdidbaDCjCEbdzknX3dHXn1unG5GYBpvow7SeXhYSzyOCjr39IQbh6OliImz9vHKuHosLVT3BA8Xu5JzIKnxghbdQd0TABCU+sVGj+hEPmNq91BE/jxHpytZMRu4YVtuFDm6SGcvSDqvrMXouQOEe4SejfQANLFPETDaTNURltfsI6xLJd49mF/tlTuJgweRQtCEpHgrQHVvWlHn/RmRmId2Mpk/VdBMDL2ElFcsMWD5QXLRgB"
+        },
+        {
+          "type": "text",
+          "text": "Summary bound. Let me remove the misnamed sidecar I created earlier to keep the artifact dir clean."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01XkwfPPcFjrjkqESTz4u7YG",
+          "name": "bash",
+          "arguments": {
+            "command": "cd /home/boni/src/grove-engineering/grove && rm -f engineering/sprints/GROVE-S03/GROVE-S03-T02/REVIEW-IMPL-SUMMARY.json && echo \"removed\""
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 251,
+        "cacheRead": 47616,
+        "cacheWrite": 96,
+        "totalTokens": 47965,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.006275,
+          "cacheRead": 0.023808,
+          "cacheWrite": 0.0006,
+          "total": 0.030692999999999998
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 90
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189930574,
+      "responseId": "msg_01GYNS4qwhy8b2229CkeyMWS"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01XkwfPPcFjrjkqESTz4u7YG",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "removed\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783189934562
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Review complete.\n\n## 🌕 Code Review — GROVE-S03-T02 — **Approved** (standalone review)\n\nI verified the T02 work independently against the approved plan and all six acceptance criteria — reading the actual working-tree diff (T02 is uncommitted; T01 is committed at `a445b72`), resolving symbol visibility with grove, and running the test/clippy suites myself rather than trusting PROGRESS.\n\n**Independently confirmed:**\n- `cargo test -p grove-cst config` → **22 passed, 0 failed**; all four new tests (5a–5d) present and green.\n- `cargo clippy -p grove-cst --all-targets -- -D warnings` → clean.\n- Both files end with a trailing newline (AC6).\n- The prior plan-review advisory is resolved: `DEFAULT_TRACE_RETAIN` is `pub const` in `pub mod config`, so `default_legacy_trace_retain()` compiles; `from_name` fns correctly promoted to `pub(crate)`.\n- `ExploreConfig::config_path` returns `.grove/explore.json` and is reused read-only — the migration never mutates the legacy file (verified via the mtime assertion in 5b).\n\n**Correctness:** the three-branch `load` cascade (config.json → migrate explore.json → `grove init` bail) satisfies AC1/AC4; legacy `mode` → `steering` remapping preserves all fields with no data loss (AC2); the one-time warning is structurally guaranteed by branch ordering + idempotency test 5b (AC3). Implementation faithfully follows T01's `Raw`-struct + `from_name` + atomic-save conventions.\n\nThree non-blocking advisories carried into the review (stderr-capture tradeoff in 5d, malformed-file `Err` semantics, minor default-fn duplication) — none warrant revision.\n\n**Status transitioned** to `review-approved`; `summaries.code_review` bound (verdict = approved)."
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 663,
+        "cacheRead": 47712,
+        "cacheWrite": 259,
+        "totalTokens": 48636,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.016575,
+          "cacheRead": 0.023856,
+          "cacheWrite": 0.00161875,
+          "total": 0.04205975
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "stop",
+      "timestamp": 1783189934563,
+      "responseId": "msg_011niaYGhSV3JtxJCzwC5K1B"
+    }
+  ]
+}

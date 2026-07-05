@@ -1,0 +1,163 @@
+{"line":"[T0:00:29:29] ─── phase 1/8 plan begin · GROVE-S03-T04 ───"}
+{"line":"╭ [T1:00:29:32] ✱ Let me start by running the banner and then follow the workflow step by step."}
+{"line":"│ → forge_banner"}
+{"line":"│ ← forge_banner ok 5L"}
+{"line":"╭ [T2:00:29:36] → forge_preflight"}
+{"line":"│ ← forge_preflight ok 1L"}
+{"line":"╭ [T3:00:29:39] ⚙ forge_store read"}
+{"line":"│ ← forge_store ok 4L"}
+{"line":"╭ [T4:00:29:43] ✱ Status is \"draft\" which is in the allowed set for plan phase. Proceeding.\n\nNow let me read the architect persona first, then load context."}
+{"line":"│ » Status is `draft` — within allowed set. Proceeding."}
+{"line":"│ ⌕ read .forge/personas/architect.md"}
+{"line":"│ ← read ok 46L"}
+{"line":"╭ [T5:00:29:48] » 🗻 **grove Architect** — I hold the shape of the whole. I give final sign-off before commit.\n\nNow loading task context:"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ ⚙ forge_store_query nlp"}
+{"line":"│ ← forge_store_query ok 26L ⇌75%"}
+{"line":"│ ← forge_artifact ok 11L ⇌89%"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 5"}
+{"line":"╭ [T6:00:29:50] → forge_artifact read"}
+{"line":"│ ⌕ read engineering/architecture/stack.md"}
+{"line":"│ ← read ok 67L"}
+{"line":"│ ← forge_artifact ok 11L ⇌89%"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 6"}
+{"line":"╭ [T7:00:29:54] ✱ I need to read the task-prompt more carefully. Let me use the outline/section approach."}
+{"line":"│ → forge_artifact outline"}
+{"line":"│ ← forge_artifact ok 7L"}
+{"line":"╭ [T8:00:29:57] → forge_artifact read"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 28L"}
+{"line":"│ ← forge_artifact ok 9L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 8"}
+{"line":"╭ [T9:00:30:01] → forge_artifact read"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 11L"}
+{"line":"│ ← forge_artifact ok 7L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 9"}
+{"line":"╭ [T10:00:30:05] ✱ Now I need to research the codebase. Let me look at the relevant files."}
+{"line":"│ » Now let me research the codebase:"}
+{"line":"│ → mcp__grove__outline"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ ← mcp__grove__outline ok 1L"}
+{"line":"│ ← forge_artifact ok 54L ⇌67%"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 10"}
+{"line":"╭ [T11:00:30:08] → mcp__grove__source"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 11"}
+{"line":"╭ [T12:00:30:11] → mcp__grove__source"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 12"}
+{"line":"╭ [T13:00:30:14] → mcp__grove__source"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 13"}
+{"line":"╭ [T14:00:30:17] → mcp__grove__source"}
+{"line":"│ ⌕ read cli/src/init.rs"}
+{"line":"│ ← read ok 69L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 14"}
+{"line":"╭ [T15:00:30:20] ✱ Now let me look at the config module since we need to understand the mode persistence:"}
+{"line":"│ → mcp__grove__outline"}
+{"line":"│ ← mcp__grove__outline ok 1L"}
+{"line":"╭ [T16:00:30:24] → mcp__grove__source"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 16"}
+{"line":"╭ [T17:00:30:28] → mcp__grove__source"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 17"}
+{"line":"╭ [T18:00:30:32] ✱ Now I have a good understanding. Let me look at how the `Target` enum relates to `Mode`, because we'll need to map between them:\n\n- `Target::Mcp` → `Mode::Mcp`\n- `Target::Skill` → `Mode::Skill`\n- `Target::Both` → `Mode::Both`\n- `Target::McpLlm` → `Mode::McpLlm`\n- `Target::Grammars` → `Mode::Grammars`\n\nNow let me look at the existing tests and `claude_section` / `agents_section` functions to understand what content they generate:"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 18"}
+{"line":"╭ [T19:00:30:37] ✱ Now I understand the codebase well. Let me also look at the `ModeChoice` enum to understand how it maps:"}
+{"line":"│ » Now I have a thorough understanding of the codebase. Let me look at a few more things:"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ ⌕ read cli/src/init.rs"}
+{"line":"│ ← read ok 102L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 19"}
+{"line":"╭ [T20:00:30:39] ⌕ read cli/src/init.rs"}
+{"line":"│ ← read ok 200L"}
+{"line":"╭ [T21:00:31:14] ✱ Now I have a thorough understanding of the codebase. Let me now write the plan.\n\nThe task requires:\n\n1. **`reconcile_harness(root, old_mode: Option<Mode>, new_mode: Mode) -> Result<Vec<String>>`** — a new function that:\n   - Knows the full harness mapping for each `Mode`\n   - Writes the new mode's harness files (`.mcp.json`, `CLAUDE.md`, `AGENTS.md`)\n   - Strips the old mode's residue if switching modes (e.g., going from `McpLlm` removes `AGENTS.md` grove block, reverts `.mcp.json` args)\n2. **`grove init --as <mode>`** will read the prior mode from `config.json`, invoke `reconcile_harness`, and save the new mode back\n3. **Bug 2 fix** ensures that switching from `mcp-llm` to `mcp` removes the grove-authored explore block from `AGENTS.md` and drops the `--explore` arg from `.mcp.json`\n4. **Sentinel-delimited content safety** means I only modify grove's own blocks, not user content\n5. **Transition-matrix test** will verify all possible mode switches across the five modes work consistently\n6. **Backward compatibility** keeps existing tests passing\n\nThe core logic for `reconcile_harness` needs to handle the complete harness mapping for each target mode.\n\nFor each mode, I'm defining what gets written: `Mcp` and `Both` write `.mcp.json` with `[\"serve\"]` and update `CLAUDE.md` but skip `AGENTS.md`; `Skill` only touches `CLAUDE.md`; `McpLlm` writes all three files including `AGENTS.md` with the `--explore` flag; `Grammars` writes nothing. When switching away from `McpLlm`, I need to strip the grove block from `AGENTS.md` and revert the args back to just `[\"serve\"]`.\n\nThe `reconcile_harness` function takes the old and new modes, then updates each file to match the new mode exactly—writing or rewriting grove's entry in `.mcp.json` with the right args, or removing it entirely if the new mode doesn't use MCP.\n\nFor `CLAUDE.md`, I need to write or update the sentinel block with content appropriate to `new_mode`, stripping it if `new_mode` is `Grammars` (which doesn't do steering). For `AGENTS.md`, the grove block should only exist when `new_mode == McpLlm`—otherwise it gets removed.\n\nLet me map out what each mode should have on disk: `Mcp` needs `.mcp.json` with the serve args, `CLAUDE.md` with Mcp content, and no grove block in `AGENTS.md`; `Skill` needs no grove entry in `.mcp.json`, `CLAUDE.md` with Skill content, and no grove block in `AGENTS.md`. I need helper functions to strip the grove entry from `.mcp.json` and remove steering blocks from markdown files, then update the `run` function to load the prior config before calling the harness writer.\n\nThe `run` function should load the old mode from `GroveConfig`, convert the target to a mode, call `reconcile_harness` with both the old and new modes, and save the updated config — though I need to think through how to handle the `explore` field when switching modes, since that comes from the TUI configuration."}
+{"line":"│ » Let me check the status of sibling tasks and how mode is currently persisted:"}
+{"line":"│ ⚙ forge_store_query query"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"│ ← forge_store_query ok 78L ⇌69%"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 21"}
+{"line":"╭ [T22:00:31:35] ✱ T01, T02, T03 are all committed. So the `GroveConfig` type with mode persistence is already in place. Now let me understand what `run` needs to do differently vs what it currently does.\n\nLet me also look at how the `Target` relates to `Mode` — we need a conversion.\n\nLooking at the current `run` function:\n- It doesn't read the existing config (no prior mode)\n- It calls `write_harness(root, target)` which only WRITES, never strips\n\nThe new `run` should:\n1. Load existing config (to get `old_mode: Option<Mode>`)\n2. Call `reconcile_harness(root, old_mode, new_mode)` to handle both writing and stripping based on the mode transition\n3. Save the updated config with the new `mode` field\n\nFor `reconcile_harness`, the logic depends on what mode we're transitioning to: if we're moving to Mcp or Both, we write the grove entry to `.mcp.json` with the appropriate serve command; if we're moving to McpLlm, we add the `--explore` flag; and if we're moving to Skill or Grammars, we strip the grove entry from `.mcp.json`. For `CLAUDE.md`, we write it unless the new mode is Grammars.  For `AGENTS.md`, we only write it if we're moving to McpLlm, otherwise we strip it. I'll need helper functions to remove the grove entry from `.mcp.json` and to strip sentinel blocks from files, plus a `Target::to_mode` conversion method. The `run` function will load the old config first to track what we're transitioning from. The core issue is figuring out how `run` accesses the explore config when saving. For non-McpLlm modes, it's straightforward—just save the mode without explore data. But for McpLlm, after the TUI writes `explore.json`, I need to either load that config or construct it with the explore data included. Let me check what T01 actually does with the TUI save behavior."}
+{"line":"│ → mcp__grove__outline"}
+{"line":"│ ← mcp__grove__outline ok 1L"}
+{"line":"╭ [T23:00:31:38] $ bash find . -name \"config_tui.rs\" | head -5; find . -name \"*.rs\" | xargs grep -l \"config_tui\" 2>/dev/null | head -10"}
+{"line":"│ ← bash ok 6L"}
+{"line":"╭ [T24:00:31:41] $ bash grep -n \"save\\|config\\.json\\|GroveConfig\\|mode\" cli/src/config_tui/update.rs | head -30"}
+{"line":"│ ← bash ok 31L"}
+{"line":"╭ [T25:00:31:44] $ bash grep -rn \"save\\|GroveConfig\\|config\\.json\" cli/src/config_tui/ | grep -v \"test\\|#\\[\" | head -20"}
+{"line":"│ ← bash ok 10L"}
+{"line":"╭ [T26:00:31:46] ⌕ read cli/src/config_tui/mod.rs"}
+{"line":"│ ← read ok 22L"}
+{"line":"╭ [T27:00:31:49] $ bash grep -n \"to_config\\|ExploreConfig\\|GroveConfig\" cli/src/config_tui/mod.rs | head -20"}
+{"line":"│ ← bash ok 7L"}
+{"line":"╭ [T28:00:31:54] ⌕ read cli/src/config_tui/mod.rs"}
+{"line":"│ ← read ok 32L"}
+{"line":"╭ [T29:00:32:00] ✱ I see — the `config_tui` saves an `ExploreConfig` object. But with T01 and T02 done, `GroveConfig` is the unified config. So when the TUI saves, it writes to `.grove/config.json` (presumably, after T01).\n\nWait, let me check... the `cfg.save(root)` in the TUI calls `ExploreConfig::save`. Let me check if `ExploreConfig` has its own save or if it goes through `GroveConfig`."}
+{"line":"│ $ bash grep -n \"impl ExploreConfig\\|fn save\\|fn load\\|config_path\" core/src/config.rs | head -20"}
+{"line":"│ ← bash ok 12L"}
+{"line":"╭ [T30:00:32:03] $ bash grep -n \"impl ExploreConfig\\|ExploreConfig {\" core/src/config.rs | head -10; grep -n \"fn save\\|fn load\\|fn config_path\" core/src/config.rs | head -15"}
+{"line":"│ ← bash ok 7L"}
+{"line":"╭ [T31:00:32:06] $ bash grep -n \"impl ExploreConfig\" core/src/*.rs"}
+{"line":"│ ⚠ bash failed: {\"content\":[{\"type\":\"text\",\"text\":\"(no output)\\n\\nCommand exited with code 1\"}],\"details\":{}}","warning":true}
+{"line":"╭ [T32:00:32:08] $ bash find . -name \"*.rs\" | xargs grep -l \"impl ExploreConfig\" 2>/dev/null"}
+{"line":"│ ← bash ok 2L"}
+{"line":"╭ [T33:00:32:11] $ bash grep -n \"fn save\\|fn load\\|fn config_path\" core/src/explore/config.rs | head -10"}
+{"line":"│ ← bash ok 5L"}
+{"line":"╭ [T34:00:32:13] ⌕ read core/src/explore/config.rs"}
+{"line":"│ ← read ok 42L"}
+{"line":"╭ [T35:00:32:35] ✱ So the TUI still saves to `explore.json`, not `config.json`. The `GroveConfig` has an `explore` field but the TUI still writes to `explore.json`. The migration in T02 handles the one-time migration from `explore.json` to `config.json`.\n\nWait - let me re-read the run function in `init.rs`. Currently it calls `crate::config_tui::run(root, None)` which saves `ExploreConfig` to `explore.json`. The `GroveConfig::load` method then handles the migration from `explore.json` to `config.json` when `config.json` doesn't exist.\nSo for the McpLlm first-time init flow, the TUI runs and saves to `explore.json`, then `write_harness` generates the other files, but I'm not seeing where `GroveConfig` actually gets persisted. The task mentions depending on T01 for mode persistence, but I need to check what T01 actually changed in the `run` function.\n\nLooking at what T04 needs to do: add a `reconcile_harness` function that handles all modes with strip capability, then in `run` load the prior mode from `config.json` before calling it, and save the new mode afterward. I also need to add a transition-matrix test. For McpLlm specifically, the strategy is to load the prior config first, then handle the mode persistence to `config.json`. Looking at the TUI's `to_config()` method to see whether it returns a `GroveConfig` or `ExploreConfig` after the T01 integration..."}
+{"line":"│ $ bash grep -n \"to_config\\|fn to_config\" cli/src/config_tui/model.rs | head -10"}
+{"line":"│ ← bash ok 2L"}
+{"line":"╭ [T36:00:32:37] ⌕ read cli/src/config_tui/model.rs"}
+{"line":"│ ← read ok 30L"}
+{"line":"╭ [T37:00:34:00] ✱ Good - TUI still returns `ExploreConfig` and saves to `explore.json`. T04 needs to handle the case where `run` has to save the mode to `config.json` after the TUI has run.\n\nFor T04, the `run` function needs to:\n1. Load existing `GroveConfig` to get the `old_mode`\n2. After the TUI potentially runs and saves `explore.json`, we need to reconstruct the full `GroveConfig` to save:\n   - For McpLlm: load `ExploreConfig` from `explore.json` (just saved by TUI), wrap it in `GroveConfig { mode: McpLlm, explore: Some(cfg) }`\n   - For other modes: save `GroveConfig { mode: ..., explore: None }` since the explore field won't serialize if absent\n\nWhen switching away from McpLlm, I'll discard the explore section rather than preserve it, keeping the config clean. Now I'm ready to start the actual implementation, beginning with converting the target to a mode.\n\nI'm defining a method that maps each target variant to its corresponding mode enum value. Then I need a function to strip out the steering block comments from files, removing the grove markers while keeping the rest of the content intact. Writing Rust code... Writing reconciliation logic... straightforward mapping between the Mode and Target enums. Then I need to update the `run` function to call `reconcile_harness` instead of the old `write_harness`, and make sure the mode gets persisted properly.\n\nThe new flow loads any existing config first to capture the old mode, then after the TUI runs and grammars are provisioned, it reconciles the harness with both the old and new modes before saving the updated config.\n\nFor the explore section, I'm deciding whether to preserve it when switching modes—if the user goes from McpLlm to Mcp, they'd lose their explore config unless I explicitly keep it, so I'll load explore data fresh for McpLlm targets but preserve the existing explore section from the old config for other modes. The issue is that after the TUI saves to `explore.json`, the next load will prefer `config.json` if it exists, so I need to migrate that saved config into `config.json` as a `GroveConfig` wrapper with the McpLlm mode set, then persist it.\n\nFor transitions to non-McpLlm modes, I'll preserve any existing explore config in the `GroveConfig` so it can be restored if the user switches back.\n\nNow I'm thinking through the test structure—I need to build a transition matrix test that covers all mode pairs, setting up a temp directory with a lock file and pre-existing harness for the source mode before testing the transition. test `run` with mode saving. The acceptance criteria calls for a table-driven transition-matrix test covering all ordered mode switches, verifying that `.mcp.json` args, `CLAUDE.md` block, `AGENTS.md` block, and the `serve` boot behavior are consistent after `init --as B`. Since `init::run` calls `provision_project` and `config_tui` which are hard to unit test, I could write a helper that does just reconciliation plus config save without those steps, then test that instead.\n\nI can test `reconcile_harness` directly and verify the config files are correct, then manually save a `GroveConfig` with the new mode and confirm `active_mode` returns it. For McpLlm mode, I'll need to seed a `grove.lock` since `write_harness_mcp_llm` requires it to get the languages for steering content. The full matrix is 5 modes × 4 transitions giving 20 ordered pairs, so I'll structure this as a table-driven test looping through each transition. Now I need to think through the `strip_steering_block` semantics more carefully, particularly what happens when stripping blocks. I need to handle the whitespace carefully when stripping the grove block. Since `write_steering_md` adds `\\n\\n` before the block and the block ends with `\\n`, I should trim the content before the block at its end and trim leading newlines from the content after, then reassemble with proper spacing to keep the host content clean.\n\nWhen the grove block is the entire file, I'll write an empty string to keep the file but leave it empty rather than deleting it. I'm also thinking through how `write_mcp_json` currently works—it calls `write_mcp_json_with` with a fixed set of parameters to always overwrite the grove entry.\n\nFor the `run` function, I need to handle the McpLlm non-TTY guard carefully. After the T04 changes, I should check the config mode instead of just looking for the explore.json file, so the condition properly reflects whether we're in McpLlm mode. Refining the guard condition to check if McpLlm is already configured, then adding logic to launch the TUI on first run and finally constructing the new config by loading any existing explore configuration."}
+{"line":"│ » Now I have enough context to write the plan. Let me check one more thing:"}
+{"line":"│ $ bash grep -n \"use grove_core\" cli/src/init.rs"}
+{"line":"│ ← bash ok 3L"}
+{"line":"╭ [T38:00:34:04] $ bash grep -rn \"pub use\\|pub mod\" core/src/lib.rs | head -20"}
+{"line":"│ ← bash ok 14L"}
+{"line":"╭ [T39:00:34:24] ✱ Good, `grove_core::config::{active_mode, GroveConfig, Mode, ModeChoice}` are all exported.\n\nNow I can write a thorough plan. Let me structure it:\n\n## Plan Summary\n\n### Files to Modify\n1. `cli/src/init.rs` — the main focus:\n   - Add `use grove_core::config::{GroveConfig, Mode, ModeChoice};`\n   - Add `use grove_core::ExploreConfig;`\n   - Add `Target::to_mode(self) -> Mode` method\n   - Add `strip_steering_block(root, filename) -> Result<()>`\n   - Add `strip_grove_entry_from_mcp_json(root) -> Result<()>`\n   - Add `reconcile_harness(root, old_mode: Option<Mode>, new_mode: Mode) -> Result<Vec<String>>`\n   - Update `run` to load the old config, call `reconcile_harness`, and save the new config\n   - Include transition-matrix tests and host-content-preserved tests\n\n### No changes to `core/src/config.rs` — `GroveConfig`, `Mode`, `active_mode` are already there from T01/T03.\n\n### Testing Strategy\n- Unit tests for `strip_steering_block` covering file-absent and block-absent cases\n\n, plus scenarios with host content before and after the block\n- Unit tests for `strip_grove_entry_from_mcp_json` with entry-absent and entry-present cases\n- Unit tests for `reconcile_harness` across each mode transition, verifying new writes and residue stripping\n- A transition-matrix test running 20 ordered mode pairs to assert harness consistency\n- An explicit host-content-preserved test validating the sentinel-delimited safety mechanism\n\nAll existing tests remain unaffected since they exercise functions that aren't being removed. The `write_harness` function will be kept private for now since `run` will delegate to `reconcile_harness` instead.\n\nBut I need to update the existing tests that directly call `write_harness` — like `grammars_target_writes_no_harness_files` and `skill_target_writes_steering_but_no_mcp_json` — to test `reconcile_harness` instead. Looking at AC #6, the `tests/cli.rs` init assertions should pass with only the necessary updates to reflect the new `config.json` write and reconciliation behavior."}
+{"line":"│ $ bash grep -n \"init\\|mcp\\|grammars\\|skill\\|reconcile\" tests/cli.rs | head -40"}
+{"line":"│ ← bash ok 2L"}
+{"line":"╭ [T40:00:34:26] $ bash find . -name \"*.rs\" -path \"*/tests/*\" | head -10"}
+{"line":"│ ← bash ok 2L"}
+{"line":"╭ [T41:00:34:28] $ bash grep -n \"init\\|mcp-llm\\|--as\\|reconcile\\|config\\.json\" cli/tests/cli.rs | head -40"}
+{"line":"│ ← bash ok 41L"}
+{"line":"╭ [T42:00:34:31] ⌕ read cli/tests/cli.rs"}
+{"line":"│ ← read ok 102L"}
+{"line":"╭ [T43:00:36:03] ✱ I now have enough context. The integration test at line 340 tests `init` for `mcp`, `grammars`, and `dry-run` targets. It doesn't test `--as skill`, `--as both`, or `--as mcp-llm`. The new `config.json` write doesn't add new files that would break the existing assertions (`.mcp.json`, `CLAUDE.md`, `grove.lock`) — it just writes `.grove/config.json` as a new file. The test doesn't assert `!config.json.exists()`, so it won't break.\nThe `grammars` test also won't be affected since it only checks for the absence of `.mcp.json` and `CLAUDE.md`, plus the presence of `grove.lock`, and doesn't validate the contents of `.grove/config.json`. Now I'm ready to outline the implementation steps: adding the necessary imports, creating a method to convert targets to modes, implementing a helper function to strip steering blocks, and continuing with the remaining setup logic. The existing unit tests that call `write_harness` need to be updated to use `reconcile_harness` instead, passing `None` for the old mode to indicate there's no prior configuration to reconcile from. For example, tests like `grammars_target_writes_no_harness_files` and `write_harness_mcp_llm_writes_mcp_json_explore_and_steering` would call `reconcile_harness(&dir, None, Mode::Grammars)` or `reconcile_harness(&dir, None, Mode::McpLlm)` respectively.\n\nThis is a material behavioral change to `grove init` since it fixes a bug and adds new cleanup capabilities when users switch modes, so a version bump is warranted and should be noted in the plan.\n\nFor the `reconcile_harness` function signature, I can keep it private since tests in the same file can access private functions through `use super::*;`, so there's no need to expose it with `pub(crate)`."}
+{"line":"│ » Now I have all the information I need to write a thorough plan. Let me write it:"}
+{"line":"│ → forge_artifact write"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╭ [T44:00:36:05] ⚙ forge_store update-status"}
+{"line":"│ ← forge_store ok 1L"}
+{"line":"╭ [T45:00:36:24] » Now write the plan summary sidecar:"}
+{"line":"│ → forge_artifact write"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╭ [T46:00:36:26] ⚙ forge_store set-summary"}
+{"line":"│ ← forge_store ok 3L"}
+{"line":"╭ [T47:00:36:36] ✱ I need to shorten the key_changes[3] which is:\n\"Add reconcile_harness(root, old_mode: Option<Mode>, new_mode: Mode) -> Result<Vec<String>> as the single harness writer: writes or strips each of .mcp.json, CLAUDE.md, AGENTS.md to match new_mode exactly\"\n\nLet me count: \"Add reconcile_harness(root, old_mode: Option<Mode>, new_mode: Mode) -> Result<Vec<String>> as the single harness writer: writes or strips each of .mcp.json, CLAUDE.md, AGENTS.md to match new_mode exactly\" = 203 chars. \n\nI'll trim it down to fit the 200 character limit."}
+{"line":"│ → forge_artifact write"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╭ [T48:00:36:39] ⚙ forge_store set-summary"}
+{"line":"│ ← forge_store ok 1L"}
+{"line":"╭ [T49:00:36:55] » Plan phase complete. Here's a summary of what was produced:\n\n---\n\n## Plan Summary — GROVE-S03-T04\n\n🗻 **grove Architect** — I hold the shape of the whole. I give final sign-off before commit.\n\n### What this plan sets out to build\n\nA single `reconcile_harness(root, old_mode: Option<Mode>, new_mode: Mode) -> Result<Vec<String>>` function that replaces the current write-only `write_harness` with a bidirectional (write + **strip**) harness reconciler. This closes bug 2 (orphaned `AGENTS.md` when leaving `mcp-llm` mode) and the whole `A→B` transition-bug class.\n\n### Key design decisions\n\n| Decision | Rationale |\n|---|---|\n| **Strip via two new helpers** (`strip_steering_block`, `strip_grove_entry_from_mcp_json`) | Minimal, surgical change — never touches host content, only grove's sentinel-delimited blocks and grove's own `.mcp.json` key |\n| **`old_mode` accepted but not required for correctness** | Function always drives on-disk state toward `new_mode`; `old_mode` kept for future optimisations |\n| **`Target::to_mode(self) -> Mode`** | Bridges the clap-facing `Target` enum and the store `Mode` enum without duplicating logic |\n| **`run` saves `GroveConfig` after reconcile** | Mode is now persisted verbatim on every `init --as` run; explore config preserved across mode switches |\n| **No changes to `core/src/config.rs` or `cli/tests/cli.rs`** | All T01/T03 primitives are already in place; the existing integration test is unaffected |\n\n### Files to modify\n\n- **`cli/src/init.rs`** — all changes live here: new helpers, `reconcile_harness`, updated `run`, updated/new tests (20-pair transition-matrix + host-content preservation + active_mode round-trip)\n\n### Test coverage\n\n20 ordered `(A→B)` transitions × 3 artifact assertions + explicit host-content-safety test + active_mode round-trip. Existing tests updated to call `reconcile_harness(dir, None, Mode::*)` (same semantics, new name).\n\n**Materiality**: This is a material change (bug fix + new behaviour to `grove init`); version bump required at release."}

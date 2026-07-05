@@ -1,0 +1,1312 @@
+{
+  "schema": "forge-subagent-transcript/v1",
+  "startedAt": "2026-07-04T18:19:34.023Z",
+  "finishedAt": "2026-07-04T18:22:30.783Z",
+  "cwd": "/home/boni/src/grove-engineering/grove",
+  "persona": "engineer",
+  "tag": "GROVE-S03-T02__plan",
+  "prompt": "Read the workflow below and follow it. Task ID: GROVE-S03-T02.\n\n---\n\n---\nrequirements:\n  reasoning: High\n  context: Medium\n  speed: Low\naudience: subagent\nphase: plan\ncontext:\n  architecture: true\n  prior_summaries: delta\n  persona: summary\n  master_index: false\n  diff_mode: false\ndeps:\n  personas: [architect]\n  skills: [architect, generic]\n  templates: [PLAN_TEMPLATE, TASK_PROMPT_TEMPLATE]\n  sub_workflows: [review_plan]\n  kb_docs: [architecture/stack.md]\n  config_fields: [commands.test, paths.engineering]\n---\n\n\n# Plan Task\n## Algorithm\n\n```\n\n0a. Pre-flight Gate Check:\n   - **Entity-mode resolution:** read the kickoff arguments. `--task {id}` → `entity_kind = \"task\"`, `record_id = {id}`. `--bug {id}` → `entity_kind = \"bug\"`, `record_id = {id}`. All store-cli calls below substitute `{entity_kind}` and `{record_id}` for the literal \"task\"/{taskId} placeholders.\n   - Run: `node .forge/tools/preflight-gate.cjs --phase plan --{entity_kind} {record_id}`\n   - Exit 1 (gate failed) → print stderr and HALT. Do not proceed; do not attempt to produce the artifact.\n   - Exit 2 (misconfiguration) → print stderr and HALT.\n   - Exit 0 → continue.\n\n0b. Pipeline Step Guard (user-invoked state check):\n   - If `--force` is present in the invocation arguments, skip this step entirely.\n   - If `entity_kind == \"bug\"`, skip this step entirely (bug state is managed by meta-fix-bug.md).\n   - Read current task state:\n     `node .forge/tools/store-cli.cjs read task {record_id} --fields status`\n   - Extract the `status` field from the JSON output.\n   - Allowed states for this phase: `draft`, `planned`, `plan-revision-required`.\n   - If the current status is NOT in the allowed set:\n     Print the following and HALT (do not proceed):\n     `× Task {record_id} is in state '{status}' — /forge:plan cannot run from this state; a reset or reassignment must complete first. To run the full pipeline: /forge:run-task {record_id}`\n\n1. Load Context:\n   - Read `.forge/personas/architect.md` first; print the persona identity line (emoji, name, tagline) to stdout before any other tool use.\n   - store-cli verbs: `read` | `list` | `write` | `emit` | `update-status` | `set-summary` | `describe` | `nlp` | `query` | `delete` — there is no `get`/`set`/`find`. See `_fragments/store-cli-verbs.md` for full notes; run `--help` before improvising.\n   - Read task prompt (source of truth)\n   - Query the store for this task and any related entities:\n     ```sh\n     node .forge/tools/store-cli.cjs nlp \"{taskId} with sprint with feature\"\n     ```\n     Use store results directly if they include title, status, sprint, and excerpt.\n   - Read the architecture summary from your injected context (if present).\n   - Read business domain docs relevant to the task\n   - Read stack checklist\n\n2. Research:\n   - Identify files for modification (Glob, Grep, Read)\n   - Map existing patterns in the target area\n   - Identify existing tests to be maintained or expanded\n   - Identify whether the change is **material** (triggers version bump) or not:\n     - Bug fixes to any command, hook, tool spec, or workflow → material\n     - Tool-spec changes that alter generated tool behaviour → material\n     - Command-file changes that alter behaviour → material\n     - Hook changes → material\n     - Schema changes to `.forge/store/` or `.forge/config.json` → material\n     - Docs-only changes → NOT material\n\n3. Plan:\n   - Write the plan via forge_artifact:\n     `forge_artifact({ command:\"write\", entity:\"{entity_kind}\", entityId:\"{record_id}\", artifact:\"plan\", content:\"<markdown>\" })`\n     where `<markdown>` follows the project plan template.\n   - Ensure inclusion of: Objective, Approach, Files to Modify, Data Model Changes, Testing Strategy, Acceptance Criteria, and Operational Impact\n\n4. Knowledge Writeback:\n   - If new patterns were discovered, update architecture or business domain docs\n\n5. Finalize:\n   - Transitions:\n     - **Task mode** — legal target from this step: `draft → planned`. Out-of-band escapes (any state): `plan-revision-required`, `code-revision-required`, `blocked`, `escalated`, `abandoned`.\n       Update status: `node .forge/tools/store-cli.cjs update-status task {taskId} status planned`\n     - **Bug mode** — NO status write. The bug remains `in-progress` until the commit phase transitions it to `fixed`. Writing `bug.status` here violates `meta-fix-bug.md § Iron Laws #2`.\n   - **Do NOT emit a phase event yourself.** The orchestrator owns event emission — it composes the canonical event from runtime telemetry (model, provider, tokens, wall times) plus the SUMMARY you write in the next step. Subagents that call `store-cli emit` for phase events hallucinate runtime facts (see Plan 11 / Slice 2). Write the SUMMARY and return.\n\n6. Emit Summary Sidecar:\n   - Write the plan summary via forge_artifact. Shape:\n     ```json\n     {\n       \"objective\":   \"<one sentence — what this plan sets out to build>\",\n       \"key_changes\": [\"<up to 12 bullets, 200 chars each>\"],\n       \"verdict\":     \"n/a\",\n       \"written_at\":  \"<current ISO 8601 timestamp>\",\n       \"artifact_ref\":\"PLAN.md\"\n     }\n     ```\n     Task mode:\n     `forge_artifact({ command:\"write\", entity:\"{entity_kind}\", entityId:\"{record_id}\", artifact:\"plan-summary\", content:\"<JSON>\" })`\n     Bug mode:\n     `forge_artifact({ command:\"write\", entity:\"{entity_kind}\", entityId:\"{record_id}\", artifact:\"plan-summary\", content:\"<JSON>\" })`\n   - Register the summary with the store (task mode):\n     `forge_store({ command:\"set-summary\", args:[\"{record_id}\", \"plan\"] })`\n     Or (bug mode):\n     `forge_store({ command:\"set-bug-summary\", args:[\"{record_id}\", \"plan\"] })`\n   - If the set-summary call exits non-zero, fix the sidecar JSON and retry. Do not proceed without a valid summary.\n\n7. Post-Phase Output Guard: satisfy the `outputs` block before returning.\n```\n\n```outputs phase=plan\nartifact {engineering}/{sprint}/{task}/PLAN.md min=200\nrequire summaries.plan.verdict == n/a\n```\n\n<!-- See _fragments/iron-laws.md for Iron Laws section structure guidance -->\n## Iron Laws\n\n- Follow the Algorithm step by step. No code, pseudocode, or implementation sketches in the plan.\n- Read `.forge/personas/architect.md` first; print the persona identity line (emoji, name, tagline) to stdout before any other tool use.\n- All store I/O via `forge_store` (or `node .forge/tools/store-cli.cjs`). Never edit `.forge/store/*.json` directly.\n\n## Store-Write Verification\n\n<!-- See _fragments/store-write-verification.md for the canonical block content -->\n\n## Friction Emit\nEmit `type:friction` `{workflow:plan-task, persona:architect, issue}` per `_fragments/friction-emit.md`.\n\n<!-- See _fragments/generation-instructions.md for Generation Instructions template -->",
+  "model": "claude-sonnet-4-6",
+  "provider": "anthropic",
+  "exitCode": 0,
+  "stopReason": "stop",
+  "errorMessage": null,
+  "usage": {
+    "input": 22,
+    "output": 9301,
+    "cacheRead": 440763,
+    "cacheWrite": 26761,
+    "cost": 0.37216365,
+    "contextTokens": 36516,
+    "turns": 20
+  },
+  "messageCount": 47,
+  "messages": [
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Let me start by running the banner and then following the workflow steps.",
+          "thinkingSignature": "EpECCmUIDxgCKkAj+3H0hyJTbuwCxwQT0n/9dLO1Zgq0oFbTHIz8HktJTOnt6vRLqQ1+/OvAqLiVM8Ffhl1W235x3+acNL40pG0YMhFjbGF1ZGUtc29ubmV0LTQtNjgAQgh0aGlua2luZxIMdROSbO7/NJDSxg3oGgwG/+uUDSQcod5/WMMiMDQEoAmnpzli6zCI/rHV+FpEjTBuXrglJsKlzKwit8Tq7DkKznnMWhV0aFVUJBQ7qipaAg4mdOf3Bzn+Fb7g8PbvM5wuh7CuBQjK0f1PQ5me+sGCeKogP+lRgrmeVWGQT7sHFEBP6v2716Gco6WME8X12v0KTCSCTymC7wvJ+0IJb1JE31WG+/QYHYyqGAE="
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_019e3chagjZCspBcyFhbuyqX",
+          "name": "forge_banner",
+          "arguments": {
+            "name": "forge"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 3,
+        "output": 82,
+        "cacheRead": 9273,
+        "cacheWrite": 2250,
+        "totalTokens": 11608,
+        "cost": {
+          "input": 0.000009,
+          "output": 0.00123,
+          "cacheRead": 0.0027819,
+          "cacheWrite": 0.0084375,
+          "total": 0.012458400000000001
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 26
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189174027,
+      "responseId": "msg_019WMfs8HviEx1fDvATM7HUo"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_019e3chagjZCspBcyFhbuyqX",
+      "toolName": "forge_banner",
+      "content": [
+        {
+          "type": "text",
+          "text": "\n  \u001b[38;2;255;230;80m✦  \u001b[38;2;200;80;20m▄\u001b[38;2;230;100;30m▓▓▓▓▓\u001b[38;2;200;80;20m▄  \u001b[38;2;255;160;40m≋ ≋ ≋\u001b[0m\n  🔨  \u001b[1m\u001b[38;2;255;160;40mFORGE\u001b[0m  \u001b[2m\u001b[38;2;255;160;40m鍛冶\u001b[0m   \u001b[2m\u001b[38;2;255;160;40mmaking · heat · craft\u001b[0m\n\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189176437
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01FYEAdSdyPdhfiotGP5AMLX",
+          "name": "forge_preflight",
+          "arguments": {
+            "phase": "plan",
+            "task": "GROVE-S03-T02"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 78,
+        "cacheRead": 11523,
+        "cacheWrite": 258,
+        "totalTokens": 11860,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.00117,
+          "cacheRead": 0.0034568999999999997,
+          "cacheWrite": 0.0009675,
+          "total": 0.005597399999999999
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189176437,
+      "responseId": "msg_01K4psWzgQRGd9tFhaJoo26n"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01FYEAdSdyPdhfiotGP5AMLX",
+      "toolName": "forge_preflight",
+      "content": [
+        {
+          "type": "text",
+          "text": "Preflight passed."
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189178939
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01NHM9zxyS2GNvmR2WSwggnf",
+          "name": "forge_store",
+          "arguments": {
+            "command": "read",
+            "args": [
+              "task",
+              "GROVE-S03-T02",
+              "--json"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 85,
+        "cacheRead": 11781,
+        "cacheWrite": 94,
+        "totalTokens": 11961,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.001275,
+          "cacheRead": 0.0035342999999999998,
+          "cacheWrite": 0.0003525,
+          "total": 0.005164800000000001
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189178939,
+      "responseId": "msg_019XHg8SQUxAbFKVHh1sYfEo"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01NHM9zxyS2GNvmR2WSwggnf",
+      "toolName": "forge_store",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\n  \"taskId\": \"GROVE-S03-T02\",\n  \"title\": \"Legacy .grove/explore.json migration on load (deprecated immediately)\",\n  \"status\": \"draft\",\n  \"sprintId\": \"GROVE-S03\",\n  \"estimate\": \"M\",\n  \"pipeline\": \"default\",\n  \"dependencies\": [\n    \"GROVE-S03-T01\"\n  ]\n}"
+        }
+      ],
+      "details": {
+        "compression": {
+          "tool": "store:read",
+          "before": 73,
+          "after": 69,
+          "saved": 5
+        }
+      },
+      "isError": false,
+      "timestamp": 1783189181051
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Status is \"draft\" which is in the allowed set. Let me continue with loading context.",
+          "thinkingSignature": "EpwCCmUIDxgCKkDVwa36dg5eBL6byTP3xJTPEzSRz18rYN1Zv04UfpnwZLxanAStK/OHwmobUTqZVMdvQ14EI9UfVAZ0xIHKie5NMhFjbGF1ZGUtc29ubmV0LTQtNjgAQgh0aGlua2luZxIMOhqgQ/wdKYu35nf+GgxDIVnwmLJG9o4h1YIiMHtfqNhm+ykpQUsNsIn2ajHXLQ/gOo3vzaxHI/cDL3ZJN2i4Cch3DeimtRwWPS1QkCplq/U6+B7iNg3Ej2J7oC92cALMmkoWoB+flxMuQSo2XZwhhACrxkNSCRVfBW/2TXM6k7IKU3UV0mUFvsKc5CSzAtBFau4qXNJ/voXnj1bVyLIdkiUI39GOnvxRto//3qVwl7uRe74YAQ=="
+        },
+        {
+          "type": "text",
+          "text": "Status is `draft` — allowed. Now let me load the architect persona and task context."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01VGV7pcBHQG7Mv8PNpZG5tH",
+          "name": "read",
+          "arguments": {
+            "path": ".forge/personas/architect.md"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01QpyV7PZGJBtgFGS5kCRns3",
+          "name": "forge_store_query",
+          "arguments": {
+            "command": "nlp",
+            "args": [
+              "GROVE-S03-T02 with sprint with feature"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 182,
+        "cacheRead": 11875,
+        "cacheWrite": 193,
+        "totalTokens": 12251,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.0027300000000000002,
+          "cacheRead": 0.0035624999999999997,
+          "cacheWrite": 0.00072375,
+          "total": 0.0070192499999999994
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 31
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189181051,
+      "responseId": "msg_01FyrLgBQz4mC2HsZSxwkXxz"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01VGV7pcBHQG7Mv8PNpZG5tH",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "🗻 **grove Architect** — I hold the shape of the whole. I give final sign-off before commit.\n\n## Identity\n\nI am the grove Architect. I plan sprints, approve completed tasks, and maintain architectural coherence across the project. I have final sign-off before code is committed.\n\nRun this command using the Bash tool as my first action (before any file reads or other tool use):\n```bash\nnode .forge/tools/banners.cjs north\n```\n## What I Need to Know\n\n- The full architecture of the project\n- The business domain and entity model\n- The current sprint's goals and priorities\n- Historical complexity patterns from previous sprints\n- Cross-cutting concerns and technical debt\n\n## What I Produce\n\n- Sprint manifests — task breakdown with dependencies, estimates, priorities\n- `ARCHITECT_APPROVAL.md` — final sign-off on completed tasks\n- Architecture decisions and updates to knowledge base\n\n## Capabilities\n\n- Plan sprints with dependency graphs\n- Approve or reject completed tasks\n- Update architecture documentation\n- Identify cross-task conflicts and dependencies\n## Project Context\n\n- **Entity model and service boundaries**: See `engineering/architecture/` and `engineering/architecture/../business-domain/entity-model.md`\n- **ID format and prefix convention**: Task IDs use the GROVE prefix from `.forge/config.json`\n- **Technical debt areas**: \n- **Deployment topology**: See `engineering/architecture/deployment.md`\n- **Operational impact categories**: \n\n## Commands\n\n- **Syntax check**: `cargo test --release --locked`\n- **Lint**: `cargo clippy -- -D warnings`\n\n## Installed Skill Wiring\n\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783189184810
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01QpyV7PZGJBtgFGS5kCRns3",
+      "toolName": "forge_store_query",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\n  \"results\": [\n    {\n      \"id\": \"GROVE-S03-T02\",\n      \"title\": \"Legacy .grove/explore.json migration on load (deprecated immediately)\",\n      \"status\": \"draft\",\n      \"type\": \"task\",\n      \"relationships\": {\n        \"sprintId\": \"GROVE-S03\"\n      }\n    },\n    {\n      \"id\": \"GROVE-S03\",\n      \"title\": \".grove/config.json declared mode + grove doctor health check\",\n      \"status\": \"active\",\n      \"type\": \"sprint\",\n      \"relationships\": {\n        \"sprintId\": \"GROVE-S03\"\n      }\n    }\n  ],\n  \"query\": \"GROVE-S03-T02 with sprint with feature\",\n  \"path\": \"intent-nlp\",\n  \"totalMatched\": 1,\n  \"returned\": 2\n}"
+        }
+      ],
+      "details": {
+        "compression": {
+          "tool": "query",
+          "before": 660,
+          "after": 165,
+          "saved": 75
+        }
+      },
+      "isError": false,
+      "timestamp": 1783189184810
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "🗻 **grove Architect** — I hold the shape of the whole. I give final sign-off before commit."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_017pPZjnttLT8ZARbMSMufQo",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T02",
+            "artifact": "task-prompt"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01QBKgzj4h4qb5p73zFTYMwt",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "sprint",
+            "entityId": "GROVE-S03",
+            "artifact": "sprint-requirements"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 236,
+        "cacheRead": 12068,
+        "cacheWrite": 838,
+        "totalTokens": 13143,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.00354,
+          "cacheRead": 0.0036203999999999997,
+          "cacheWrite": 0.0031425,
+          "total": 0.0103059
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189184811,
+      "responseId": "msg_01C4YboC33xAGS8gZQpWV8md"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_017pPZjnttLT8ZARbMSMufQo",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "# GROVE-S03-T02: Legacy `.grove/explore.json` migration on load (deprecated immediately)\n## Objective\n## Acceptance Criteria\n## Context\n## Artifacts Involved\n## Operational Impact\n- **Version bump:** required at release — this changes on-disk behaviour for\n- **Regeneration:** no explicit user action — migration is automatic on next\n- **Security scan:** not required.\n\n[55 body lines omitted — 64 total]"
+        }
+      ],
+      "details": {
+        "compression": {
+          "tool": "artifact:read",
+          "before": 854,
+          "after": 110,
+          "saved": 87
+        }
+      },
+      "isError": false,
+      "timestamp": 1783189189317
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01QBKgzj4h4qb5p73zFTYMwt",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "# Sprint Requirements — GROVE-S03\n## Background & Evidence\n   - **Bug 1 — sticky explore surface.** `mcp-llm → mcp` rewrites `.mcp.json`\n   - **Bug 2 — orphaned `AGENTS.md`.** Only `mcp-llm` writes `AGENTS.md`; no\n## Decisions (resolved from intake)\n| # | Question | Decision |\n| D1 | Sprint composition | **Both docs in one sprint.** ADR 0002 (config consolidation) is the foundation; `grove doctor` tasks depend on it and are **sequenced after** the config work. |\n| D2 | `explore.mode → steering` rename | **Included in this sprint.** Done now while `config.rs` is already being refactored, folded into the migration — avoids a second migration pass and removes the naming ambiguity `doctor`'s output would otherwise inherit. |\n| D3 | `grove doctor` MVP gates | **All four capabilities are must-have:** harness-drift check (the headline), explore provider probe, `grove.lock` sha256 verify, and `--json` + CI exit code. |\n| D4 | Legacy `.grove/explore.json` migration | **Deprecate immediately.** The one-time auto-migrate-on-read (load legacy → synthesize `mode: mcp-llm` → rewrite forward to `config.json`) is retained so no deployed `mcp-llm` project silently drops to Standard on upgrade, but the legacy path is **deprecated as of S03**: it emits a deprecation warning on use and `doctor` warns when a legacy file is present without `config.json`. It is **not** carried indefinitely. |\n## Goals\n## In Scope\n### 1. `GroveConfig` — declared mode as the source of truth [must-have]\n### 2. Legacy migration + `explore.mode → steering` rename [must-have]\n### 3. `serve` reads the declared mode [must-have]\n### 4. `reconcile_harness` — one writer converges all harness files [must-have]\n### 5. `config` TUI — display-consistent, read-only on mode [must-have]\n### 6. `grove doctor` — read-only config-mode health check [must-have]\n- **Universal checks** run for every project: grove version; `config.json`\n- **`grove.lock` sha256 verify (new primitive):** when a lockfile is present,\n- **Explore-mode checks** (resolved/forced explore): explore section validates;\n- **`--json`** emits the machine-readable report (`checks[]` + `summary`);\n- **Exit code:** 0 when all checks pass (warnings allowed), **non-zero** on any\n## Out of Scope\n- **Mode changes from the `config` TUI.** `grove init --as` remains the only way\n- **New config tunables beyond `mode`.** This sprint consolidates existing\n- **Auto-remediation in `doctor`** (pulling a missing model, running\n- **Changes to the seven structural tools' contracts** or the `check` verb\n- **Windows-specific cache-path checks** beyond what `dirs::cache_dir()`\n- **Probing multiple explore configs at once** — `doctor` inspects one\n- **Indefinite legacy `explore.json` support** — deprecated immediately (D4).\n## Nice-to-Have *(attempt if must-haves complete)*\n## Constraints\n- **Workspace altitude:** engine logic (`GroveConfig`, migration, `core::doctor`,\n- **Single harness writer:** `reconcile_harness` (called only from `init`) is the\n- **`.grove/` is grove's own directory:** writing `.grove/config.json` is\n- **Toolchain:** cargo 1.87; crates.io deps only (no tree-sitter workspace path\n- **Conventions:** conventional commits, files end with a newline, no\n## Risks\n| Risk | Likelihood | Mitigation |\n| Migration bug drops a deployed `mcp-llm` project to Standard on upgrade (the exact failure ADR 0002 warns of) | High | Migration is an explicit must-have with its own acceptance test; auto-migrate-on-read synthesizes `mode: mcp-llm` from legacy `explore.json` before any surface decision |\n| `reconcile_harness` strips or corrupts host-authored content in `CLAUDE.md` / `AGENTS.md` / `.mcp.json` | High | Operate only on sentinel-delimited grove blocks and grove's own `.mcp.json` entry; never touch host content; cover with transition-matrix + host-content-preserved tests |\n| Transition matrix is combinatorial (5 modes → 20 ordered switches) and easy to under-test | Medium | One table-driven test enumerating every `A → B`, asserting all four artifacts consistent after a clean `init` and drift-detected on hand-induced mismatch (shared fixtures with `doctor`'s harness-consistency test) |\n| `doctor` and `serve` drift in how they resolve the active mode | Medium | Shared `active_mode(root, force)` helper is the single resolver both call |\n| New `grove.lock` sha256 verify is a fresh primitive (not reusing an existing one) | Medium | Isolate as a small, unit-tested function; only runs when a lockfile is present |\n| Rename `explore.mode → steering` breaks existing `.grove/explore.json` on read | Medium | Migration maps the old key forward as part of the one-time rewrite; covered by a migration test |\n| `config` TUI inert-state rendering interacts with existing model-list dropdown / tap toggle | Low | TUI change is display-only (badge + greyed fields); no new mutation paths |\n## Carry-Over from GROVE-S02\n| Item | Status | Notes |\n| mcp-llm mode / `ExploreConfig` / explore surface / health-gated fallback | Active (built) | S03 consolidates `ExploreConfig` into `GroveConfig.explore`, replaces the `explore.json.exists()` surface trigger with declared `mode`, and preserves the S02 startup-probe fallback semantics |\n| `grove config` TUI (model-list dropdown, tap toggle) | Active (built) | S03 adds a mode badge + inert-state rendering; does not add a mode selector |\n| mcp-llm still experimental / unreleased | Active | S03 hardens its configuration story (declared mode, migration, doctor) but does not change its experimental status |\n\n[211 body lines omitted — 263 total]"
+        }
+      ],
+      "details": {
+        "compression": {
+          "tool": "artifact:read",
+          "before": 4494,
+          "after": 1500,
+          "saved": 67
+        }
+      },
+      "isError": false,
+      "timestamp": 1783189189317
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_018t4RriPWW1tnYo1Wd2DcPG",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T02",
+            "artifact": "task-prompt",
+            "section": "Objective"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_019PuNw1x4S4fpySxwcByjBC",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "outline",
+            "entity": "task",
+            "entityId": "GROVE-S03-T02",
+            "artifact": "task-prompt"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 229,
+        "cacheRead": 12906,
+        "cacheWrite": 1974,
+        "totalTokens": 15110,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.003435,
+          "cacheRead": 0.0038718,
+          "cacheWrite": 0.0074025,
+          "total": 0.014712300000000001
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189189317,
+      "responseId": "msg_01ECvVPRc8PvQrwJgmjQdiie"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_018t4RriPWW1tnYo1Wd2DcPG",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "## Objective\n\nEnsure projects created before `.grove/config.json` existed keep working after\nupgrade. When `config.json` is absent but the legacy `.grove/explore.json` is\npresent, `GroveConfig::load` migrates it forward once — synthesising\n`mode: mcp-llm`, mapping the old `explore.mode` key to `explore.steering`, and\nrewriting to `config.json`. Without this, every deployed `mcp-llm` project would\nsilently drop to Standard on upgrade (the exact failure ADR 0002 warns of). Per\nintake decision **D4**, the legacy path is **deprecated immediately**: it warns\non use and is documented as slated for removal — not carried indefinitely.\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189193985
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_019PuNw1x4S4fpySxwcByjBC",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "GROVE-S03-T02/task-prompt\n# GROVE-S03-T02: Legacy .grove/explore.json migration on load (deprecated immediately)  [1-64]\n  ## Objective  [9-19]\n  ## Acceptance Criteria  [20-41]\n  ## Context  [42-49]\n  ## Artifacts Involved  [50-56]\n  ## Operational Impact  [57-64]"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189193985
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_015NUqgfu6Vm1tv5eqDmdcPo",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T02",
+            "artifact": "task-prompt",
+            "section": "Acceptance Criteria"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01TdQR6ywtYug8XYV1XdAGzP",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T02",
+            "artifact": "task-prompt",
+            "section": "Context"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 248,
+        "cacheRead": 14880,
+        "cacheWrite": 561,
+        "totalTokens": 15690,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.00372,
+          "cacheRead": 0.004464,
+          "cacheWrite": 0.00210375,
+          "total": 0.01029075
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189193985,
+      "responseId": "msg_013T3zUBcawAWnRCoLK8uQ5F"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_015NUqgfu6Vm1tv5eqDmdcPo",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "## Acceptance Criteria\n\n1. `GroveConfig::load(root)`: if `config.json` exists, load it (T01 behaviour);\n   else if legacy `.grove/explore.json` exists, load + validate it, synthesise a\n   `GroveConfig { version: 1, mode: mcp-llm, explore: Some(<migrated>) }`, and\n   **rewrite forward** to `.grove/config.json` atomically.\n2. The migration maps the legacy `explore.mode` steering key to\n   `explore.steering` (the T01 rename), preserving the steering level.\n3. On migration, a **deprecation warning** is emitted (stderr) stating the\n   legacy `.grove/explore.json` is deprecated and that grove has migrated it to\n   `.grove/config.json`; the warning is a one-time consequence of the rewrite\n   (subsequent loads read `config.json` and do not warn).\n4. When neither file exists, `load` returns the same actionable\n   \"run `grove init`\" steer, unchanged.\n5. Tests: (a) a legacy `explore.json` fixture (with old `mode` key) migrates to a\n   `config.json` with `mode: mcp-llm` and `explore.steering` set; (b) after\n   migration, `config.json` exists and a second `load` reads it without touching\n   the legacy file; (c) a project with `config.json` already present ignores any\n   stale `explore.json`; (d) the deprecation warning path is exercised.\n6. `cargo build` warning-clean, `cargo clippy -- -D warnings` clean, `cargo test`\n   green. Files end with a newline.\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189198107
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01TdQR6ywtYug8XYV1XdAGzP",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "## Context\n\nImplements item 2 (migration half) of `SPRINT_REQUIREMENTS.md` and ADR 0002\n§Migration. Decision **D4**: retain the one-time auto-migrate + warning; do not\nsupport the legacy file indefinitely. A concrete removal-target version is a\nsprint nice-to-have, not required here. Depends on **T01** (the `GroveConfig`\ntype, integration `Mode`, and the `steering` field must exist).\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189198107
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_014VZ4LAGBZCPMa9Kr9Dj8GA",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T02",
+            "artifact": "task-prompt",
+            "section": "Artifacts Involved"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_011acZar2brMcJ4taRNyd6xM",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T02",
+            "artifact": "task-prompt",
+            "section": "Operational Impact"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 250,
+        "cacheRead": 15441,
+        "cacheWrite": 831,
+        "totalTokens": 16523,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.0037500000000000003,
+          "cacheRead": 0.0046323,
+          "cacheWrite": 0.00311625,
+          "total": 0.01150155
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189198108,
+      "responseId": "msg_01LgvyGRuX2rRpTjdqC5rcs9"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_014VZ4LAGBZCPMa9Kr9Dj8GA",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "## Artifacts Involved\n\n- `core/src/config.rs` — `GroveConfig::load` migration branch; deprecation\n  warning helper.\n- `core/src/explore/config.rs` — reuse `ExploreConfig::load` to read the legacy\n  file (its `config_path`/`load` stay for the legacy read).\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189202410
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_011acZar2brMcJ4taRNyd6xM",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "## Operational Impact\n\n- **Version bump:** required at release — this changes on-disk behaviour for\n  existing `mcp-llm` projects (introduces `config.json`, deprecates\n  `explore.json`).\n- **Regeneration:** no explicit user action — migration is automatic on next\n  `serve`/`load`; the deprecation warning informs the user.\n- **Security scan:** not required."
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189202410
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Now let me look at the existing code to understand the architecture. I need to look at:\n1. `core/src/config.rs` - where `GroveConfig` is (T01 work)\n2. `core/src/explore/config.rs` - the legacy `ExploreConfig::load`\n\nLet me first check what T01 produced, and then understand the existing code structure.",
+          "thinkingSignature": "EvgDCmUIDxgCKkALpnuyD0V+NFjyb2PqjYGTxbq3BpQKsqMtXLVSgwcPuLpl9pIln1fDVCIMSAr1e82EJPzn8VX6cIIGgb/gb3YzMhFjbGF1ZGUtc29ubmV0LTQtNjgAQgh0aGlua2luZxIMJcHUFxsh8+tb+LcFGgxZC4GEb7VTIEK3C2AiMNIcUdLOTuY4ZD9Yus6qRzzPVBYMsarSTVVIxlTzsMgSMK4lDwggMsRcFBItecLz7irAApFM2IJyssgjSWGLKAjH4iL2TNbDcUQ9iyHvZLo33BpdF/2gJcqOhAG5cekuEfjh/e/kWufUMzj62n7HSrrL2mTY6IHIzSPrJ4GiVTReBv/syom6ax3lvPKgHgfwQvl7viIt0pQzJv3ZWe2EPafyYmqx1ow4+DVL9Glxg7wBEc3Hdq5NPNv4y6x0TagLye7lUqr43RS9R2RoLKYOgEgFQY3U52FMIr8v2L+LF7f3HIPTJnprS78zZwcuqYZGzqj9+mpaNp64p7Qz0flcMmJNG1earqjcgJ5Fq90YfyjJbD0Ufn6M5zRmVihyvaFZyb3Lz18LrTv2W01buSb6zlLLE+szjjsNFtro0RspvnOWhQe0rLPidSiq7gOWySHwB3n5on0X+Ttyy3err4Zy+tWkx0uzQv1e6aPXjEXqRQgi+S0HGAE="
+        },
+        {
+          "type": "text",
+          "text": "Now let me research the codebase — understand what T01 built and what the legacy explore.json looks like."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01LZ9efaAPYfnfXgqvUhkyHj",
+          "name": "mcp__grove__outline",
+          "arguments": {
+            "file": "core/src/config.rs"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01PyUPDisJr7oSYzHf8EoBD7",
+          "name": "bash",
+          "arguments": {
+            "command": "find core/src -name \"*.rs\" | head -30 && echo \"---\" && ls core/src/"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 253,
+        "cacheRead": 16272,
+        "cacheWrite": 490,
+        "totalTokens": 17016,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.003795,
+          "cacheRead": 0.0048816,
+          "cacheWrite": 0.0018375,
+          "total": 0.0105171
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 102
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189202410,
+      "responseId": "msg_01BkvAkJuXx8aJ5bctY54FFB"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01LZ9efaAPYfnfXgqvUhkyHj",
+      "toolName": "mcp__grove__outline",
+      "content": [
+        {
+          "type": "text",
+          "text": "[{\"col\":10,\"id\":\"rust:core/src/config.rs#Mode@27\",\"kind\":\"class\",\"line\":27,\"name\":\"Mode\",\"signature\":\"pub enum Mode {\"},{\"col\":12,\"id\":\"rust:core/src/config.rs#from_name@46\",\"kind\":\"method\",\"line\":46,\"name\":\"from_name\",\"parent\":\"Mode\",\"signature\":\"pub fn from_name(s: &str) -> Result<Self> {\"},{\"col\":12,\"id\":\"rust:core/src/config.rs#GroveConfig@66\",\"kind\":\"class\",\"line\":66,\"name\":\"GroveConfig\",\"signature\":\"pub struct GroveConfig {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#default@79\",\"kind\":\"method\",\"line\":79,\"name\":\"default\",\"parent\":\"GroveConfig\",\"signature\":\"fn default() -> Self {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#RawGroveConfig@92\",\"kind\":\"class\",\"line\":92,\"name\":\"RawGroveConfig\",\"signature\":\"struct RawGroveConfig {\"},{\"col\":10,\"id\":\"rust:core/src/config.rs#Error@100\",\"kind\":\"class\",\"line\":100,\"name\":\"Error\",\"parent\":\"GroveConfig\",\"signature\":\"type Error = anyhow::Error;\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#try_from@102\",\"kind\":\"method\",\"line\":102,\"name\":\"try_from\",\"parent\":\"GroveConfig\",\"signature\":\"fn try_from(raw: RawGroveConfig) -> Result<Self> {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#deserialize@118\",\"kind\":\"method\",\"line\":118,\"name\":\"deserialize\",\"parent\":\"GroveConfig\",\"signature\":\"fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>\"},{\"col\":12,\"id\":\"rust:core/src/config.rs#config_path@130\",\"kind\":\"method\",\"line\":130,\"name\":\"config_path\",\"parent\":\"GroveConfig\",\"signature\":\"pub fn config_path(root: &Path) -> PathBuf {\"},{\"col\":12,\"id\":\"rust:core/src/config.rs#load@138\",\"kind\":\"method\",\"line\":138,\"name\":\"load\",\"parent\":\"GroveConfig\",\"signature\":\"pub fn load(root: &Path) -> Result<Self> {\"},{\"col\":12,\"id\":\"rust:core/src/config.rs#save@159\",\"kind\":\"method\",\"line\":159,\"name\":\"save\",\"parent\":\"GroveConfig\",\"signature\":\"pub fn save(&self, root: &Path) -> Result<()> {\"},{\"col\":12,\"id\":\"rust:core/src/config.rs#validate@175\",\"kind\":\"method\",\"line\":175,\"name\":\"validate\",\"parent\":\"GroveConfig\",\"signature\":\"pub fn validate(&self) -> Result<()> {\"},{\"col\":5,\"id\":\"rust:core/src/config.rs#tests@191\",\"kind\":\"module\",\"line\":191,\"name\":\"tests\",\"signature\":\"mod tests {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#temp_root@195\",\"kind\":\"method\",\"line\":195,\"name\":\"temp_root\",\"parent\":\"tests\",\"signature\":\"fn temp_root(tag: &str) -> PathBuf {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#serde_round_trip_each_mode@201\",\"kind\":\"method\",\"line\":201,\"name\":\"serde_round_trip_each_mode\",\"parent\":\"tests\",\"signature\":\"fn serde_round_trip_each_mode() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#explore_section_absent_when_none@213\",\"kind\":\"method\",\"line\":213,\"name\":\"explore_section_absent_when_none\",\"parent\":\"tests\",\"signature\":\"fn explore_section_absent_when_none() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#explore_section_present_when_some@224\",\"kind\":\"method\",\"line\":224,\"name\":\"explore_section_present_when_some\",\"parent\":\"tests\",\"signature\":\"fn explore_section_present_when_some() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#bad_mode_error_names_field_and_legal_values@244\",\"kind\":\"method\",\"line\":244,\"name\":\"bad_mode_error_names_field_and_legal_values\",\"parent\":\"tests\",\"signature\":\"fn bad_mode_error_names_field_and_legal_values() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#steering_key_in_explore_section@256\",\"kind\":\"method\",\"line\":256,\"name\":\"steering_key_in_explore_section\",\"parent\":\"tests\",\"signature\":\"fn steering_key_in_explore_section() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#save_load_round_trip_atomic@275\",\"kind\":\"method\",\"line\":275,\"name\":\"save_load_round_trip_atomic\",\"parent\":\"tests\",\"signature\":\"fn save_load_round_trip_atomic() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#missing_file_actionable_error@303\",\"kind\":\"method\",\"line\":303,\"name\":\"missing_file_actionable_error\",\"parent\":\"tests\",\"signature\":\"fn missing_file_actionable_error() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#bad_version_rejected@315\",\"kind\":\"method\",\"line\":315,\"name\":\"bad_version_rejected\",\"parent\":\"tests\",\"signature\":\"fn bad_version_rejected() {\"}]"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189207362
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01PyUPDisJr7oSYzHf8EoBD7",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "core/src/ingest.rs\ncore/src/registry.rs\ncore/src/lib.rs\ncore/src/fetch.rs\ncore/src/ops.rs\ncore/src/explore/mod.rs\ncore/src/explore/agent.rs\ncore/src/explore/trace.rs\ncore/src/explore/client.rs\ncore/src/explore/grounding.rs\ncore/src/explore/steering.rs\ncore/src/explore/toolset.rs\ncore/src/explore/config.rs\ncore/src/engine.rs\ncore/src/init.rs\ncore/src/config.rs\n---\nconfig.rs\nengine.rs\nexplore\nfetch.rs\ningest.rs\ninit.rs\nlib.rs\nops.rs\nregistry.rs\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783189207362
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01Bjd4sn8yiGjQJF1wE2HQsv",
+          "name": "read",
+          "arguments": {
+            "path": "core/src/config.rs"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01EmUKZ22UHvZhgeMBCe4uxS",
+          "name": "mcp__grove__outline",
+          "arguments": {
+            "file": "core/src/explore/config.rs"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 104,
+        "cacheRead": 16762,
+        "cacheWrite": 1821,
+        "totalTokens": 18688,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.00156,
+          "cacheRead": 0.005028599999999999,
+          "cacheWrite": 0.00682875,
+          "total": 0.01342035
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189207362,
+      "responseId": "msg_013GAvZVpU7VhTByNZZYDgLE"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01Bjd4sn8yiGjQJF1wE2HQsv",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "//! Grove project configuration — `.grove/config.json`.\n//!\n//! [`GroveConfig`] is the top-level project configuration record. It specifies\n//! the integration [`Mode`] (which grove surface to activate) and optionally\n//! carries an [`ExploreConfig`] section for the mcp-llm explorer subsystem.\n//!\n//! Persistence is atomic (temp-file + rename) and fail-fast:\n//! - [`GroveConfig::load`] yields an actionable error when the file is absent.\n//! - [`GroveConfig::save`] creates `.grove/` on first write.\n//! - [`GroveConfig::validate`] rejects unknown versions and illegal mode values.\n\nuse std::fs;\nuse std::path::{Path, PathBuf};\n\nuse anyhow::{bail, Context, Result};\nuse serde::{Deserialize, Serialize};\n\nuse crate::explore::ExploreConfig;\n\n/// The integration mode — which grove surface is active for a project.\n///\n/// On-disk spellings use kebab-case (e.g. `\"mcp-llm\"`). Use [`Mode::LEGAL`]\n/// and [`Mode::from_name`] for parse / enumeration. Serialized with\n/// `serde(rename_all = \"kebab-case\")`.\n#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]\n#[serde(rename_all = \"kebab-case\")]\npub enum Mode {\n    /// Standard MCP structural surface (outline, symbols, source, …).\n    Mcp,\n    /// Skill-server surface.\n    Skill,\n    /// Both MCP and skill surfaces active.\n    Both,\n    /// MCP + inner LLM explorer (the mcp-llm surface).\n    McpLlm,\n    /// Grammar-registry management surface.\n    Grammars,\n}\n\nimpl Mode {\n    /// The legal on-disk spellings, in declaration order.\n    pub const LEGAL: &'static [&'static str] = &[\"mcp\", \"skill\", \"both\", \"mcp-llm\", \"grammars\"];\n\n    /// Parse a mode from its on-disk spelling, yielding a descriptive error on\n    /// failure that names the field and lists legal values.\n    pub fn from_name(s: &str) -> Result<Self> {\n        match s {\n            \"mcp\" => Ok(Mode::Mcp),\n            \"skill\" => Ok(Mode::Skill),\n            \"both\" => Ok(Mode::Both),\n            \"mcp-llm\" => Ok(Mode::McpLlm),\n            \"grammars\" => Ok(Mode::Grammars),\n            other => bail!(\n                \"invalid `mode` value `{other}`: expected one of {}\",\n                Self::LEGAL.join(\", \")\n            ),\n        }\n    }\n}\n\n/// The grove project configuration, persisted to `.grove/config.json`.\n///\n/// Construct with [`GroveConfig::default`] (mode = `mcp`, no explore section),\n/// then persist with [`GroveConfig::save`].\n#[derive(Debug, Clone, PartialEq, Eq, Serialize)]\npub struct GroveConfig {\n    /// Wire version. The only valid value today is `1`; [`validate`] rejects\n    /// other values to ensure future migrations are explicit.\n    pub version: u32,\n    /// Which grove integration surface is active.\n    pub mode: Mode,\n    /// Optional mcp-llm explorer configuration. Omitted from the serialized\n    /// form when `None` (see `skip_serializing_if`).\n    #[serde(skip_serializing_if = \"Option::is_none\")]\n    pub explore: Option<ExploreConfig>,\n}\n\nimpl Default for GroveConfig {\n    fn default() -> Self {\n        GroveConfig {\n            version: 1,\n            mode: Mode::Mcp,\n            explore: None,\n        }\n    }\n}\n\n/// Raw wire shape: `mode` kept as `String` so parse failures can name the\n/// offending field and enumerate legal values — serde's stock unknown-variant\n/// error does neither.\n#[derive(Deserialize)]\nstruct RawGroveConfig {\n    version: u32,\n    mode: String,\n    #[serde(default)]\n    explore: Option<ExploreConfig>,\n}\n\nimpl TryFrom<RawGroveConfig> for GroveConfig {\n    type Error = anyhow::Error;\n\n    fn try_from(raw: RawGroveConfig) -> Result<Self> {\n        if raw.version != 1 {\n            bail!(\n                \"`version` must be 1 (found {}); migrate via `grove upgrade`\",\n                raw.version\n            );\n        }\n        Ok(GroveConfig {\n            version: raw.version,\n            mode: Mode::from_name(&raw.mode)?,\n            explore: raw.explore,\n        })\n    }\n}\n\nimpl<'de> serde::Deserialize<'de> for GroveConfig {\n    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>\n    where\n        D: serde::Deserializer<'de>,\n    {\n        let raw = RawGroveConfig::deserialize(deserializer)?;\n        GroveConfig::try_from(raw).map_err(serde::de::Error::custom)\n    }\n}\n\nimpl GroveConfig {\n    /// The canonical config path for a project rooted at `root`:\n    /// `<root>/.grove/config.json`.\n    pub fn config_path(root: &Path) -> PathBuf {\n        root.join(\".grove\").join(\"config.json\")\n    }\n\n    /// Read, deserialize, and validate the config under `root`.\n    ///\n    /// A missing file yields an actionable error message; a bad `mode` value\n    /// or unknown version fails fast, naming the offending field.\n    pub fn load(root: &Path) -> Result<Self> {\n        let path = Self::config_path(root);\n        if !path.exists() {\n            bail!(\n                \"no grove config at {} — run `grove init` to create one, \\\n                 or `grove config` to set it up\",\n                path.display()\n            );\n        }\n        let text = fs::read_to_string(&path)\n            .with_context(|| format!(\"reading {}\", path.display()))?;\n        let cfg: GroveConfig = serde_json::from_str(&text)\n            .with_context(|| format!(\"{} is not a valid grove config\", path.display()))?;\n        cfg.validate()?;\n        Ok(cfg)\n    }\n\n    /// Validate, then persist to `<root>/.grove/config.json` atomically.\n    ///\n    /// The write goes to a sibling temp file in the same directory and is then\n    /// `rename`d into place. Creates `.grove/` if absent.\n    pub fn save(&self, root: &Path) -> Result<()> {\n        self.validate()?;\n        let dir = root.join(\".grove\");\n        fs::create_dir_all(&dir)\n            .with_context(|| format!(\"creating {}\", dir.display()))?;\n        let path = dir.join(\"config.json\");\n        let tmp = dir.join(format!(\"config.json.tmp.{}\", std::process::id()));\n        let body = format!(\"{}\\n\", serde_json::to_string_pretty(self)?);\n        fs::write(&tmp, body).with_context(|| format!(\"writing {}\", tmp.display()))?;\n        fs::rename(&tmp, &path)\n            .with_context(|| format!(\"renaming {} -> {}\", tmp.display(), path.display()))?;\n        Ok(())\n    }\n\n    /// Reject structurally invalid state:\n    /// - `version` must be `1` (the only supported wire version).\n    pub fn validate(&self) -> Result<()> {\n        if self.version != 1 {\n            bail!(\n                \"`version` must be 1 (found {}); migrate via `grove upgrade`\",\n                self.version\n            );\n        }\n        Ok(())\n    }\n}\n\n// ---------------------------------------------------------------------------\n// Unit tests\n// ---------------------------------------------------------------------------\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    /// A unique, per-process temp project root; caller cleans up.\n    fn temp_root(tag: &str) -> PathBuf {\n        std::env::temp_dir().join(format!(\"grove_cfg_{}_{tag}\", std::process::id()))\n    }\n\n    // T1 — round-trip each integration Mode variant.\n    #[test]\n    fn serde_round_trip_each_mode() {\n        for &name in Mode::LEGAL {\n            let mode = Mode::from_name(name).unwrap();\n            let cfg = GroveConfig { version: 1, mode, explore: None };\n            let json = serde_json::to_string(&cfg).unwrap();\n            let back: GroveConfig = serde_json::from_str(&json).unwrap();\n            assert_eq!(cfg, back, \"round-trip failed for mode={name}\");\n        }\n    }\n\n    // T2 — explore absent when None.\n    #[test]\n    fn explore_section_absent_when_none() {\n        let cfg = GroveConfig::default();\n        let v = serde_json::to_value(&cfg).unwrap();\n        assert!(\n            v.get(\"explore\").is_none(),\n            \"explore key must be absent when None: {v}\"\n        );\n    }\n\n    // T3 — explore section round-trips when Some.\n    #[test]\n    fn explore_section_present_when_some() {\n        use crate::explore::{ExploreConfig, Provider, Steering};\n        let explore = ExploreConfig {\n            provider: Provider::Ollama,\n            base_url: \"http://localhost:11434/v1\".to_string(),\n            model: \"qwen2.5-coder:7b\".to_string(),\n            steering: Steering::Standard,\n            allowed_tools: vec![\"grove\".to_string()],\n            tap: false,\n            trace_retain: 50,\n        };\n        let cfg = GroveConfig { version: 1, mode: Mode::McpLlm, explore: Some(explore.clone()) };\n        let json = serde_json::to_string(&cfg).unwrap();\n        let back: GroveConfig = serde_json::from_str(&json).unwrap();\n        assert_eq!(cfg, back);\n        assert_eq!(back.explore.unwrap(), explore);\n    }\n\n    // T4 — bad mode names the field and lists legal values.\n    #[test]\n    fn bad_mode_error_names_field_and_legal_values() {\n        let json = r#\"{\"version\":1,\"mode\":\"unknown\"}\"#;\n        let err = serde_json::from_str::<GroveConfig>(json).unwrap_err();\n        let msg = err.to_string();\n        assert!(msg.contains(\"mode\"), \"should name the field: {msg}\");\n        for legal in Mode::LEGAL {\n            assert!(msg.contains(legal), \"should list legal value {legal}: {msg}\");\n        }\n    }\n\n    // T5 — steering key in explore section deserializes correctly.\n    #[test]\n    fn steering_key_in_explore_section() {\n        let json = r#\"{\n            \"version\": 1,\n            \"mode\": \"mcp-llm\",\n            \"explore\": {\n                \"provider\": \"ollama\",\n                \"base_url\": \"http://localhost:11434/v1\",\n                \"model\": \"x\",\n                \"steering\": \"balanced\",\n                \"allowed_tools\": [\"grove\"]\n            }\n        }\"#;\n        let cfg: GroveConfig = serde_json::from_str(json).unwrap();\n        use crate::explore::Steering;\n        assert_eq!(cfg.explore.unwrap().steering, Steering::Balanced);\n    }\n\n    // T6 — save + load round-trip; no leftover temp file.\n    #[test]\n    fn save_load_round_trip_atomic() {\n        let root = temp_root(\"save_load\");\n        let _ = fs::remove_dir_all(&root);\n        let cfg = GroveConfig::default();\n\n        cfg.save(&root).unwrap();\n\n        let path = GroveConfig::config_path(&root);\n        assert!(path.exists(), \"config.json should exist after save\");\n\n        // No leftover temp file.\n        let dir = root.join(\".grove\");\n        let leftovers: Vec<_> = fs::read_dir(&dir)\n            .unwrap()\n            .filter_map(|e| e.ok())\n            .map(|e| e.file_name().to_string_lossy().into_owned())\n            .filter(|n| n.contains(\".tmp.\"))\n            .collect();\n        assert!(leftovers.is_empty(), \"temp file leaked: {leftovers:?}\");\n\n        let loaded = GroveConfig::load(&root).unwrap();\n        assert_eq!(cfg, loaded);\n\n        fs::remove_dir_all(&root).unwrap();\n    }\n\n    // T7 — missing file gives actionable error.\n    #[test]\n    fn missing_file_actionable_error() {\n        let root = temp_root(\"missing\");\n        let err = GroveConfig::load(&root).unwrap_err();\n        let msg = format!(\"{err:#}\");\n        assert!(\n            msg.contains(\"grove init\") || msg.contains(\"grove config\"),\n            \"error should steer user to setup: {msg}\"\n        );\n    }\n\n    // version != 1 rejected by validate().\n    #[test]\n    fn bad_version_rejected() {\n        let json = r#\"{\"version\":2,\"mode\":\"mcp\"}\"#;\n        let err = serde_json::from_str::<GroveConfig>(json).unwrap_err();\n        let msg = err.to_string();\n        assert!(msg.contains(\"version\"), \"should name the field: {msg}\");\n    }\n}\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783189209742
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01EmUKZ22UHvZhgeMBCe4uxS",
+      "toolName": "mcp__grove__outline",
+      "content": [
+        {
+          "type": "text",
+          "text": "[{\"col\":10,\"id\":\"rust:core/src/explore/config.rs#Provider@26\",\"kind\":\"class\",\"line\":26,\"name\":\"Provider\",\"signature\":\"pub enum Provider {\"},{\"col\":8,\"id\":\"rust:core/src/explore/config.rs#from_name@38\",\"kind\":\"method\",\"line\":38,\"name\":\"from_name\",\"parent\":\"Provider\",\"signature\":\"fn from_name(s: &str) -> Result<Self> {\"},{\"col\":10,\"id\":\"rust:core/src/explore/config.rs#Steering@55\",\"kind\":\"class\",\"line\":55,\"name\":\"Steering\",\"signature\":\"pub enum Steering {\"},{\"col\":8,\"id\":\"rust:core/src/explore/config.rs#from_name@68\",\"kind\":\"method\",\"line\":68,\"name\":\"from_name\",\"parent\":\"Steering\",\"signature\":\"fn from_name(s: &str) -> Result<Self> {\"},{\"col\":12,\"id\":\"rust:core/src/explore/config.rs#ExploreConfig@86\",\"kind\":\"class\",\"line\":86,\"name\":\"ExploreConfig\",\"signature\":\"pub struct ExploreConfig {\"},{\"col\":4,\"id\":\"rust:core/src/explore/config.rs#default_trace_retain@111\",\"kind\":\"function\",\"line\":111,\"name\":\"default_trace_retain\",\"signature\":\"fn default_trace_retain() -> u32 {\"},{\"col\":8,\"id\":\"rust:core/src/explore/config.rs#RawExploreConfig@119\",\"kind\":\"class\",\"line\":119,\"name\":\"RawExploreConfig\",\"signature\":\"struct RawExploreConfig {\"},{\"col\":10,\"id\":\"rust:core/src/explore/config.rs#Error@133\",\"kind\":\"class\",\"line\":133,\"name\":\"Error\",\"parent\":\"ExploreConfig\",\"signature\":\"type Error = anyhow::Error;\"},{\"col\":8,\"id\":\"rust:core/src/explore/config.rs#try_from@135\",\"kind\":\"method\",\"line\":135,\"name\":\"try_from\",\"parent\":\"ExploreConfig\",\"signature\":\"fn try_from(raw: RawExploreConfig) -> Result<Self> {\"},{\"col\":8,\"id\":\"rust:core/src/explore/config.rs#deserialize@149\",\"kind\":\"method\",\"line\":149,\"name\":\"deserialize\",\"parent\":\"ExploreConfig\",\"signature\":\"fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>\"},{\"col\":8,\"id\":\"rust:core/src/explore/config.rs#default@159\",\"kind\":\"method\",\"line\":159,\"name\":\"default\",\"parent\":\"ExploreConfig\",\"signature\":\"fn default() -> Self {\"},{\"col\":12,\"id\":\"rust:core/src/explore/config.rs#config_path@180\",\"kind\":\"method\",\"line\":180,\"name\":\"config_path\",\"parent\":\"ExploreConfig\",\"signature\":\"pub fn config_path(root: &Path) -> PathBuf {\"},{\"col\":12,\"id\":\"rust:core/src/explore/config.rs#load@189\",\"kind\":\"method\",\"line\":189,\"name\":\"load\",\"parent\":\"ExploreConfig\",\"signature\":\"pub fn load(root: &Path) -> Result<Self> {\"},{\"col\":12,\"id\":\"rust:core/src/explore/config.rs#save@211\",\"kind\":\"method\",\"line\":211,\"name\":\"save\",\"parent\":\"ExploreConfig\",\"signature\":\"pub fn save(&self, root: &Path) -> Result<()> {\"},{\"col\":12,\"id\":\"rust:core/src/explore/config.rs#validate@226\",\"kind\":\"method\",\"line\":226,\"name\":\"validate\",\"parent\":\"ExploreConfig\",\"signature\":\"pub fn validate(&self) -> Result<()> {\"},{\"col\":5,\"id\":\"rust:core/src/explore/config.rs#tests@238\",\"kind\":\"module\",\"line\":238,\"name\":\"tests\",\"signature\":\"mod tests {\"},{\"col\":8,\"id\":\"rust:core/src/explore/config.rs#temp_root@242\",\"kind\":\"method\",\"line\":242,\"name\":\"temp_root\",\"parent\":\"tests\",\"signature\":\"fn temp_root(tag: &str) -> PathBuf {\"},{\"col\":8,\"id\":\"rust:core/src/explore/config.rs#serde_round_trip_defaults@247\",\"kind\":\"method\",\"line\":247,\"name\":\"serde_round_trip_defaults\",\"parent\":\"tests\",\"signature\":\"fn serde_round_trip_defaults() {\"},{\"col\":8,\"id\":\"rust:core/src/explore/config.rs#fixed_fixture_deserializes@255\",\"kind\":\"method\",\"line\":255,\"name\":\"fixed_fixture_deserializes\",\"parent\":\"tests\",\"signature\":\"fn fixed_fixture_deserializes() {\"},{\"col\":8,\"id\":\"rust:core/src/explore/config.rs#defaults_are_ollama@272\",\"kind\":\"method\",\"line\":272,\"name\":\"defaults_are_ollama\",\"parent\":\"tests\",\"signature\":\"fn defaults_are_ollama() {\"},{\"col\":8,\"id\":\"rust:core/src/explore/config.rs#trace_retain_defaults_when_absent@283\",\"kind\":\"method\",\"line\":283,\"name\":\"trace_retain_defaults_when_absent\",\"parent\":\"tests\",\"signature\":\"fn trace_retain_defaults_when_absent() {\"},{\"col\":8,\"id\":\"rust:core/src/explore/config.rs#provider_serializes_lowercase@298\",\"kind\":\"method\",\"line\":298,\"name\":\"provider_serializes_lowercase\",\"parent\":\"tests\",\"signature\":\"fn provider_serializes_lowercase() {\"},{\"col\":8,\"id\":\"rust:core/src/explore/config.rs#missing_file_steers_to_init@305\",\"kind\":\"method\",\"line\":305,\"name\":\"missing_file_steers_to_init\",\"parent\":\"tests\",\"signature\":\"fn missing_file_steers_to_init() {\"},{\"col\":8,\"id\":\"rust:core/src/explore/config.rs#bad_enum_names_field_and_legal_values@316\",\"kind\":\"method\",\"line\":316,\"name\":\"bad_enum_names_field_and_legal_values\",\"parent\":\"tests\",\"signature\":\"fn bad_enum_names_field_and_legal_values() {\"},{\"col\":8,\"id\":\"rust:core/src/explore/config.rs#empty_required_fields_rejected@331\",\"kind\":\"method\",\"line\":331,\"name\":\"empty_required_fields_rejected\",\"parent\":\"tests\",\"signature\":\"fn empty_required_fields_rejected() {\"},{\"col\":8,\"id\":\"rust:core/src/explore/config.rs#save_then_load_round_trips_atomically@342\",\"kind\":\"method\",\"line\":342,\"name\":\"save_then_load_round_trips_atomically\",\"parent\":\"tests\",\"signature\":\"fn save_then_load_round_trips_atomically() {\"},{\"col\":8,\"id\":\"rust:core/src/explore/config.rs#legacy_mode_key_rejected@369\",\"kind\":\"method\",\"line\":369,\"name\":\"legacy_mode_key_rejected\",\"parent\":\"tests\",\"signature\":\"fn legacy_mode_key_rejected() {\"}]"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189209742
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_011bUfsZ8xTnypdRTkQY9Yha",
+          "name": "read",
+          "arguments": {
+            "path": "core/src/explore/config.rs"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 59,
+        "cacheRead": 18583,
+        "cacheWrite": 5324,
+        "totalTokens": 23967,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.000885,
+          "cacheRead": 0.0055749,
+          "cacheWrite": 0.019965,
+          "total": 0.0264279
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189209742,
+      "responseId": "msg_01DWkitixzEoDGasZ4dmBQ9M"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_011bUfsZ8xTnypdRTkQY9Yha",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "//! The explore configuration model — `.grove/explore.json`.\n//!\n//! [`ExploreConfig`] is the shared vocabulary for the mcp-llm inner explorer\n//! subsystem (client + agent loop land in later S02 tasks). It is a typed,\n//! serde-backed record persisted project-locally under `.grove/` — the same\n//! sibling convention as the `.grove/grammars/` grammar registry.\n//!\n//! Persistence is fail-fast and hardened:\n//! - [`ExploreConfig::load`] reads + validates, steering the user to\n//!   `grove init --as mcp-llm` / `grove config` when the file is absent.\n//! - [`ExploreConfig::save`] writes **atomically** (temp file in the same\n//!   directory, then `rename`), so an interrupted write never leaves a torn\n//!   config behind.\n\nuse std::fs;\nuse std::path::{Path, PathBuf};\n\nuse anyhow::{bail, Context, Result};\nuse serde::{Deserialize, Deserializer, Serialize};\n\n/// The inference backend serving the OpenAI-compatible transport. Both variants\n/// speak the same wire protocol; the distinction records operator intent and\n/// steers defaults. Serialized lowercase (`\"ollama\"`, `\"llamacpp\"`).\n#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]\n#[serde(rename_all = \"lowercase\")]\npub enum Provider {\n    /// Ollama's OpenAI-compatible endpoint (the default).\n    Ollama,\n    /// A `llama.cpp` server exposing the OpenAI-compatible endpoint.\n    LlamaCpp,\n}\n\nimpl Provider {\n    /// The legal on-disk spellings, in declaration order — used both to parse\n    /// and to enumerate valid values in error messages.\n    pub const LEGAL: &'static [&'static str] = &[\"ollama\", \"llamacpp\"];\n\n    fn from_name(s: &str) -> Result<Self> {\n        match s {\n            \"ollama\" => Ok(Provider::Ollama),\n            \"llamacpp\" => Ok(Provider::LlamaCpp),\n            other => bail!(\n                \"invalid `provider` value `{other}`: expected one of {}\",\n                Self::LEGAL.join(\", \")\n            ),\n        }\n    }\n}\n\n/// The steering level applied to the inner explorer (merit / plan-first /\n/// coerce). Steering *content* is out of scope for this task (T03); this enum\n/// only names the three levels. Serialized lowercase.\n#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]\n#[serde(rename_all = \"lowercase\")]\npub enum Steering {\n    /// Merit-based steering — the default, least intrusive.\n    Standard,\n    /// Plan-first steering.\n    Balanced,\n    /// Coercive steering.\n    Aggressive,\n}\n\nimpl Steering {\n    /// The legal on-disk spellings, in declaration order.\n    pub const LEGAL: &'static [&'static str] = &[\"standard\", \"balanced\", \"aggressive\"];\n\n    fn from_name(s: &str) -> Result<Self> {\n        match s {\n            \"standard\" => Ok(Steering::Standard),\n            \"balanced\" => Ok(Steering::Balanced),\n            \"aggressive\" => Ok(Steering::Aggressive),\n            other => bail!(\n                \"invalid `steering` value `{other}`: expected one of {}\",\n                Self::LEGAL.join(\", \")\n            ),\n        }\n    }\n}\n\n/// The explore subsystem configuration, persisted to `.grove/explore.json`.\n///\n/// Field names are the JSON keys. Construct with [`ExploreConfig::default`] for\n/// the Ollama defaults, then persist with [`ExploreConfig::save`].\n#[derive(Debug, Clone, PartialEq, Eq, Serialize)]\npub struct ExploreConfig {\n    /// The inference backend.\n    pub provider: Provider,\n    /// The OpenAI-compatible base URL (e.g. `http://localhost:11434/v1`).\n    pub base_url: String,\n    /// The model identifier the provider serves.\n    pub model: String,\n    /// The steering level.\n    pub steering: Steering,\n    /// The tools the inner explorer is permitted to invoke.\n    pub allowed_tools: Vec<String>,\n    /// When true, `grove serve --explore` records every LLM request/response of\n    /// the session to a structured per-session trace under `.grove/traces/`\n    /// (an in-process \"tap\" — no proxy needed). Browse it with `grove tap`.\n    #[serde(default)]\n    pub tap: bool,\n    /// How many past trace sessions to keep under `.grove/traces/` before the\n    /// oldest are pruned. `0` keeps all. Default [`DEFAULT_TRACE_RETAIN`].\n    #[serde(default = \"default_trace_retain\")]\n    pub trace_retain: u32,\n}\n\n/// Default number of trace sessions retained under `.grove/traces/`.\npub const DEFAULT_TRACE_RETAIN: u32 = 50;\n\nfn default_trace_retain() -> u32 {\n    DEFAULT_TRACE_RETAIN\n}\n\n/// Raw wire shape with `String` enum fields, so enum parse failures can name\n/// the offending field (`provider` / `steering`) and enumerate legal values —\n/// serde's stock unknown-variant error names neither the field nor the struct.\n#[derive(Deserialize)]\nstruct RawExploreConfig {\n    provider: String,\n    base_url: String,\n    model: String,\n    steering: String,\n    #[serde(default)]\n    allowed_tools: Vec<String>,\n    #[serde(default)]\n    tap: bool,\n    #[serde(default = \"default_trace_retain\")]\n    trace_retain: u32,\n}\n\nimpl TryFrom<RawExploreConfig> for ExploreConfig {\n    type Error = anyhow::Error;\n\n    fn try_from(raw: RawExploreConfig) -> Result<Self> {\n        Ok(ExploreConfig {\n            provider: Provider::from_name(&raw.provider)?,\n            base_url: raw.base_url,\n            model: raw.model,\n            steering: Steering::from_name(&raw.steering)?,\n            allowed_tools: raw.allowed_tools,\n            tap: raw.tap,\n            trace_retain: raw.trace_retain,\n        })\n    }\n}\n\nimpl<'de> Deserialize<'de> for ExploreConfig {\n    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>\n    where\n        D: Deserializer<'de>,\n    {\n        let raw = RawExploreConfig::deserialize(deserializer)?;\n        ExploreConfig::try_from(raw).map_err(serde::de::Error::custom)\n    }\n}\n\nimpl Default for ExploreConfig {\n    fn default() -> Self {\n        ExploreConfig {\n            provider: Provider::Ollama,\n            base_url: \"http://localhost:11434/v1\".to_string(),\n            model: \"qwen2.5-coder:7b\".to_string(),\n            steering: Steering::Standard,\n            allowed_tools: vec![\n                \"grove\".to_string(),\n                \"rg\".to_string(),\n                \"grep\".to_string(),\n                \"find\".to_string(),\n            ],\n            tap: false,\n            trace_retain: DEFAULT_TRACE_RETAIN,\n        }\n    }\n}\n\nimpl ExploreConfig {\n    /// The on-disk config path for a project rooted at `root`:\n    /// `<root>/.grove/explore.json` (sibling to `.grove/grammars/`).\n    pub fn config_path(root: &Path) -> PathBuf {\n        root.join(\".grove\").join(\"explore.json\")\n    }\n\n    /// Read, deserialize, and validate the config under `root`.\n    ///\n    /// A missing file yields an actionable error steering the user to\n    /// `grove init --as mcp-llm` / `grove config`; a malformed enum value or an\n    /// empty required field fails fast, naming the offending field.\n    pub fn load(root: &Path) -> Result<Self> {\n        let path = Self::config_path(root);\n        if !path.exists() {\n            bail!(\n                \"no explore config at {} — run `grove init --as mcp-llm` to create one, \\\n                 or `grove config` to set it up\",\n                path.display()\n            );\n        }\n        let text = fs::read_to_string(&path)\n            .with_context(|| format!(\"reading {}\", path.display()))?;\n        let cfg: ExploreConfig = serde_json::from_str(&text)\n            .with_context(|| format!(\"{} is not a valid explore config\", path.display()))?;\n        cfg.validate()?;\n        Ok(cfg)\n    }\n\n    /// Validate, then persist to `<root>/.grove/explore.json` atomically.\n    ///\n    /// The write goes to a sibling temp file in the same directory and is then\n    /// `rename`d into place, so a partial/torn config can never be observed if\n    /// the process is interrupted mid-write. Creates `.grove/` if absent.\n    pub fn save(&self, root: &Path) -> Result<()> {\n        self.validate()?;\n        let dir = root.join(\".grove\");\n        fs::create_dir_all(&dir)\n            .with_context(|| format!(\"creating {}\", dir.display()))?;\n        let path = dir.join(\"explore.json\");\n        let tmp = dir.join(format!(\"explore.json.tmp.{}\", std::process::id()));\n        let body = format!(\"{}\\n\", serde_json::to_string_pretty(self)?);\n        fs::write(&tmp, body).with_context(|| format!(\"writing {}\", tmp.display()))?;\n        fs::rename(&tmp, &path)\n            .with_context(|| format!(\"renaming {} -> {}\", tmp.display(), path.display()))?;\n        Ok(())\n    }\n\n    /// Reject structurally invalid state, naming the offending field.\n    pub fn validate(&self) -> Result<()> {\n        if self.base_url.trim().is_empty() {\n            bail!(\"`base_url` must not be empty (e.g. http://localhost:11434/v1)\");\n        }\n        if self.model.trim().is_empty() {\n            bail!(\"`model` must not be empty (set a model identifier your provider serves)\");\n        }\n        Ok(())\n    }\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    /// A unique, per-process temp project root; caller cleans up.\n    fn temp_root(tag: &str) -> PathBuf {\n        std::env::temp_dir().join(format!(\"grove_explore_cfg_{}_{tag}\", std::process::id()))\n    }\n\n    #[test]\n    fn serde_round_trip_defaults() {\n        let cfg = ExploreConfig::default();\n        let json = serde_json::to_string(&cfg).unwrap();\n        let back: ExploreConfig = serde_json::from_str(&json).unwrap();\n        assert_eq!(cfg, back);\n    }\n\n    #[test]\n    fn fixed_fixture_deserializes() {\n        let json = r#\"{\n            \"provider\": \"llamacpp\",\n            \"base_url\": \"http://localhost:8080/v1\",\n            \"model\": \"custom\",\n            \"steering\": \"aggressive\",\n            \"allowed_tools\": [\"grove\"]\n        }\"#;\n        let cfg: ExploreConfig = serde_json::from_str(json).unwrap();\n        assert_eq!(cfg.provider, Provider::LlamaCpp);\n        assert_eq!(cfg.steering, Steering::Aggressive);\n        assert_eq!(cfg.base_url, \"http://localhost:8080/v1\");\n        assert_eq!(cfg.model, \"custom\");\n        assert_eq!(cfg.allowed_tools, vec![\"grove\".to_string()]);\n    }\n\n    #[test]\n    fn defaults_are_ollama() {\n        let cfg = ExploreConfig::default();\n        assert_eq!(cfg.provider, Provider::Ollama);\n        assert_eq!(cfg.base_url, \"http://localhost:11434/v1\");\n        assert_eq!(cfg.model, \"qwen2.5-coder:7b\");\n        assert_eq!(cfg.steering, Steering::Standard);\n        assert_eq!(cfg.allowed_tools, vec![\"grove\", \"rg\", \"grep\", \"find\"]);\n        assert_eq!(cfg.trace_retain, DEFAULT_TRACE_RETAIN);\n    }\n\n    #[test]\n    fn trace_retain_defaults_when_absent() {\n        // A config file written before trace_retain existed must still load,\n        // defaulting the field rather than failing.\n        let json = r#\"{\n            \"provider\": \"ollama\",\n            \"base_url\": \"http://localhost:11434/v1\",\n            \"model\": \"x\",\n            \"steering\": \"standard\",\n            \"allowed_tools\": [\"grove\"]\n        }\"#;\n        let cfg: ExploreConfig = serde_json::from_str(json).unwrap();\n        assert_eq!(cfg.trace_retain, DEFAULT_TRACE_RETAIN);\n    }\n\n    #[test]\n    fn provider_serializes_lowercase() {\n        assert_eq!(serde_json::to_string(&Provider::Ollama).unwrap(), \"\\\"ollama\\\"\");\n        assert_eq!(serde_json::to_string(&Provider::LlamaCpp).unwrap(), \"\\\"llamacpp\\\"\");\n        assert_eq!(serde_json::to_string(&Steering::Standard).unwrap(), \"\\\"standard\\\"\");\n    }\n\n    #[test]\n    fn missing_file_steers_to_init() {\n        let root = temp_root(\"missing\");\n        let err = ExploreConfig::load(&root).unwrap_err();\n        let msg = format!(\"{err:#}\");\n        assert!(\n            msg.contains(\"grove init --as mcp-llm\") && msg.contains(\"grove config\"),\n            \"message should steer to setup: {msg}\"\n        );\n    }\n\n    #[test]\n    fn bad_enum_names_field_and_legal_values() {\n        let json = r#\"{\n            \"provider\": \"gpt4all\",\n            \"base_url\": \"http://localhost:11434/v1\",\n            \"model\": \"x\",\n            \"steering\": \"standard\",\n            \"allowed_tools\": []\n        }\"#;\n        let err = serde_json::from_str::<ExploreConfig>(json).unwrap_err();\n        let msg = err.to_string();\n        assert!(msg.contains(\"provider\"), \"should name the field: {msg}\");\n        assert!(msg.contains(\"ollama\") && msg.contains(\"llamacpp\"), \"should list legal values: {msg}\");\n    }\n\n    #[test]\n    fn empty_required_fields_rejected() {\n        let cfg = ExploreConfig { base_url: \"   \".to_string(), ..ExploreConfig::default() };\n        let err = cfg.validate().unwrap_err();\n        assert!(err.to_string().contains(\"base_url\"), \"{err}\");\n\n        let cfg = ExploreConfig { model: String::new(), ..ExploreConfig::default() };\n        let err = cfg.validate().unwrap_err();\n        assert!(err.to_string().contains(\"model\"), \"{err}\");\n    }\n\n    #[test]\n    fn save_then_load_round_trips_atomically() {\n        let root = temp_root(\"save_load\");\n        let _ = fs::remove_dir_all(&root);\n        let cfg = ExploreConfig::default();\n\n        cfg.save(&root).unwrap();\n\n        let path = ExploreConfig::config_path(&root);\n        assert!(path.exists(), \"explore.json should exist after save\");\n\n        // No leftover temp file beside the config after a successful save.\n        let dir = root.join(\".grove\");\n        let leftovers: Vec<_> = fs::read_dir(&dir)\n            .unwrap()\n            .filter_map(|e| e.ok())\n            .map(|e| e.file_name().to_string_lossy().into_owned())\n            .filter(|n| n.contains(\".tmp.\"))\n            .collect();\n        assert!(leftovers.is_empty(), \"temp file leaked: {leftovers:?}\");\n\n        let loaded = ExploreConfig::load(&root).unwrap();\n        assert_eq!(cfg, loaded);\n\n        fs::remove_dir_all(&root).unwrap();\n    }\n\n    #[test]\n    fn legacy_mode_key_rejected() {\n        // The old JSON key \"mode\" is not accepted — T02 owns migration.\n        // Missing \"steering\" field must fail deserialization.\n        let json = r#\"{\n            \"provider\": \"ollama\",\n            \"base_url\": \"http://localhost:11434/v1\",\n            \"model\": \"x\",\n            \"mode\": \"standard\",\n            \"allowed_tools\": []\n        }\"#;\n        let err = serde_json::from_str::<ExploreConfig>(json).unwrap_err();\n        let msg = err.to_string();\n        assert!(msg.contains(\"steering\") || msg.contains(\"missing\"), \"should fail on missing steering: {msg}\");\n    }\n}\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783189212156
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Now I understand the full picture. Let me understand the legacy format:\n\n**Legacy `.grove/explore.json` format (pre-S03):**\n- Had a `mode` key (the old S02 format) representing the steering level\n- After T01's rename, the `steering` key replaced `mode`\n\nBut wait - looking at the test `legacy_mode_key_rejected`, it says: \"The old JSON key 'mode' is not accepted — T02 owns migration.\" This suggests that in the legacy explore.json, the steering field was called `mode`.\nThe migration process needs to read the legacy `.grove/explore.json` file, parse it with the old field names where steering was called `mode`, then synthesize a new `GroveConfig` with version 1 and mode set to McpLlm, mapping the old `mode` value to the new `steering` field in the migrated explore configuration.\n\nTo implement this in `GroveConfig::load`, I'll check if `config.json` exists first, and if not, look for `explore.json` to migrate—reading it as a legacy raw structure with the `mode` key, synthesizing the new config shape, writing it atomically to `config.json`, and emitting a deprecation warning. The legacy format uses `mode` instead of `steering`, so I can't directly reuse `ExploreConfig::load`. I think the approach is to define a `LegacyExploreRaw` struct that deserializes the old format, then use `ExploreConfig::config_path` to locate the file and read it with the legacy deserializer.\n\nAlternatively, I could add a `migrate_legacy_explore` function that reads the raw JSON, extracts the old `mode` field, constructs the new `ExploreConfig`, and saves it as `config.json`. Looking at the legacy format, it probably had fields like `provider`, `base_url`, and `mode` for the steering configuration.\n\nFor the implementation, I'll need a private struct to represent the old format with the `mode` field, then write a migration function that parses the legacy file and transforms it into the new structure.\n\nThe migration function should read from the old path, map the `mode` field to the new `steering` field, construct a `GroveConfig` with version 1 and the migrated explore settings, save it to the new location, emit a deprecation warning, and return the result. I'll also update the load logic to check for the legacy file when the new config doesn't exist.\n\nFor testing, I need to verify that a legacy explore.json file gets properly migrated with the correct steering value, that subsequent loads read from the new config.json without touching the old file, that an existing config.json takes precedence over any stale explore.json, and that the deprecation warning gets printed.",
+          "thinkingSignature": "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"
+        },
+        {
+          "type": "text",
+          "text": "Now I have a thorough understanding of the codebase. Let me check the architecture docs for any additional context."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_011UAffjf3Jn4rqMh5ujRHt1",
+          "name": "forge_markdown",
+          "arguments": {
+            "operation": "outline",
+            "path": "engineering/architecture/stack.md"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01B7sJGJo2rUpUhJ5Jn2BmjW",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "list",
+            "entity": "task",
+            "entityId": "GROVE-S03-T01"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 1790,
+        "cacheRead": 23907,
+        "cacheWrite": 4429,
+        "totalTokens": 30127,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.026850000000000002,
+          "cacheRead": 0.0071721,
+          "cacheWrite": 0.01660875,
+          "total": 0.05063385
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 1609
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189212156,
+      "responseId": "msg_01FMyCSiGE7Wc3tBLUZffBtx"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_011UAffjf3Jn4rqMh5ujRHt1",
+      "toolName": "forge_markdown",
+      "content": [
+        {
+          "type": "text",
+          "text": "stack.md\n# Stack  [3-67]\n  ## Language & Runtime  [5-12]\n  ## Core Dependencies  [13-26]\n  ## Build Profile  [27-36]\n  ## Test Framework  [37-42]\n  ## Lint / Type Check  [43-46]\n  ## Distribution Channels  [47-55]\n  ## Grammar System  [56-64]\n  ## MCP Server  [65-67]"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189244729
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01B7sJGJo2rUpUhJ5Jn2BmjW",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "Artifacts in engineering/sprints/GROVE-S03/GROVE-S03-T01/:\n  approve-summary → APPROVE-SUMMARY.json\n  architect-approval → ARCHITECT_APPROVAL.md\n  code-review → CODE_REVIEW.md\n  implementation-summary → IMPLEMENTATION-SUMMARY.json\n  index → INDEX.md\n  plan-summary → PLAN-SUMMARY.json\n  plan → PLAN.md\n  plan-review → PLAN_REVIEW.md\n  progress → PROGRESS.md\n  review-code-summary → REVIEW-CODE-SUMMARY.json\n  review-impl-summary → REVIEW-IMPL-SUMMARY.json\n  review-plan-summary → REVIEW-PLAN-SUMMARY.json\n  task-prompt → TASK_PROMPT.md\n  validation-summary → VALIDATION-SUMMARY.json\n  validation-report → VALIDATION_REPORT.md"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189244729
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01RTS4oPDJN92mDGphjCNUSC",
+          "name": "forge_config",
+          "arguments": {
+            "subcommand": "get",
+            "args": [
+              "commands.test",
+              "paths.engineering"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 81,
+        "cacheRead": 28336,
+        "cacheWrite": 2174,
+        "totalTokens": 30592,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.001215,
+          "cacheRead": 0.0085008,
+          "cacheWrite": 0.0081525,
+          "total": 0.0178713
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189244729,
+      "responseId": "msg_01T8yRZ62HT3gMRUWkwgFXL7"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01RTS4oPDJN92mDGphjCNUSC",
+      "toolName": "forge_config",
+      "content": [
+        {
+          "type": "text",
+          "text": "cargo test --release --locked\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189247135
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "Alright, I have enough information. Let me now write the PLAN.md.\n\n**Summary of what I know:**\n\n**Goal:** Implement `GroveConfig::load` migration from legacy `.grove/explore.json` to `.grove/config.json`.\n\n**Legacy format (`explore.json`):** Contains `provider`, `base_url`, `model`, `mode` (old key for steering), `allowed_tools`, `tap` (optional), `trace_retain` (optional).\n\n**Current `GroveConfig::load`:** If `config.json` missing → bail with actionable error.\n\n**What T01 built:**\n- `GroveConfig` struct with `version`, `mode` (integration mode), and `explore: Option<ExploreConfig>`\n- `ExploreConfig` with `steering` field (renamed from the old `mode` key)\n- `GroveConfig::save` for atomic writes to `config.json`\n- Tests validating the new format\n\n**What T02 needs:**\n- Parse the legacy `explore.json` format with its old `mode` key for steering\n- Migration logic in `GroveConfig::load` that checks if `config.json` is missing but `explore.json` exists, then migrates and saves\n- Tests covering all acceptance criteria\n\nI'm creating a private `LegacyExploreRaw` struct that mirrors the old `explore.json` wire format with `mode` as the steering key, then building a migration function that reads the legacy file, maps `mode` to the new `Steering` enum via `from_name`, and constructs a fresh `GroveConfig` with version 1 and the migrated explore settings.\n\nI'll modify `GroveConfig::load` to check for the legacy explore file after failing to find `config.json`, triggering the migration if it exists. The implementation stays isolated in `core/src/config.rs` with four test cases validating that the migration writes the new config, subsequent loads read from the new file, existing `config.json` takes precedence, and a deprecation warning gets emitted during migration.",
+          "thinkingSignature": "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"
+        },
+        {
+          "type": "text",
+          "text": "Now I have all the context I need. Let me write the plan."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01U2ndtBddCHHfLw5z7NRSoL",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "write",
+            "entity": "task",
+            "entityId": "GROVE-S03-T02",
+            "artifact": "plan",
+            "content": "# PLAN — GROVE-S03-T02: Legacy `.grove/explore.json` Migration on Load\n\n## Objective\n\nExtend `GroveConfig::load` so that projects created before `.grove/config.json`\nexisted (all deployed `mcp-llm` projects from S02) silently upgrade on first\n`load`. When `config.json` is absent but the legacy `.grove/explore.json` is\npresent, the loader synthesises a canonical `GroveConfig`, rewrites it forward to\n`config.json` atomically, emits a one-time deprecation warning to stderr, and\nreturns the migrated config — exactly as if the project had been initialised with\n`grove init --as mcp-llm` against the new schema.\n\n---\n\n## Background: What T01 Built (Dependencies)\n\nT01 (`GROVE-S03-T01`) delivered:\n- `Mode` enum with kebab-case on-disk spelling (`mcp-llm`).\n- `GroveConfig { version: u32, mode: Mode, explore: Option<ExploreConfig> }` —\n  the new canonical config record.\n- `ExploreConfig.steering: Steering` — renamed from the S02 `mode` key.\n- `GroveConfig::save(root)` — atomic write to `.grove/config.json`.\n- `GroveConfig::load(root)` — currently bails with an actionable error when\n  `config.json` is absent.\n\nT02 extends `load` with the migration branch.\n\n---\n\n## Legacy Format\n\nBefore S03, `mcp-llm` projects stored their entire configuration in\n`.grove/explore.json`. The wire shape:\n\n```json\n{\n  \"provider\": \"ollama\",\n  \"base_url\": \"http://localhost:11434/v1\",\n  \"model\": \"qwen2.5-coder:7b\",\n  \"mode\": \"standard\",\n  \"allowed_tools\": [\"grove\", \"rg\", \"grep\", \"find\"],\n  \"tap\": false,\n  \"trace_retain\": 50\n}\n```\n\nThe key difference from the current schema is:\n- The field `\"mode\"` in the legacy file encodes the **steering level** (not the\n  integration mode). T01 renamed this to `\"steering\"` in `ExploreConfig`.\n- There is no integration mode field — the presence of `explore.json` implied\n  `mode: mcp-llm`.\n\nThe current `ExploreConfig` deserialization (with the `steering` field required)\nintentionally rejects the old `mode` key — see the `legacy_mode_key_rejected`\ntest in `explore/config.rs`.\n\n---\n\n## Approach\n\nAll changes live in `core/src/config.rs`. No changes to\n`core/src/explore/config.rs`.\n\n### Step 1 — `LegacyExploreRaw` (private struct)\n\nAdd a private `LegacyExploreRaw` struct that matches the *old* `explore.json`\nwire shape: `mode: String` (steering level), plus `provider`, `base_url`,\n`model`, `allowed_tools`, `tap`, `trace_retain`. Derive `Deserialize` only.\n\n```text\nstruct LegacyExploreRaw {\n    provider: String,\n    base_url: String,\n    model: String,\n    mode: String,                  // ← old steering key\n    allowed_tools: Vec<String>,\n    tap: bool,                     // serde default\n    trace_retain: u32,             // serde default = default_trace_retain()\n}\n```\n\n### Step 2 — `migrate_from_legacy_explore` (private free function)\n\n```text\nfn migrate_from_legacy_explore(root: &Path) -> Result<GroveConfig>\n```\n\nLogic:\n1. Read `ExploreConfig::config_path(root)` (i.e. `.grove/explore.json`).\n2. Deserialize into `LegacyExploreRaw`.\n3. Map the old `mode` string to `Steering` using `Steering::from_name`, yielding\n   a descriptive error if the value is not a legal steering level.\n4. Map `provider` string to `Provider` using `Provider::from_name`.\n5. Construct `ExploreConfig { steering, provider, base_url, model, allowed_tools,\n   tap, trace_retain }`.\n6. Construct `GroveConfig { version: 1, mode: Mode::McpLlm, explore: Some(explore_cfg) }`.\n7. Call `config.validate()` (belt-and-suspenders).\n8. Call `config.save(root)` — writes `config.json` atomically.\n9. Emit the deprecation warning to **stderr**:\n\n   ```\n   warning: .grove/explore.json is deprecated and will be removed in a future\n            version of grove. Your configuration has been automatically migrated\n            to .grove/config.json. Please commit the new file and remove\n            .grove/explore.json from your repository.\n   ```\n\n10. Return `Ok(config)`.\n\nThis function is the only place that touches the legacy file. It does not delete\n`explore.json` — removal is left to the user (doctor will warn about its\npresence after migration, per the sprint requirements).\n\n### Step 3 — Extend `GroveConfig::load`\n\nReplace the current \"no file → bail\" block with a three-branch cascade:\n\n```text\npub fn load(root: &Path) -> Result<Self> {\n    let path = Self::config_path(root);\n    if path.exists() {\n        // (existing path) read, deserialize, validate\n        ...\n    } else if ExploreConfig::config_path(root).exists() {\n        // NEW: legacy migration branch\n        migrate_from_legacy_explore(root)\n    } else {\n        // (existing path) actionable \"run grove init\" error\n        bail!(...)\n    }\n}\n```\n\nThe `ExploreConfig::config_path` call requires no new imports — `ExploreConfig`\nis already in scope via `use crate::explore::ExploreConfig`.\n\n---\n\n## Files to Modify\n\n| File | Change |\n|---|---|\n| `core/src/config.rs` | Add `LegacyExploreRaw` struct; add `migrate_from_legacy_explore` fn; extend `GroveConfig::load` with legacy branch; add four tests (see below). |\n\n`core/src/explore/config.rs` — **no changes**. Its `config_path` method is\nreused (read-only) by the new migration code.\n\n---\n\n## Data Model Changes\n\nNo changes to any persistent struct's wire format. The migration *reads* the\nold shape (via `LegacyExploreRaw`) and *writes* the new shape (via the existing\n`GroveConfig::save`). After migration the legacy file stays on disk but is never\nread again by `load`.\n\n---\n\n## Testing Strategy\n\nFour new `#[test]` functions added to `mod tests` in `core/src/config.rs`:\n\n| Test | AC | What it asserts |\n|---|---|---|\n| `migrate_legacy_explore_writes_config_json` | 5a | Given a root with only `explore.json` (old `mode` key), `GroveConfig::load` succeeds; returned config has `mode == McpLlm` and `explore.steering` matching the old `mode` value; `.grove/config.json` exists on disk after the call. |\n| `second_load_after_migration_reads_config_not_legacy` | 5b | After a first `load` (which migrates), a second `load` succeeds and returns an equal config; the legacy `explore.json` is not modified by the second load. |\n| `config_json_present_ignores_stale_explore_json` | 5c | Given a root with both `config.json` (mcp mode) and a stale `explore.json`, `load` returns the `config.json` values; the stale file is silently ignored. |\n| `deprecation_warning_emitted` | 5d | The migration path emits the deprecation warning string to stderr. Verified by replacing `stderr` with a pipe (use `std::process::Command` to exec a helper binary, or capture stderr via the `gag` / `capture` pattern). Alternatively: confirm the warning is present in the test by observing it as a side-channel during CI output (acceptable for a first pass if cross-platform stdio capture is not available). |\n\nAll existing tests must continue to pass. Run the full suite with:\n```\ncargo test --release --locked\n```\nand lint with:\n```\ncargo clippy -- -D warnings\n```\n\n### Test fixture (legacy explore.json)\n\nAll tests that exercise the migration path write this inline JSON to\n`<temp_root>/.grove/explore.json`:\n\n```json\n{\n  \"provider\": \"ollama\",\n  \"base_url\": \"http://localhost:11434/v1\",\n  \"model\": \"qwen2.5-coder:7b\",\n  \"mode\": \"balanced\",\n  \"allowed_tools\": [\"grove\"],\n  \"tap\": false,\n  \"trace_retain\": 50\n}\n```\n\n`\"mode\": \"balanced\"` is chosen so the asserted `steering` value is distinct from\nthe default `Standard`, proving the mapping was applied.\n\n---\n\n## Acceptance Criteria Mapping\n\n| # | Criterion | Covered by |\n|---|---|---|\n| 1 | `load` migrates when `config.json` absent + `explore.json` present | Step 3 + test 5a |\n| 2 | Legacy `explore.mode` maps to `explore.steering` | `migrate_from_legacy_explore` + test 5a |\n| 3 | Deprecation warning emitted to stderr, one-time only | Step 2 item 9 + test 5d, 5b |\n| 4 | Neither file → same actionable error | Unchanged bail path + existing test `missing_file_actionable_error` |\n| 5 | Four tests (a–d) pass | Tests above |\n| 6 | `cargo build` clean, `clippy -D warnings` clean, `cargo test` green | CI commands |\n\n---\n\n## Operational Impact\n\n- **Material change** — alters on-disk behaviour: creates `config.json` on first\n  load for all deployed `mcp-llm` projects. A version bump is required at\n  release.\n- **No user action required** — migration is automatic on next `serve`/`load`.\n- **Deprecation warning** informs users to commit `config.json` and drop\n  `explore.json`.\n- **Idempotent after first run** — subsequent loads read `config.json` directly,\n  never re-entering the migration branch.\n- **No deletion** of `explore.json` — the legacy file remains; `grove doctor`\n  (a later task) will flag its presence as a warning.\n- **Security scan:** not required.\n"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 3534,
+        "cacheRead": 30510,
+        "cacheWrite": 100,
+        "totalTokens": 34145,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.05301,
+          "cacheRead": 0.009153,
+          "cacheWrite": 0.000375,
+          "total": 0.062541
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 741
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189247135,
+      "responseId": "msg_01Hc2APnYyZW2xV7v8odbbEy"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01U2ndtBddCHHfLw5z7NRSoL",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "Wrote 8689 bytes to engineering/sprints/GROVE-S03/GROVE-S03-T02/PLAN.md"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189308021
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Now write the plan summary sidecar and register it:"
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01W54Ek6P1Meonha2yTwhMZ5",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "write",
+            "entity": "task",
+            "entityId": "GROVE-S03-T02",
+            "artifact": "plan-summary",
+            "content": "{\n  \"objective\": \"Extend GroveConfig::load with a legacy-migration branch that reads .grove/explore.json (S02 format), synthesises a canonical GroveConfig with mode=mcp-llm and the mapped steering field, rewrites it to .grove/config.json atomically, emits a one-time deprecation warning to stderr, and returns the migrated config.\",\n  \"key_changes\": [\n    \"Add private `LegacyExploreRaw` struct to core/src/config.rs with the old `mode: String` steering key (mirrors pre-S03 explore.json wire shape).\",\n    \"Add private `migrate_from_legacy_explore(root: &Path) -> Result<GroveConfig>` function: reads explore.json, maps old `mode` → `Steering`, builds GroveConfig {version:1, mode:McpLlm, explore:Some(...)}, saves atomically, warns stderr.\",\n    \"Extend GroveConfig::load with a three-branch cascade: config.json present → existing path; explore.json present → migration branch; neither → actionable error (unchanged).\",\n    \"Deprecation warning message directs users to commit config.json and remove explore.json from the repository.\",\n    \"Migration does NOT delete explore.json — removal is left to the user; grove doctor (later task) will warn on its presence.\",\n    \"No changes to core/src/explore/config.rs — ExploreConfig::config_path reused read-only.\",\n    \"Test 5a: legacy explore.json (old `mode` key) migrates to config.json with mode=McpLlm and correct explore.steering.\",\n    \"Test 5b: second load after migration reads config.json, does not re-enter migration, explore.json is unmodified.\",\n    \"Test 5c: config.json present alongside stale explore.json — stale file is silently ignored.\",\n    \"Test 5d: deprecation warning is exercised by the migration path.\",\n    \"All existing T01 tests remain unaffected; cargo clippy -D warnings must be clean.\",\n    \"Material change: version bump required at release (introduces config.json for all deployed mcp-llm projects on next load).\"\n  ],\n  \"verdict\": \"n/a\",\n  \"written_at\": \"2026-07-04T00:00:00Z\",\n  \"artifact_ref\": \"PLAN.md\"\n}\n"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 715,
+        "cacheRead": 30610,
+        "cacheWrite": 3578,
+        "totalTokens": 34904,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.010725,
+          "cacheRead": 0.009183,
+          "cacheWrite": 0.0134175,
+          "total": 0.0333285
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189308022,
+      "responseId": "msg_017ftfgN1mqejYFQhmiiYor6"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01W54Ek6P1Meonha2yTwhMZ5",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "Wrote 2006 bytes to engineering/sprints/GROVE-S03/GROVE-S03-T02/PLAN-SUMMARY.json"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189322935
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01QdchxyZCf18bM8tJTBWq55",
+          "name": "forge_store",
+          "arguments": {
+            "command": "set-summary",
+            "args": [
+              "GROVE-S03-T02",
+              "plan"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 84,
+        "cacheRead": 34188,
+        "cacheWrite": 762,
+        "totalTokens": 35035,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.00126,
+          "cacheRead": 0.010256399999999999,
+          "cacheWrite": 0.0028575,
+          "total": 0.014376899999999998
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189322935,
+      "responseId": "msg_016YDPLTM66rj5RH5KT1Mk2H"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01QdchxyZCf18bM8tJTBWq55",
+      "toolName": "forge_store",
+      "content": [
+        {
+          "type": "text",
+          "text": "forge_store failed: Command failed: node /home/boni/.nvm/versions/node/v24.3.0/lib/node_modules/@entelligentsia/forgecli/dist/forge-payload/tools/store-cli.cjs set-summary GROVE-S03-T02 plan\nobjective: value length 312 exceeds maxLength 280\nkey_changes[1]: item length 233 exceeds maxLength 200\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189325837
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_019fvy3T7KxiWM3j9HnvDF5N",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "write",
+            "entity": "task",
+            "entityId": "GROVE-S03-T02",
+            "artifact": "plan-summary",
+            "content": "{\n  \"objective\": \"Extend GroveConfig::load with a legacy-migration branch that reads .grove/explore.json, synthesises a GroveConfig (mode=mcp-llm, mapped steering), rewrites to config.json atomically, and emits a deprecation warning.\",\n  \"key_changes\": [\n    \"Add private `LegacyExploreRaw` struct in config.rs with old `mode: String` steering key mirroring the pre-S03 explore.json wire shape.\",\n    \"Add private `migrate_from_legacy_explore(root)` fn: reads explore.json, maps old `mode` → Steering, builds GroveConfig, saves atomically, warns stderr.\",\n    \"Extend GroveConfig::load: config.json present → existing path; explore.json present → migration; neither → actionable error (unchanged).\",\n    \"Deprecation warning on stderr directs users to commit config.json and remove explore.json from the repo.\",\n    \"Migration does NOT delete explore.json — grove doctor (later task) will warn on its presence.\",\n    \"No changes to explore/config.rs — ExploreConfig::config_path is reused read-only from config.rs.\",\n    \"Test 5a: legacy explore.json (old mode key) migrates → config.json with mode=McpLlm and correct explore.steering.\",\n    \"Test 5b: second load reads config.json directly; does not re-enter migration; explore.json is unmodified.\",\n    \"Test 5c: config.json present alongside stale explore.json — stale file silently ignored.\",\n    \"Test 5d: deprecation warning path is exercised by the migration.\",\n    \"All existing T01 tests unaffected; cargo clippy -D warnings must be clean.\",\n    \"Material change: version bump required at release — config.json created for all deployed mcp-llm projects on next load.\"\n  ],\n  \"verdict\": \"n/a\",\n  \"written_at\": \"2026-07-04T00:00:00Z\",\n  \"artifact_ref\": \"PLAN.md\"\n}\n"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 627,
+        "cacheRead": 34950,
+        "cacheWrite": 201,
+        "totalTokens": 35779,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.009405,
+          "cacheRead": 0.010485,
+          "cacheWrite": 0.00075375,
+          "total": 0.020646750000000002
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189325837,
+      "responseId": "msg_019ywjvqDGWbkuSpvpiUryn8"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_019fvy3T7KxiWM3j9HnvDF5N",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "Wrote 1740 bytes to engineering/sprints/GROVE-S03/GROVE-S03-T02/PLAN-SUMMARY.json"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189333658
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01HNPGmkYcDysKXt4gq6twzM",
+          "name": "forge_store",
+          "arguments": {
+            "command": "set-summary",
+            "args": [
+              "GROVE-S03-T02",
+              "plan"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 84,
+        "cacheRead": 35151,
+        "cacheWrite": 674,
+        "totalTokens": 35910,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.00126,
+          "cacheRead": 0.010545299999999999,
+          "cacheWrite": 0.0025275,
+          "total": 0.0143358
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189333658,
+      "responseId": "msg_018kP1jFs5EdktahEuYQWpni"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01HNPGmkYcDysKXt4gq6twzM",
+      "toolName": "forge_store",
+      "content": [
+        {
+          "type": "text",
+          "text": "OK"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189337271
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Now transition the task to `planned`:"
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_011RV9gari7xw5awGbV9oVqF",
+          "name": "forge_store",
+          "arguments": {
+            "command": "update-status",
+            "args": [
+              "task",
+              "GROVE-S03-T02",
+              "status",
+              "planned"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 99,
+        "cacheRead": 35825,
+        "cacheWrite": 97,
+        "totalTokens": 36022,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.001485,
+          "cacheRead": 0.0107475,
+          "cacheWrite": 0.00036375,
+          "total": 0.01259925
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783189337271,
+      "responseId": "msg_01KJH1AgKXoVcUZN8vUopAUR"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_011RV9gari7xw5awGbV9oVqF",
+      "toolName": "forge_store",
+      "content": [
+        {
+          "type": "text",
+          "text": "OK"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783189340108
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "The plan is complete. Here's a summary of what was produced:\n\n---\n\n## Plan Summary — GROVE-S03-T02\n\n**What this task builds:** A one-shot legacy migration inside `GroveConfig::load` that prevents deployed `mcp-llm` projects from silently falling back to Standard mode after upgrading to S03.\n\n### Technical approach (single-file change: `core/src/config.rs`)\n\n1. **`LegacyExploreRaw` (private struct)** — deserialises the pre-S03 `explore.json` wire shape, where the steering level was encoded under the key `\"mode\"` (not `\"steering\"`). All other fields match current `RawExploreConfig`.\n\n2. **`migrate_from_legacy_explore(root)` (private fn)** — reads `ExploreConfig::config_path(root)`, maps `mode → Steering`, constructs `GroveConfig { version: 1, mode: McpLlm, explore: Some(...) }`, saves it atomically via `GroveConfig::save`, and emits a deprecation warning to stderr.\n\n3. **`GroveConfig::load` — three-branch cascade:**\n   - `config.json` present → existing path (no change)\n   - `config.json` absent, `explore.json` present → migration branch (new)\n   - neither present → unchanged actionable error\n\n### Tests added (4 required by AC 5)\n| ID | What it proves |\n|---|---|\n| 5a | `explore.json` with old `\"mode\": \"balanced\"` → `config.json` with `mode=McpLlm`, `steering=Balanced` |\n| 5b | Second `load` after migration reads `config.json`; legacy file untouched |\n| 5c | `config.json` + stale `explore.json` → `config.json` wins, legacy ignored |\n| 5d | Migration path exercises the deprecation warning |\n\n**Material change** — version bump required at release."
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "input": 1,
+        "output": 481,
+        "cacheRead": 35922,
+        "cacheWrite": 112,
+        "totalTokens": 36516,
+        "cost": {
+          "input": 0.000003,
+          "output": 0.007215,
+          "cacheRead": 0.010776599999999999,
+          "cacheWrite": 0.00042,
+          "total": 0.0184146
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "stop",
+      "timestamp": 1783189340108,
+      "responseId": "msg_014jNwFNCnCmWnY1cozbi8ui"
+    }
+  ]
+}

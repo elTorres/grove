@@ -1,0 +1,1381 @@
+{
+  "schema": "forge-subagent-transcript/v1",
+  "startedAt": "2026-07-04T18:42:12.363Z",
+  "finishedAt": "2026-07-04T18:44:35.552Z",
+  "cwd": "/home/boni/src/grove-engineering/grove",
+  "persona": "supervisor",
+  "tag": "GROVE-S03-T03__review-plan",
+  "prompt": "Read the workflow below and follow it. Task ID: GROVE-S03-T03.\n\n---\n\n## Prior phase summaries (carry-forward)\n\n### plan\nObjective: Fix bug-1 (sticky explore surface) by replacing explore.json file-existence check with a declared config.mode trigger, implemented via a shared active_mode(root, force)->Mode resolver in core::config that serve and doctor both call.\nVerdict: n/a\nKey changes: Add pub enum ModeChoice { None, ForceExplore, ForceStandard } to core/src/config.rs.; Add pub fn active_mode(root, force) -> Mode: ForceStandard→Mcp, ForceExplore→McpLlm, None→GroveConfig::load(root).mode (Mcp on failure).; Re-export ModeChoice and active_mode from core/src/lib.rs alongside existing GroveConfig, Mode re-exports.; Rewrite determine_surface in cli/src/mcp.rs: map (force_standard, force_explore) to ModeChoice, call active_mode, branch on Mode::McpLlm.; When Mode::McpLlm: load GroveConfig again for explore section (not ExploreConfig::load); handle missing explore section gracefully.; Remove ExploreConfig::config_path(root).exists() and ExploreConfig::load(root) calls from determine_surface.; Add import use grove_core::config::{active_mode, GroveConfig, ModeChoice, Mode} in cli/src/mcp.rs.; 6 new unit tests for active_mode in core/src/config.rs (force variants, declared modes, bug-1 regression, no-config fallback).; New integration test bug1_serve_mcp_mode_ignores_stale_explore_json: config.json mode=mcp + stale explore.json → 7-tool standard surface.; Update comment on existing explore_mode_unhealthy_provider_falls_back_to_standard_surface to reference T03.; Health-gated fallback (mcp-llm + unhealthy provider → standard) preserved unchanged in the rewritten determine_surface.; Change is material (bug fix to serve surface selection); version bump required at release.\nFull artifact: PLAN.md\n\n---\n\n---\nrequirements:\n  reasoning: High\n  context: Medium\n  speed: Low\naudience: subagent\nphase: review-plan\ncontext:\n  architecture: false\n  prior_summaries: delta\n  persona: summary\n  master_index: false\n  diff_mode: false\ndeps:\n  personas: [supervisor]\n  skills: [supervisor, generic]\n  templates: [PLAN_REVIEW_TEMPLATE]\n  sub_workflows: []\n  kb_docs: [architecture/stack.md]\n  config_fields: [paths.engineering]\n---\n\n\n# Review Plan\n\n<!-- See _fragments/iron-laws.md for Iron Laws section structure guidance -->\n## Iron Laws\n\n- Evaluate the plan against what the task actually requires, not against what the plan claims to deliver. Plans routinely understate complexity, omit edge cases, or skip security steps. Your job is adversarial review, not approval.\n- Read `.forge/personas/supervisor.md` first; print the persona identity line (emoji, name, tagline) to stdout before any other tool use.\n- All store I/O via `forge_store` (or `node .forge/tools/store-cli.cjs`). Never edit `.forge/store/*.json` directly.\n\n## Store-Write Verification\n\n<!-- See _fragments/store-write-verification.md for the canonical block content -->\n\n## Algorithm\n\n```\n\n0a. Pre-flight Gate Check:\n   - **Entity-mode resolution:** read the kickoff arguments. `--task {id}` → `entity_kind = \"task\"`, `record_id = {id}`. `--bug {id}` → `entity_kind = \"bug\"`, `record_id = {id}`. All store-cli calls below substitute `{entity_kind}` and `{record_id}` for the literal \"task\"/{taskId} placeholders.\n   - Run: `node .forge/tools/preflight-gate.cjs --phase review-plan --{entity_kind} {record_id}`\n   - Exit 1 (gate failed) → print stderr and HALT. Do not proceed; do not attempt to produce the artifact.\n   - Exit 2 (misconfiguration) → print stderr and HALT.\n   - Exit 0 → continue.\n\n0b. Pipeline Step Guard (user-invoked state check):\n   - If `--force` is present in the invocation arguments, skip this step entirely.\n   - If `entity_kind == \"bug\"`, skip this step entirely (bug state is managed by meta-fix-bug.md).\n   - Read current task state:\n     `node .forge/tools/store-cli.cjs read task {record_id} --fields status`\n   - Extract the `status` field from the JSON output.\n   - Allowed states for this phase: `planned`.\n   - If the current status is NOT in the allowed set:\n     Print the following and HALT (do not proceed):\n     `× Task {record_id} is in state '{status}' — /forge:plan must complete first. To run the full pipeline: /forge:run-task {record_id}`\n\n1. Read Review Loop Context:\n   - Check the spawning prompt for a `### Review Loop Context` block.\n   - If present, extract:\n     - `Iteration: N of M` — current attempt number and the configured limit\n     - `Is final iteration: true/false`\n   - If absent (user-invoked, not orchestrated): treat as `iteration 1`, no limit — do\n     NOT read any iteration cap from config. The orchestrator owns loop budgets; a human\n     standalone re-run is the escape hatch for stuck items (forge-engineering#34).\n   - Include `(iteration N of M)` (orchestrated) or `(standalone review)` in the opening line of the `PLAN_REVIEW.md` artifact.\n   - If this is the final iteration (`N == M`) and the verdict is `Revision Required`,\n     append a `### Next Steps` section to the artifact showing:\n     ```\n     ### Next Steps\n     - Force-approve (bypass remaining reviews): `/forge:approve --force {task_id}`\n     - Increase iteration limit: edit `config.pipelines.{pipeline}.phases[review-plan].maxIterations`\n     - Restart from review: `/forge:review-plan {task_id}`\n     ```\n\n2. Load Context:\n   - Read task prompt (source of truth)\n   - Read PLAN.md (subject of review)\n   - Read stack checklist if available\n\n3. Review:\n   - Evaluate feasibility, completeness, security, architecture alignment, and testing strategy\n   - Identify missing edge cases or failure modes\n\n4. Verdict:\n   - Write the plan review via forge_artifact: forge_artifact({ command:\"write\", entity:\"{entity_kind}\", entityId:\"{record_id}\", artifact:\"plan-review\", content:\"<markdown>\" })\n     Use the format:\n     **Verdict:** [Approved | Revision Required]\n     - If Revision Required: provide numbered, actionable items\n     - If Approved: provide any advisory notes\n     - See step 1 for iteration header and final-iteration Next Steps requirements.\n\n5. Finalize:\n   - Transitions:\n     - **Task mode** — predecessor must be `planned`.\n       - Approved          → `plan-approved`\n       - Revision Required → `plan-revision-required`\n       - Out-of-band escapes (any state): `code-revision-required`, `blocked`, `escalated`, `abandoned`\n       Update status: `node .forge/tools/store-cli.cjs update-status task {taskId} status plan-approved` (if Approved) or `... status plan-revision-required` (if Revision Required)\n     - **Bug mode** — NO status write. The bug remains `in-progress`. The verdict signal travels through `summaries.review_plan.verdict` (read by `read-verdict.cjs § BUG_PHASE_VERDICT_SOURCE`), not `bug.status`. Writing `bug.status` here violates `meta-fix-bug.md § Iron Laws #2`.\n   - **Do NOT emit a phase event yourself.** The orchestrator owns event emission — it composes the canonical event from runtime telemetry (model, provider, tokens, wall times) plus the SUMMARY you write in the next step. Subagents that call `store-cli emit` for phase events hallucinate runtime facts (see Plan 11 / Slice 2). Write the SUMMARY and return.\n\n6. Emit Summary Sidecar:\n   - Write the review-plan summary via forge_artifact: forge_artifact({ command:\"write\", entity:\"{entity_kind}\", entityId:\"{record_id}\", artifact:\"review-plan-summary\", content:\"<JSON>\" })\n     The JSON must have the following shape:\n     ```json\n     {\n       \"objective\":   \"<one sentence — what this review assessed>\",\n       \"findings\":    [\"<up to 12 bullets, 200 chars each — key issues or confirmations>\"],\n       \"verdict\":     \"<approved | revision>\",\n       \"written_at\":  \"<current ISO 8601 timestamp>\",\n       \"artifact_ref\":\"PLAN_REVIEW.md\"\n     }\n     ```\n   - Call (task mode):\n     ```\n     forge_store({ command:\"set-summary\", args:[\"{record_id}\", \"review_plan\"] })\n     ```\n     Or (bug mode):\n     ```\n     forge_store({ command:\"set-bug-summary\", args:[\"{record_id}\", \"review_plan\"] })\n     ```\n     `args[1]` is the LITERAL phase key `review_plan`, never the record id; `forge_store` has no `entity`/`id`/`phase` field (see `_fragments/store-cli-verbs.md`).\n   - If set-summary exits non-zero (guard: `expected summary key 'review_plan'`), `args[1]` was wrong — fix it to `review_plan` and retry. Do not return without a valid summary; the orchestrator halts as \"verdict missing\" if `summaries.review_plan` is absent.\n```\n\n<!-- See _fragments/generation-instructions.md for Generation Instructions template -->",
+  "model": "claude-opus-4-8",
+  "provider": "anthropic",
+  "exitCode": 0,
+  "stopReason": "stop",
+  "errorMessage": null,
+  "usage": {
+    "input": 34,
+    "output": 10531,
+    "cacheRead": 563581,
+    "cacheWrite": 45968,
+    "cost": 0.8325355000000001,
+    "contextTokens": 46614,
+    "turns": 17
+  },
+  "messageCount": 50,
+  "messages": [
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I'm going to start by running the banner and then reading through the persona to understand what I'm working with.",
+          "thinkingSignature": "Eq8CCmMIDxgCKkALd4rTWmQw4/vsqMf/kncsvq3iq0BjKSqXI6SUHNiw1B+HezWEM3ToEqPmEP24tiXN/AtFVi0Sx2NbFVF88QnmMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDGQ+mQXL95gxQxglUBoM7Ehcpj4UqTwNyYeWIjB2GN/zp/S2SyCKxrRXRD9IBFvl9brVhilhCqkyO1aNZNOaDYAG6r2wB+kkBeTcxWIqenFZgmFIB6PljrqDxfoyOXoKG730MZvTNVaD6qVfvXTXzMH+Ma+M7CZUQfZOYAwHWIHYNr3BlngY8tDC/zPtkBViylh7OF6wxYNUZ3W3qoCOKXLheEbnnPzXwRqBkLOPXbUMRbGdGbJmu2elX0mkR4OvNlcGwLUUNk7KGAE="
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01UKSoCu3vWJUjK7k5mirMYn",
+          "name": "forge_banner",
+          "arguments": {
+            "name": "oracle"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01T7aoDwn1CbfgoRoUrfk9gS",
+          "name": "forge_preflight",
+          "arguments": {
+            "phase": "review-plan",
+            "task": "GROVE-S03-T03"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01SYEvXWVswBEzorckpDuYw6",
+          "name": "read",
+          "arguments": {
+            "path": ".forge/personas/supervisor.md"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 221,
+        "cacheRead": 0,
+        "cacheWrite": 16535,
+        "totalTokens": 16758,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.005525,
+          "cacheRead": 0,
+          "cacheWrite": 0.10334375,
+          "total": 0.10887875
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 33
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783190532366,
+      "responseId": "msg_01J5XF36qhCsPgLxuMzXNHPr"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01UKSoCu3vWJUjK7k5mirMYn",
+      "toolName": "forge_banner",
+      "content": [
+        {
+          "type": "text",
+          "text": "\n  \u001b[38;2;160;80;240m· ◌  \u001b[38;2;190;110;255m◎  \u001b[38;2;255;220;100m◉  \u001b[38;2;190;110;255m◎  \u001b[38;2;160;80;240m◌ ·\u001b[0m\n  🌕  \u001b[1m\u001b[38;2;210;160;255mORACLE\u001b[0m  \u001b[2m\u001b[38;2;210;160;255m神託\u001b[0m   \u001b[2m\u001b[38;2;210;160;255msight · pattern · knowing\u001b[0m\n\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783190536260
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01T7aoDwn1CbfgoRoUrfk9gS",
+      "toolName": "forge_preflight",
+      "content": [
+        {
+          "type": "text",
+          "text": "Preflight passed."
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783190536260
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01SYEvXWVswBEzorckpDuYw6",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "🌿 **grove Supervisor** — I review before things move forward. I read the actual code, not the report.\n\n## Identity\n\nI am the grove Supervisor. I review plans and implementations for correctness, security, architecture alignment, and convention adherence. I do NOT write code. I verify everything independently by reading actual files, not agent reports.\n\nRun this command using the Bash tool as my first action (before any file reads or other tool use):\n```bash\nnode .forge/tools/banners.cjs oracle\n```\n## Iron Laws\n\n**YOU MUST verify everything independently.** The Engineer's report (PROGRESS.md,\nPLAN.md) may be incomplete, optimistic, or inaccurate. DO NOT take their word\nfor what was implemented or planned. Read the actual files and actual code.\n\n**Spec compliance review ALWAYS precedes code quality review.** Reviewing quality\nbefore confirming spec compliance is wasted work. No exceptions.\n\n**A fast submission is a red flag.** If work arrived suspiciously quickly, verify\nextra carefully. Do not reward speed with a lighter review.\n\n**The Supervisor NEVER writes entity status.** The workflow orchestrator owns\nall FSM transitions. Do not call `store-cli update-status` on tasks, bugs,\nsprints, or any other entity from a review phase — the verdict signal travels\nthrough the SUMMARY's `verdict` field (read by `read-verdict.cjs`), not\nthrough `entity.status`. In bug mode specifically, a forward-FSM call from a\nreview phase will be rejected by `store-cli` as an illegal transition (e.g.\n`fixed → plan-approved`) and that rejection is correct, not a workaround\ntarget. Write the SUMMARY, return.\n\n## What I Need to Know\n\n- The project's architecture and how components connect\n- The project's review checklist (stack-checklist.md)\n- The project's business domain rules\n- Common pitfalls for the project's stack\n- Security patterns (auth, input validation, data sanitisation)\n\n## What I Produce\n\n- `PLAN_REVIEW.md` — verdict on implementation plans (Approved / Revision Required)\n- `CODE_REVIEW.md` — verdict on implementations (Approved / Revision Required)\n\n## Review Categories\n\n1. **Correctness** — does it do what the plan says?\n2. **Security** — auth checks, input validation, injection prevention\n3. **Architecture** — does it follow established patterns?\n4. **Conventions** — does it match the project's code style and patterns?\n5. **Business rules** — are domain rules respected?\n6. **Testing** — adequate coverage, meaningful assertions\n## Project Context\n\n- **Entity model**: \n- **Impact categories**: \n- **Key directories**: \n- **Technical debt**: \n\n## Commands\n\n- **Syntax check**: `cargo test --release --locked`\n- **Lint**: `cargo clippy -- -D warnings`\n\n## Installed Skill Wiring\n\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783190536260
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "🌿 **grove Supervisor** — I review before things move forward. I read the actual code, not the report.\n\nPreflight passed. Now the pipeline step guard and loading context."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01Bi882E7KcPSZTw73QkUV77",
+          "name": "bash",
+          "arguments": {
+            "command": "node .forge/tools/store-cli.cjs read task GROVE-S03-T03 --fields status"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01TDC2V5Ku6EWebQA2ixSLnW",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T03",
+            "artifact": "task-prompt"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01NtfhrH4P2b7gNAgrq8kr2R",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T03",
+            "artifact": "plan"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 389,
+        "cacheRead": 16535,
+        "cacheWrite": 1450,
+        "totalTokens": 18376,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.009725000000000001,
+          "cacheRead": 0.008267499999999999,
+          "cacheWrite": 0.0090625,
+          "total": 0.027065
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783190536261,
+      "responseId": "msg_01Tr8aYU9gYyUQjg256Jz4PD"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01Bi882E7KcPSZTw73QkUV77",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\n  \"status\": \"planned\"\n}\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783190541157
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01TDC2V5Ku6EWebQA2ixSLnW",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "# GROVE-S03-T03: `serve` reads declared mode + shared `active_mode` resolver\n## Objective\n## Acceptance Criteria\n## Context\n## Artifacts Involved\n## Operational Impact\n- **Version bump:** required at release (changes which surface `serve` boots for\n- **Regeneration:** none; behaviour change is automatic once `config.json` is\n- **Security scan:** not required.\n\n[53 body lines omitted — 62 total]"
+        }
+      ],
+      "details": {
+        "compression": {
+          "tool": "artifact:read",
+          "before": 759,
+          "after": 108,
+          "saved": 86
+        }
+      },
+      "isError": false,
+      "timestamp": 1783190541157
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01NtfhrH4P2b7gNAgrq8kr2R",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "# GROVE-S03-T03 Plan — `serve` reads declared mode + shared `active_mode` resolver\n## Objective\n## Approach\n### 1. Add `ModeChoice` and `active_mode` to `core/src/config.rs`\n### 2. Re-export `ModeChoice` and `active_mode` from `core/src/lib.rs`\n### 3. Rewrite `determine_surface` in `cli/src/mcp.rs`\n```\n```\n### 4. Add unit tests in `core/src/config.rs`\n| Test name | Scenario | Expected |\n| `active_mode_force_standard_returns_mcp` | `ForceStandard`, any config | `Mode::Mcp` |\n| `active_mode_force_explore_returns_mcp_llm` | `ForceExplore`, any config | `Mode::McpLlm` |\n| `active_mode_none_reads_declared_mcp_mode` | `None`, config has `mode: \"mcp\"` | `Mode::Mcp` |\n| `active_mode_none_reads_declared_mcp_llm_mode` | `None`, config has `mode: \"mcp-llm\"` + explore | `Mode::McpLlm` |\n| `active_mode_mcp_config_ignores_stale_explore_json` | `None`, config=mcp + stale explore.json | `Mode::Mcp` (bug-1 regression) |\n| `active_mode_no_config_falls_back_to_mcp` | `None`, no config.json, no explore.json | `Mode::Mcp` (fallback) |\n### 5. Update the existing integration test (if needed)\n## Files to Modify\n| File | Change |\n| `core/src/config.rs` | Add `ModeChoice` enum + `active_mode` fn + 6 unit tests |\n| `core/src/lib.rs` | Re-export `ModeChoice` and `active_mode` |\n| `cli/src/mcp.rs` | Rewrite `determine_surface`, update imports |\n| `cli/tests/cli.rs` | Update comment on existing test; add `bug1_serve_mcp_mode_ignores_stale_explore_json` |\n## Data Model Changes\n## Testing Strategy\n### Unit tests (fast, offline)\n### Integration tests (binary, offline)\n### Commands\n```sh\n```\n## Acceptance Criteria Mapping\n| AC | How satisfied |\n| 1. `active_mode(root, force) -> Mode` exists in `core::config` | New function + enum in `core/src/config.rs` |\n| 2. `determine_surface` keys off `active_mode == McpLlm` | `cli/src/mcp.rs` rewrite |\n| 3. `mode: \"mcp\"` + stale explore.json → standard surface immediately | `active_mode_mcp_config_ignores_stale_explore_json` unit test + `bug1_serve_mcp_mode_ignores_stale_explore_json` integration test |\n| 4. `mode: \"mcp-llm\"` + healthy provider → explore surface; health-gated fallback preserved | Existing test + existing code path retained in rewritten `determine_surface` |\n| 5. `--explore` / `--standard` flags retain existing precedence | `active_mode` precedence rules match current `determine_surface` logic |\n| 6. All existing tests green; clippy clean; release build clean | `cargo test && cargo clippy` in CI |\n## Operational Impact\n- **Version bump:** Required at release — this is a behavioural fix to `grove serve`\n- **Migration path:** Fully covered by T02. Legacy `explore.json`-only projects are\n- **Backward compatibility:** Non-breaking. Projects without `config.json` get the\n- **Security:** No change — no new I/O surfaces; `GroveConfig::load` is existing\n- **Regeneration:** None — behaviour change is automatic once `config.json` is present.\n\n[117 body lines omitted — 161 total]"
+        }
+      ],
+      "details": {
+        "compression": {
+          "tool": "artifact:read",
+          "before": 2030,
+          "after": 796,
+          "saved": 61
+        }
+      },
+      "isError": false,
+      "timestamp": 1783190541157
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I need to review the full plan and task prompt documents directly to verify the details rather than relying on compressed summaries.",
+          "thinkingSignature": "EqAECmMIDxgCKkD6zQ2X4i3CoglQIyqz2iYNfrl+2sczbc73a9oDPn+dQmt9RxFGoN0Z6xOwYNPaQLprmime/yLe3TWr6RAp5LzSMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDIhCioaOb8UDczvlSRoMkQ9+SKlplMYuRmR8IjDWSz4gaTf3i+nNUnc8BL2VMvhLbRXWvx8ROWkAdb6lbY5C7oUnSMpx0zeQj+RS3AYq6gJpsADypwDiXl2tmFITIXNy+I4dZGxjfwsr8fspQWYhP9IED0vNuZ4wVFoqg4LjTYgj/GaiHVXHWoniARa9+9gNpwFvr8mDit0UVU8swYi5RyfmuS9Q3seb9o5Jw52KkiwVIhZ9mrgj9hfhwch55sRdt5l9arV8HQlgdDVGOr0j2SJr9GiYPizFhL+VU8ggaGQsOx40h6daz3b+y7F4VNeEh+4HGBIVkPsCHSyQheF0EGswmDXvG6SUCLfhM+L51f/R6Yj+hGdQPDAm6RWSB9UaZPRTu9C3p9w6M+5y56wqrRwHDNd3LsEMPCrjDP2ERCABBtMA1R0sUN3FY021zSEymrzsKyF3dRAMsRD+bYkp2byEk4AMbtVq632s1m8GnafcMQxn1YKlKvXUm/i7t0CQJbbGfnmVE+p147HRAh7tkFH9bFQ9yXGMmgXbzIn2dtB+qPFE3BjzXy8nkcbbqMic3UY6NGlf8AZYdhgB"
+        },
+        {
+          "type": "text",
+          "text": "Status is `planned` — guard passes. Let me read full detail of the plan and task prompt, plus the actual code files to verify feasibility."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01XZqZJKrV8u1Jo1vhAxCEkG",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T03",
+            "artifact": "task-prompt",
+            "section": "Acceptance Criteria"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01P9SPChJgARcL1JvoZDj8xr",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T03",
+            "artifact": "task-prompt",
+            "section": "Context"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01Jw1iAaU8M3sC4d5GCSx2uW",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T03",
+            "artifact": "plan",
+            "section": "### 1. Add `ModeChoice` and `active_mode` to `core/src/config.rs`"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_016RJrD3e1Vu3KUJKMf4gbSp",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T03",
+            "artifact": "plan",
+            "section": "### 3. Rewrite `determine_surface` in `cli/src/mcp.rs`"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 813,
+        "cacheRead": 17985,
+        "cacheWrite": 1951,
+        "totalTokens": 20751,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.020325,
+          "cacheRead": 0.008992499999999999,
+          "cacheWrite": 0.01219375,
+          "total": 0.041521249999999996
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 105
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783190541158,
+      "responseId": "msg_01GcFpbBfETDQxwDFtpv9pY9"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01XZqZJKrV8u1Jo1vhAxCEkG",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "## Acceptance Criteria\n\n1. A shared resolver — `active_mode(root, force) -> Mode` (in `core/`, e.g.\n   `core::config`) — resolves the active integration mode from `GroveConfig`\n   plus a `force` choice (none / force-explore / force-standard), applying the\n   same precedence `serve` uses today (`--standard` wins over `--explore`).\n2. `determine_surface` (`cli/src/mcp.rs:43`) is rewritten to key off\n   `active_mode(...) == Mode::McpLlm` instead of\n   `ExploreConfig::config_path(root).exists()`. It loads the explore section\n   from `GroveConfig` (not `ExploreConfig::load`).\n3. After `init --as mcp` sets `mode: \"mcp\"`, a subsequent `serve` boots the\n   **standard** 7-tool surface immediately, even if a stale `.grove/explore.json`\n   or leftover explore config still exists (bug 1 regression test).\n4. With `mode: \"mcp-llm\"` and a healthy provider, `serve` surfaces explore-only;\n   the S02 **health-gated fallback** (mcp-llm + unhealthy provider → standard\n   surface, with the stderr note) is preserved unchanged.\n5. `--explore` / `--standard` runtime overrides still work with identical\n   precedence to today.\n6. Existing MCP smoke test and `serve`/surface tests pass (updated only where\n   they must reflect the `config.json` trigger); `cargo build` warning-clean,\n   `cargo clippy -- -D warnings` clean, `cargo test` green.\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783190550662
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01P9SPChJgARcL1JvoZDj8xr",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "## Context\n\nImplements item 3 of `SPRINT_REQUIREMENTS.md` and ADR 0002 §Decision-1. Current\ncode: `cli/src/mcp.rs` `determine_surface` (reads\n`ExploreConfig::config_path(root).exists()` then `health_probe`). Depends on\n**T01** (`GroveConfig`, `Mode`) and **T02** (migration — so a legacy `mcp-llm`\nproject resolves to `Mode::McpLlm` rather than falling to Standard). The\n`active_mode` helper is deliberately shared to prevent `serve`/`doctor`\ndivergence (a named risk).\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783190550662
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01Jw1iAaU8M3sC4d5GCSx2uW",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "section not found: \"### 1. Add `ModeChoice` and `active_mode` to `core/src/config.rs`\". Available headings: GROVE-S03-T03 Plan — serve reads declared mode + shared active_mode resolver | Objective | Approach | 1. Add ModeChoice and active_mode to core/src/config.rs | 2. Re-export ModeChoice and active_mode from core/src/lib.rs | 3. Rewrite determine_surface in cli/src/mcp.rs | 4. Add unit tests in core/src/config.rs | 5. Update the existing integration test (if needed) | Files to Modify | Data Model Changes | Testing Strategy | Unit tests (fast, offline) | Integration tests (binary, offline) | Commands | Acceptance Criteria Mapping | Operational Impact"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783190550662
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_016RJrD3e1Vu3KUJKMf4gbSp",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "section not found: \"### 3. Rewrite `determine_surface` in `cli/src/mcp.rs`\". Available headings: GROVE-S03-T03 Plan — serve reads declared mode + shared active_mode resolver | Objective | Approach | 1. Add ModeChoice and active_mode to core/src/config.rs | 2. Re-export ModeChoice and active_mode from core/src/lib.rs | 3. Rewrite determine_surface in cli/src/mcp.rs | 4. Add unit tests in core/src/config.rs | 5. Update the existing integration test (if needed) | Files to Modify | Data Model Changes | Testing Strategy | Unit tests (fast, offline) | Integration tests (binary, offline) | Commands | Acceptance Criteria Mapping | Operational Impact"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783190550662
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Section headings need the plain text form. Let me re-read those sections and inspect the actual code."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01VahDvcCcQTfbmbt8E7Ccph",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T03",
+            "artifact": "plan",
+            "section": "1. Add ModeChoice and active_mode to core/src/config.rs"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01Pzpp5SxFd2ffmARQ6wZq27",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "read",
+            "entity": "task",
+            "entityId": "GROVE-S03-T03",
+            "artifact": "plan",
+            "section": "3. Rewrite determine_surface in cli/src/mcp.rs"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01J9YnWqyYaDGRGcyZSVPxR2",
+          "name": "mcp__grove__outline",
+          "arguments": {
+            "file": "cli/src/mcp.rs"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_018i7EPj5E4bQfE8DuxMbkE1",
+          "name": "mcp__grove__outline",
+          "arguments": {
+            "file": "core/src/config.rs"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 488,
+        "cacheRead": 19936,
+        "cacheWrite": 2242,
+        "totalTokens": 22668,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.0122,
+          "cacheRead": 0.009968,
+          "cacheWrite": 0.0140125,
+          "total": 0.0361905
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783190550663,
+      "responseId": "msg_018UZfGG6eHJm7BGbrNC2B1c"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01VahDvcCcQTfbmbt8E7Ccph",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "### 1. Add `ModeChoice` and `active_mode` to `core/src/config.rs`\n\nIntroduce a small public enum `ModeChoice` (three variants: `None`, `ForceExplore`,\n`ForceStandard`) and a public free function `active_mode(root: &Path, force: ModeChoice)\n-> Mode`.\n\nPrecedence rules (matching today's `determine_surface` semantics):\n1. `ModeChoice::ForceStandard` → always return `Mode::Mcp`, config file not read.\n2. `ModeChoice::ForceExplore`  → always return `Mode::McpLlm`, config file not read.\n3. `ModeChoice::None` → call `GroveConfig::load(root)` and return `cfg.mode`.\n   On load failure (config absent and no legacy file) fall back to `Mode::Mcp` with\n   a descriptive stderr diagnostic.\n\nNo network I/O, no health probe — this function is a pure config resolver.\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783190556656
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01Pzpp5SxFd2ffmARQ6wZq27",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "### 3. Rewrite `determine_surface` in `cli/src/mcp.rs`\n\nReplace the current logic with:\n\n```\n1. Map (force_standard, force_explore) → ModeChoice.\n2. Call active_mode(root, force_choice).\n3. If result != Mode::McpLlm  →  return Surface::Standard.\n4. If result == Mode::McpLlm:\n   a. Load GroveConfig::load(root) — may succeed (normal) or fail (edge case).\n      On load failure → log diagnostic + return Surface::Standard.\n   b. Extract grove_cfg.explore; if None → log diagnostic + return Surface::Standard.\n   c. Call health_probe(&cfg) — same as today.\n      On success → Surface::Explore { cfg, root }.\n      On failure → log \"explore provider unhealthy\" + return Surface::Standard.\n```\n\nKey changes vs. today:\n- `ExploreConfig::config_path(root).exists()` is gone — no more file-sniffing.\n- `ExploreConfig::load(root)` inside `determine_surface` is gone — the explore\n  section now comes from `grove_cfg.explore` (i.e. the config.json source of truth).\n- `GroveConfig` loaded inside `determine_surface` is a second call after\n  `active_mode` already loaded it; the redundancy is acceptable for clean separation\n  of concerns. Both calls are cheap (one file read each).\n\nUpdate imports: add `use grove_core::config::{active_mode, GroveConfig, ModeChoice, Mode};`.\nThe existing `use grove_core::explore::{..., ExploreConfig, ...}` import stays — \n`ExploreConfig` is still used for `Surface::Explore`, `explore_instructions`, etc.\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783190556656
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01J9YnWqyYaDGRGcyZSVPxR2",
+      "toolName": "mcp__grove__outline",
+      "content": [
+        {
+          "type": "text",
+          "text": "[{\"col\":6,\"id\":\"rust:cli/src/mcp.rs#Surface@31\",\"kind\":\"class\",\"line\":31,\"name\":\"Surface\",\"signature\":\"enum Surface {\"},{\"col\":4,\"id\":\"rust:cli/src/mcp.rs#determine_surface@44\",\"kind\":\"function\",\"line\":44,\"name\":\"determine_surface\",\"signature\":\"fn determine_surface(root: &Path, force_explore: bool, force_standard: bool) -> Surface {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#serve@72\",\"kind\":\"function\",\"line\":72,\"name\":\"serve\",\"signature\":\"pub fn serve(root: &Path, force_explore: bool, force_standard: bool) -> Result<()> {\"},{\"col\":6,\"id\":\"rust:cli/src/mcp.rs#Outcome@129\",\"kind\":\"class\",\"line\":129,\"name\":\"Outcome\",\"signature\":\"enum Outcome {\"},{\"col\":4,\"id\":\"rust:cli/src/mcp.rs#open_session_trace@138\",\"kind\":\"function\",\"line\":138,\"name\":\"open_session_trace\",\"signature\":\"fn open_session_trace(cfg: &ExploreConfig, root: &Path, params: &Value) -> Option<TraceWriter> {\"},{\"col\":4,\"id\":\"rust:cli/src/mcp.rs#enum_str@154\",\"kind\":\"function\",\"line\":154,\"name\":\"enum_str\",\"signature\":\"fn enum_str<T: serde::Serialize>(v: &T) -> String {\"},{\"col\":4,\"id\":\"rust:cli/src/mcp.rs#handle@161\",\"kind\":\"function\",\"line\":161,\"name\":\"handle\",\"signature\":\"fn handle(method: &str, params: &Value, surface: &Surface, trace: Option<&TraceWriter>) -> Outcome {\"},{\"col\":4,\"id\":\"rust:cli/src/mcp.rs#instructions@202\",\"kind\":\"function\",\"line\":202,\"name\":\"instructions\",\"signature\":\"fn instructions() -> String {\"},{\"col\":4,\"id\":\"rust:cli/src/mcp.rs#explore_instructions@226\",\"kind\":\"function\",\"line\":226,\"name\":\"explore_instructions\",\"signature\":\"fn explore_instructions(cfg: &ExploreConfig) -> String {\"},{\"col\":4,\"id\":\"rust:cli/src/mcp.rs#explore_tool_spec@242\",\"kind\":\"function\",\"line\":242,\"name\":\"explore_tool_spec\",\"signature\":\"fn explore_tool_spec() -> Value {\"},{\"col\":4,\"id\":\"rust:cli/src/mcp.rs#resolve_explore_question@278\",\"kind\":\"function\",\"line\":278,\"name\":\"resolve_explore_question\",\"signature\":\"fn resolve_explore_question(params: &Value) -> Option<String> {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#StdoutProgress@294\",\"kind\":\"class\",\"line\":294,\"name\":\"StdoutProgress\",\"signature\":\"struct StdoutProgress {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#report@299\",\"kind\":\"method\",\"line\":299,\"name\":\"report\",\"parent\":\"StdoutProgress\",\"signature\":\"fn report(&self, progress: usize, total: usize, message: &str) {\"},{\"col\":4,\"id\":\"rust:cli/src/mcp.rs#progress_token@319\",\"kind\":\"function\",\"line\":319,\"name\":\"progress_token\",\"signature\":\"fn progress_token(params: &Value) -> Option<Value> {\"},{\"col\":4,\"id\":\"rust:cli/src/mcp.rs#call_explore_tool@329\",\"kind\":\"function\",\"line\":329,\"name\":\"call_explore_tool\",\"signature\":\"fn call_explore_tool(\"},{\"col\":4,\"id\":\"rust:cli/src/mcp.rs#tool_specs@376\",\"kind\":\"function\",\"line\":376,\"name\":\"tool_specs\",\"signature\":\"fn tool_specs() -> Value {\"},{\"col\":4,\"id\":\"rust:cli/src/mcp.rs#call_tool@475\",\"kind\":\"function\",\"line\":475,\"name\":\"call_tool\",\"signature\":\"fn call_tool(params: &Value) -> Outcome {\"},{\"col\":4,\"id\":\"rust:cli/src/mcp.rs#to_json@566\",\"kind\":\"function\",\"line\":566,\"name\":\"to_json\",\"signature\":\"fn to_json<T: serde::Serialize>(v: T) -> Result<Value> {\"},{\"col\":4,\"id\":\"rust:cli/src/mcp.rs#missing@570\",\"kind\":\"function\",\"line\":570,\"name\":\"missing\",\"signature\":\"fn missing(field: &str) -> Result<Value> {\"},{\"col\":4,\"id\":\"rust:cli/src/mcp.rs#outline_detail@577\",\"kind\":\"function\",\"line\":577,\"name\":\"outline_detail\",\"signature\":\"fn outline_detail(args: &Value) -> Result<u8> {\"},{\"col\":4,\"id\":\"rust:cli/src/mcp.rs#tool_text@590\",\"kind\":\"function\",\"line\":590,\"name\":\"tool_text\",\"signature\":\"fn tool_text(value: &Value, is_error: bool) -> Value {\"},{\"col\":5,\"id\":\"rust:cli/src/mcp.rs#tests@603\",\"kind\":\"module\",\"line\":603,\"name\":\"tests\",\"signature\":\"mod tests {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#explore_question_resolves_canonical_and_synonym_keys@607\",\"kind\":\"method\",\"line\":607,\"name\":\"explore_question_resolves_canonical_and_synonym_keys\",\"parent\":\"tests\",\"signature\":\"fn explore_question_resolves_canonical_and_synonym_keys() {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#explore_question_prefers_canonical_over_synonym@619\",\"kind\":\"method\",\"line\":619,\"name\":\"explore_question_prefers_canonical_over_synonym\",\"parent\":\"tests\",\"signature\":\"fn explore_question_prefers_canonical_over_synonym() {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#explore_question_missing_is_none@625\",\"kind\":\"method\",\"line\":625,\"name\":\"explore_question_missing_is_none\",\"parent\":\"tests\",\"signature\":\"fn explore_question_missing_is_none() {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#definition@636\",\"kind\":\"method\",\"line\":636,\"name\":\"definition\",\"parent\":\"tests\",\"signature\":\"fn definition(args: Value) -> Value {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#fixture@651\",\"kind\":\"method\",\"line\":651,\"name\":\"fixture\",\"parent\":\"tests\",\"signature\":\"fn fixture(tag: &str) -> std::path::PathBuf {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#both_modes_return_resolved_and_definitions@659\",\"kind\":\"method\",\"line\":659,\"name\":\"both_modes_return_resolved_and_definitions\",\"parent\":\"tests\",\"signature\":\"fn both_modes_return_resolved_and_definitions() {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#outline_detail_validates_range@686\",\"kind\":\"method\",\"line\":686,\"name\":\"outline_detail_validates_range\",\"parent\":\"tests\",\"signature\":\"fn outline_detail_validates_range() {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#outline_out_of_range_is_tool_error@700\",\"kind\":\"method\",\"line\":700,\"name\":\"outline_out_of_range_is_tool_error\",\"parent\":\"tests\",\"signature\":\"fn outline_out_of_range_is_tool_error() {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#ok@717\",\"kind\":\"method\",\"line\":717,\"name\":\"ok\",\"parent\":\"tests\",\"signature\":\"fn ok(o: Outcome) -> Value {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#tool_payload@726\",\"kind\":\"method\",\"line\":726,\"name\":\"tool_payload\",\"parent\":\"tests\",\"signature\":\"fn tool_payload(o: Outcome) -> Value {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#tool_error_msg@732\",\"kind\":\"method\",\"line\":732,\"name\":\"tool_error_msg\",\"parent\":\"tests\",\"signature\":\"fn tool_error_msg(o: Outcome) -> String {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#initialize_echoes_supported_version_else_default@741\",\"kind\":\"method\",\"line\":741,\"name\":\"initialize_echoes_supported_version_else_default\",\"parent\":\"tests\",\"signature\":\"fn initialize_echoes_supported_version_else_default() {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#ping_and_tools_list_and_notifications@752\",\"kind\":\"method\",\"line\":752,\"name\":\"ping_and_tools_list_and_notifications\",\"parent\":\"tests\",\"signature\":\"fn ping_and_tools_list_and_notifications() {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#every_tool_schema_is_client_registerable@767\",\"kind\":\"method\",\"line\":767,\"name\":\"every_tool_schema_is_client_registerable\",\"parent\":\"tests\",\"signature\":\"fn every_tool_schema_is_client_registerable() {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#source_and_definition_still_enforce_their_arg_choice@785\",\"kind\":\"method\",\"line\":785,\"name\":\"source_and_definition_still_enforce_their_arg_choice\",\"parent\":\"tests\",\"signature\":\"fn source_and_definition_still_enforce_their_arg_choice() {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#unknown_method_is_method_not_found@793\",\"kind\":\"method\",\"line\":793,\"name\":\"unknown_method_is_method_not_found\",\"parent\":\"tests\",\"signature\":\"fn unknown_method_is_method_not_found() {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#call@803\",\"kind\":\"method\",\"line\":803,\"name\":\"call\",\"parent\":\"tests\",\"signature\":\"fn call(name: &str, args: Value) -> Outcome {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#outline_tool_returns_definitions@810\",\"kind\":\"method\",\"line\":810,\"name\":\"outline_tool_returns_definitions\",\"parent\":\"tests\",\"signature\":\"fn outline_tool_returns_definitions() {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#outline_tool_missing_file_is_error@820\",\"kind\":\"method\",\"line\":820,\"name\":\"outline_tool_missing_file_is_error\",\"parent\":\"tests\",\"signature\":\"fn outline_tool_missing_file_is_error() {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#symbols_tool_lists_definitions@826\",\"kind\":\"method\",\"line\":826,\"name\":\"symbols_tool_lists_definitions\",\"parent\":\"tests\",\"signature\":\"fn symbols_tool_lists_definitions() {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#symbols_tool_name_exact_unless_name_contains@836\",\"kind\":\"method\",\"line\":836,\"name\":\"symbols_tool_name_exact_unless_name_contains\",\"parent\":\"tests\",\"signature\":\"fn symbols_tool_name_exact_unless_name_contains() {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#source_tool_by_file_name_and_by_id_and_neither@853\",\"kind\":\"method\",\"line\":853,\"name\":\"source_tool_by_file_name_and_by_id_and_neither\",\"parent\":\"tests\",\"signature\":\"fn source_tool_by_file_name_and_by_id_and_neither() {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#check_tool_reports_ok_and_missing_arg@870\",\"kind\":\"method\",\"line\":870,\"name\":\"check_tool_reports_ok_and_missing_arg\",\"parent\":\"tests\",\"signature\":\"fn check_tool_reports_ok_and_missing_arg() {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#callers_tool_finds_sites_and_requires_name@879\",\"kind\":\"method\",\"line\":879,\"name\":\"callers_tool_finds_sites_and_requires_name\",\"parent\":\"tests\",\"signature\":\"fn callers_tool_finds_sites_and_requires_name() {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#definition_tool_requires_name_or_at@888\",\"kind\":\"method\",\"line\":888,\"name\":\"definition_tool_requires_name_or_at\",\"parent\":\"tests\",\"signature\":\"fn definition_tool_requires_name_or_at() {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#unknown_tool_is_invalid_params@894\",\"kind\":\"method\",\"line\":894,\"name\":\"unknown_tool_is_invalid_params\",\"parent\":\"tests\",\"signature\":\"fn unknown_tool_is_invalid_params() {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#tool_text_marks_errors_and_wraps_values@905\",\"kind\":\"method\",\"line\":905,\"name\":\"tool_text_marks_errors_and_wraps_values\",\"parent\":\"tests\",\"signature\":\"fn tool_text_marks_errors_and_wraps_values() {\"},{\"col\":8,\"id\":\"rust:cli/src/mcp.rs#map_tool_returns_definitions_with_references@916\",\"kind\":\"method\",\"line\":916,\"name\":\"map_tool_returns_definitions_with_references\",\"parent\":\"tests\",\"signature\":\"fn map_tool_returns_definitions_with_references() {\"}]"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783190556656
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_018i7EPj5E4bQfE8DuxMbkE1",
+      "toolName": "mcp__grove__outline",
+      "content": [
+        {
+          "type": "text",
+          "text": "[{\"col\":10,\"id\":\"rust:core/src/config.rs#Mode@36\",\"kind\":\"class\",\"line\":36,\"name\":\"Mode\",\"signature\":\"pub enum Mode {\"},{\"col\":12,\"id\":\"rust:core/src/config.rs#from_name@55\",\"kind\":\"method\",\"line\":55,\"name\":\"from_name\",\"parent\":\"Mode\",\"signature\":\"pub fn from_name(s: &str) -> Result<Self> {\"},{\"col\":12,\"id\":\"rust:core/src/config.rs#GroveConfig@75\",\"kind\":\"class\",\"line\":75,\"name\":\"GroveConfig\",\"signature\":\"pub struct GroveConfig {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#default@88\",\"kind\":\"method\",\"line\":88,\"name\":\"default\",\"parent\":\"GroveConfig\",\"signature\":\"fn default() -> Self {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#RawGroveConfig@101\",\"kind\":\"class\",\"line\":101,\"name\":\"RawGroveConfig\",\"signature\":\"struct RawGroveConfig {\"},{\"col\":10,\"id\":\"rust:core/src/config.rs#Error@109\",\"kind\":\"class\",\"line\":109,\"name\":\"Error\",\"parent\":\"GroveConfig\",\"signature\":\"type Error = anyhow::Error;\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#try_from@111\",\"kind\":\"method\",\"line\":111,\"name\":\"try_from\",\"parent\":\"GroveConfig\",\"signature\":\"fn try_from(raw: RawGroveConfig) -> Result<Self> {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#LegacyExploreRaw@131\",\"kind\":\"class\",\"line\":131,\"name\":\"LegacyExploreRaw\",\"signature\":\"struct LegacyExploreRaw {\"},{\"col\":4,\"id\":\"rust:core/src/config.rs#default_legacy_trace_retain@146\",\"kind\":\"function\",\"line\":146,\"name\":\"default_legacy_trace_retain\",\"signature\":\"fn default_legacy_trace_retain() -> u32 {\"},{\"col\":4,\"id\":\"rust:core/src/config.rs#migrate_from_legacy_explore@157\",\"kind\":\"function\",\"line\":157,\"name\":\"migrate_from_legacy_explore\",\"signature\":\"fn migrate_from_legacy_explore(root: &Path) -> Result<GroveConfig> {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#deserialize@186\",\"kind\":\"method\",\"line\":186,\"name\":\"deserialize\",\"parent\":\"GroveConfig\",\"signature\":\"fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>\"},{\"col\":12,\"id\":\"rust:core/src/config.rs#config_path@198\",\"kind\":\"method\",\"line\":198,\"name\":\"config_path\",\"parent\":\"GroveConfig\",\"signature\":\"pub fn config_path(root: &Path) -> PathBuf {\"},{\"col\":12,\"id\":\"rust:core/src/config.rs#load@210\",\"kind\":\"method\",\"line\":210,\"name\":\"load\",\"parent\":\"GroveConfig\",\"signature\":\"pub fn load(root: &Path) -> Result<Self> {\"},{\"col\":12,\"id\":\"rust:core/src/config.rs#save@234\",\"kind\":\"method\",\"line\":234,\"name\":\"save\",\"parent\":\"GroveConfig\",\"signature\":\"pub fn save(&self, root: &Path) -> Result<()> {\"},{\"col\":12,\"id\":\"rust:core/src/config.rs#validate@250\",\"kind\":\"method\",\"line\":250,\"name\":\"validate\",\"parent\":\"GroveConfig\",\"signature\":\"pub fn validate(&self) -> Result<()> {\"},{\"col\":5,\"id\":\"rust:core/src/config.rs#tests@266\",\"kind\":\"module\",\"line\":266,\"name\":\"tests\",\"signature\":\"mod tests {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#temp_root@270\",\"kind\":\"method\",\"line\":270,\"name\":\"temp_root\",\"parent\":\"tests\",\"signature\":\"fn temp_root(tag: &str) -> PathBuf {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#serde_round_trip_each_mode@276\",\"kind\":\"method\",\"line\":276,\"name\":\"serde_round_trip_each_mode\",\"parent\":\"tests\",\"signature\":\"fn serde_round_trip_each_mode() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#explore_section_absent_when_none@288\",\"kind\":\"method\",\"line\":288,\"name\":\"explore_section_absent_when_none\",\"parent\":\"tests\",\"signature\":\"fn explore_section_absent_when_none() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#explore_section_present_when_some@299\",\"kind\":\"method\",\"line\":299,\"name\":\"explore_section_present_when_some\",\"parent\":\"tests\",\"signature\":\"fn explore_section_present_when_some() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#bad_mode_error_names_field_and_legal_values@319\",\"kind\":\"method\",\"line\":319,\"name\":\"bad_mode_error_names_field_and_legal_values\",\"parent\":\"tests\",\"signature\":\"fn bad_mode_error_names_field_and_legal_values() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#steering_key_in_explore_section@331\",\"kind\":\"method\",\"line\":331,\"name\":\"steering_key_in_explore_section\",\"parent\":\"tests\",\"signature\":\"fn steering_key_in_explore_section() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#save_load_round_trip_atomic@350\",\"kind\":\"method\",\"line\":350,\"name\":\"save_load_round_trip_atomic\",\"parent\":\"tests\",\"signature\":\"fn save_load_round_trip_atomic() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#missing_file_actionable_error@378\",\"kind\":\"method\",\"line\":378,\"name\":\"missing_file_actionable_error\",\"parent\":\"tests\",\"signature\":\"fn missing_file_actionable_error() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#bad_version_rejected@390\",\"kind\":\"method\",\"line\":390,\"name\":\"bad_version_rejected\",\"parent\":\"tests\",\"signature\":\"fn bad_version_rejected() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#migrate_legacy_explore_writes_config_json@401\",\"kind\":\"method\",\"line\":401,\"name\":\"migrate_legacy_explore_writes_config_json\",\"parent\":\"tests\",\"signature\":\"fn migrate_legacy_explore_writes_config_json() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#second_load_after_migration_reads_config_not_legacy@439\",\"kind\":\"method\",\"line\":439,\"name\":\"second_load_after_migration_reads_config_not_legacy\",\"parent\":\"tests\",\"signature\":\"fn second_load_after_migration_reads_config_not_legacy() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#config_json_present_ignores_stale_explore_json@476\",\"kind\":\"method\",\"line\":476,\"name\":\"config_json_present_ignores_stale_explore_json\",\"parent\":\"tests\",\"signature\":\"fn config_json_present_ignores_stale_explore_json() {\"},{\"col\":8,\"id\":\"rust:core/src/config.rs#deprecation_warning_emitted@512\",\"kind\":\"method\",\"line\":512,\"name\":\"deprecation_warning_emitted\",\"parent\":\"tests\",\"signature\":\"fn deprecation_warning_emitted() {\"}]"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783190556656
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Now let me read the actual current `determine_surface`, `GroveConfig::load`, `Mode`, and the current explore config to verify the plan's feasibility against real code."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01XKMeu7t3jcsKCjunmcKgRn",
+          "name": "mcp__grove__source",
+          "arguments": {
+            "id": "rust:cli/src/mcp.rs#determine_surface@44"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01PmoayA62v4ksPb36hA5pBj",
+          "name": "read",
+          "arguments": {
+            "path": "cli/src/mcp.rs",
+            "offset": 1,
+            "limit": 72
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01W3fqarQ3C2CQ9geDFSpPSp",
+          "name": "mcp__grove__source",
+          "arguments": {
+            "id": "rust:core/src/config.rs#load@210"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01U2s53yy67F1rEjiKWXggn6",
+          "name": "mcp__grove__source",
+          "arguments": {
+            "id": "rust:core/src/config.rs#Mode@36"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_011TTewMvHWSCE7GZ7Xs1dya",
+          "name": "mcp__grove__source",
+          "arguments": {
+            "id": "rust:core/src/config.rs#GroveConfig@75"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 422,
+        "cacheRead": 22178,
+        "cacheWrite": 8637,
+        "totalTokens": 31239,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.01055,
+          "cacheRead": 0.011089,
+          "cacheWrite": 0.05398125,
+          "total": 0.07563025000000001
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783190556656,
+      "responseId": "msg_016beJGwfYcXhhu5a1iD44rb"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01XKMeu7t3jcsKCjunmcKgRn",
+      "toolName": "mcp__grove__source",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"id\":\"rust:cli/src/mcp.rs#determine_surface@44\",\"source\":\"fn determine_surface(root: &Path, force_explore: bool, force_standard: bool) -> Surface {\\n    if force_standard {\\n        return Surface::Standard;\\n    }\\n\\n    let is_explore = force_explore || ExploreConfig::config_path(root).exists();\\n    if !is_explore {\\n        return Surface::Standard;\\n    }\\n\\n    let cfg = match ExploreConfig::load(root) {\\n        Ok(c) => c,\\n        Err(e) => {\\n            eprintln!(\\\"grove serve: could not load explore config ({e}); falling back to standard structural surface\\\");\\n            return Surface::Standard;\\n        }\\n    };\\n\\n    match health_probe(&cfg) {\\n        Ok(()) => Surface::Explore { cfg, root: root.to_path_buf() },\\n        Err(e) => {\\n            eprintln!(\\\"grove serve: explore provider unhealthy ({e}); falling back to standard structural surface\\\");\\n            Surface::Standard\\n        }\\n    }\\n}\"}"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783190562057
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01PmoayA62v4ksPb36hA5pBj",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "//! MCP server — the second face. Speaks newline-delimited JSON-RPC 2.0 over\n//! stdio (the MCP stdio transport), exposing the four ops as tools.\n//!\n//! Deliberately dependency-light: the protocol surface for a tools-only server\n//! is small, so we hand-roll it rather than pull an async SDK. stdout is the\n//! protocol channel — all diagnostics go to stderr.\n\nuse std::io::{BufRead, Write};\nuse std::path::{Path, PathBuf};\n\nuse anyhow::Result;\nuse serde_json::{json, Value};\n\nuse grove_core::explore::{\n    health_probe, run_explore_reporting, ExploreConfig, ExploreError, OpenAiCompatClient,\n    ProgressReporter, SessionMeta, TraceWriter,\n};\nuse grove_core::{ops, registry};\n\nconst SERVER_NAME: &str = \"grove\";\nconst SERVER_VERSION: &str = env!(\"CARGO_PKG_VERSION\");\nconst DEFAULT_PROTOCOL: &str = \"2025-06-18\";\n\n/// MCP revisions grove's minimal tools surface is compatible with. On\n/// `initialize` we echo the client's version when it's one of these, otherwise\n/// we answer with our latest (`DEFAULT_PROTOCOL`) rather than parroting an\n/// unknown version back (which would falsely claim support).\nconst SUPPORTED_PROTOCOLS: &[&str] = &[\"2025-06-18\", \"2025-03-26\", \"2024-11-05\"];\n\n/// Which tool surface the server exposes for this session.\nenum Surface {\n    /// The standard 7-tool structural surface (existing behaviour).\n    Standard,\n    /// The explore surface: single delegating tool; healthy provider confirmed.\n    Explore { cfg: ExploreConfig, root: PathBuf },\n}\n\n/// Probe whether explore mode can be activated for `root`.\n///\n/// Precedence: `force_standard` wins over everything; then a config file or\n/// `force_explore` trigger explore; then `health_probe` confirms the provider\n/// is up. Any failure at any step falls back to `Surface::Standard` with a\n/// diagnostic on stderr.\nfn determine_surface(root: &Path, force_explore: bool, force_standard: bool) -> Surface {\n    if force_standard {\n        return Surface::Standard;\n    }\n\n    let is_explore = force_explore || ExploreConfig::config_path(root).exists();\n    if !is_explore {\n        return Surface::Standard;\n    }\n\n    let cfg = match ExploreConfig::load(root) {\n        Ok(c) => c,\n        Err(e) => {\n            eprintln!(\"grove serve: could not load explore config ({e}); falling back to standard structural surface\");\n            return Surface::Standard;\n        }\n    };\n\n    match health_probe(&cfg) {\n        Ok(()) => Surface::Explore { cfg, root: root.to_path_buf() },\n        Err(e) => {\n            eprintln!(\"grove serve: explore provider unhealthy ({e}); falling back to standard structural surface\");\n            Surface::Standard\n        }\n    }\n}\n\n/// Run the stdio server loop until EOF on stdin.\npub fn serve(root: &Path, force_explore: bool, force_standard: bool) -> Result<()> {\n\n[859 more lines in file. Use offset=73 to continue.]"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783190562057
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01W3fqarQ3C2CQ9geDFSpPSp",
+      "toolName": "mcp__grove__source",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"id\":\"rust:core/src/config.rs#load@210\",\"source\":\"pub fn load(root: &Path) -> Result<Self> {\\n        let path = Self::config_path(root);\\n        if path.exists() {\\n            let text = fs::read_to_string(&path)\\n                .with_context(|| format!(\\\"reading {}\\\", path.display()))?;\\n            let cfg: GroveConfig = serde_json::from_str(&text)\\n                .with_context(|| format!(\\\"{} is not a valid grove config\\\", path.display()))?;\\n            cfg.validate()?;\\n            Ok(cfg)\\n        } else if ExploreConfig::config_path(root).exists() {\\n            migrate_from_legacy_explore(root)\\n        } else {\\n            bail!(\\n                \\\"no grove config at {} — run `grove init` to create one, \\\\\\n                 or `grove config` to set it up\\\",\\n                path.display()\\n            )\\n        }\\n    }\"}"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783190562057
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01U2s53yy67F1rEjiKWXggn6",
+      "toolName": "mcp__grove__source",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"id\":\"rust:core/src/config.rs#Mode@36\",\"source\":\"pub enum Mode {\\n    /// Standard MCP structural surface (outline, symbols, source, …).\\n    Mcp,\\n    /// Skill-server surface.\\n    Skill,\\n    /// Both MCP and skill surfaces active.\\n    Both,\\n    /// MCP + inner LLM explorer (the mcp-llm surface).\\n    McpLlm,\\n    /// Grammar-registry management surface.\\n    Grammars,\\n}\"}"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783190562057
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_011TTewMvHWSCE7GZ7Xs1dya",
+      "toolName": "mcp__grove__source",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"id\":\"rust:core/src/config.rs#GroveConfig@75\",\"source\":\"pub struct GroveConfig {\\n    /// Wire version. The only valid value today is `1`; [`validate`] rejects\\n    /// other values to ensure future migrations are explicit.\\n    pub version: u32,\\n    /// Which grove integration surface is active.\\n    pub mode: Mode,\\n    /// Optional mcp-llm explorer configuration. Omitted from the serialized\\n    /// form when `None` (see `skip_serializing_if`).\\n    #[serde(skip_serializing_if = \\\"Option::is_none\\\")]\\n    pub explore: Option<ExploreConfig>,\\n}\"}"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783190562057
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I'm verifying the plan against the actual code structure. The `GroveConfig` struct has the `explore` field as an `Option`, which aligns with step 3b. For the `active_mode` None case, `GroveConfig::load` returns the mode from the config, defaulting to Mcp on failure. Since `GroveConfig::load` already handles migration from legacy explore configs, a legacy mcp-llm project will load correctly with the Mcp mode.\n\nI'm also checking the mode branching logic — while there are other modes like Skill, Both, and Grammars, the `determine_surface` function treats anything that isn't McpLlm as Standard surface, which is reasonable for the serve command's scope. The key fix is that when `active_mode` is None, loading the config prioritizes the config.json file, so a stale explore.json won't interfere with the Mcp mode detection.\n\nNow I need to verify the lib.rs re-exports and check the existing integration test to ensure the changes fit properly.",
+          "thinkingSignature": "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"
+        },
+        {
+          "type": "text",
+          "text": "The plan is well grounded in the actual code. Let me verify the lib.rs re-exports and the existing integration test the plan proposes to update."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01PQc4kmBDUuRvRZ91WfuAV7",
+          "name": "bash",
+          "arguments": {
+            "command": "grep -n \"pub use\\|pub mod\\|GroveConfig\\|Mode\\|active_mode\\|ModeChoice\" core/src/lib.rs | head -40"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01KPsi4Hy5CZ6H3H5JZS3AGo",
+          "name": "bash",
+          "arguments": {
+            "command": "grep -n \"explore_mode_unhealthy_provider_falls_back_to_standard_surface\\|determine_surface\\|serve\\|explore.json\\|config.json\\|mode\" cli/tests/cli.rs | head -40"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 845,
+        "cacheRead": 30815,
+        "cacheWrite": 2832,
+        "totalTokens": 34494,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.021125,
+          "cacheRead": 0.0154075,
+          "cacheWrite": 0.0177,
+          "total": 0.0542425
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 581
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783190562058,
+      "responseId": "msg_01DYo9nVQYexoHUufZLKPm43"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01PQc4kmBDUuRvRZ91WfuAV7",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "42:pub mod config;\n43:pub mod engine;\n44:pub mod explore;\n45:pub mod init;\n46:pub mod ops;\n47:pub mod registry;\n48:pub mod fetch;\n49:pub mod ingest;\n60:pub use engine::{Defect, Symbol};\n62:pub use ops::{CallSite, FileMap, MapEntry, SourceResult};\n64:pub use init::provision_project;\n66:pub use explore::{ExploreConfig, Provider, Steering};\n68:pub use config::{GroveConfig, Mode};\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783190573407
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01KPsi4Hy5CZ6H3H5JZS3AGo",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "379:    // wrote order preserved across the split: .mcp.json, then CLAUDE.md, then grove.lock.\n420:/// GROVE-S02-T04 (AC-6): when `.grove/explore.json` names an unreachable provider,\n421:/// `grove serve` falls back to the standard 7-tool structural surface and emits a\n424:fn explore_mode_unhealthy_provider_falls_back_to_standard_surface() {\n434:    // Port 1 is IANA reserved — guaranteed connection-refused (fast fail).\n438:        \"model\": \"nomodel\",\n443:        dir.join(\".grove\").join(\"explore.json\"),\n449:        .arg(\"serve\")\n456:        .expect(\"spawning grove serve\");\n475:    drop(stdin); // close stdin → server exits at EOF\n477:    let output = child.wait_with_output().expect(\"grove serve to finish\");\n579:/// AC5: dry-run prints the planned harness files and exits 0 (non-TTY, no explore.json).\n600:/// each of CLAUDE.md and AGENTS.md. Pre-seed explore.json so the non-TTY\n605:    // Pre-seed .grove/explore.json so the TUI is not launched and the non-TTY\n610:        grove_dir.join(\"explore.json\"),\n614:            \"model\": \"llama3\",\n644:/// exists it is preserved and the grove block is appended exactly once.\n648:    // Pre-seed explore.json so TUI / non-TTY guard is bypassed.\n652:        grove_dir.join(\"explore.json\"),\n656:            \"model\": \"llama3\",\n672:    // (b) Hand-written content present: grove block appended, existing content preserved.\n686:    assert!(agents2.contains(\"Custom notes here.\"), \"hand-written content preserved\");\n749:        grove_dir.join(\"explore.json\"),\n753:            \"model\": \"llama3\",\n773:        serde_json::from_str(&std::fs::read_to_string(grove_dir.join(\"explore.json\")).unwrap())\n775:    assert_eq!(cfg[\"tap\"], serde_json::json!(true), \"tap flipped on in explore.json\");\n790:        \"model\": \"llama3\",\n796:    std::fs::write(grove_dir.join(\"explore.json\"), &original).unwrap();\n802:        serde_json::from_str(&std::fs::read_to_string(grove_dir.join(\"explore.json\")).unwrap())\n843:/// `mcpServers` with `args: [\"serve\", \"--explore\"]`.\n848:    // Pre-seed explore.json so the non-TTY guard is bypassed.\n852:        grove_dir.join(\"explore.json\"),\n856:            \"model\": \"llama3\",\n878:    let servers = mcp[\"mcpServers\"]\n881:    let grove_count = servers.keys().filter(|k| *k == \"grove\").count();\n890:    assert_eq!(arg_strs, vec![\"serve\", \"--explore\"], \"grove args must be [serve, --explore]\");\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783190573407
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I'm examining the existing integration test to understand what changes are needed—specifically updating a comment to reference T03 and adding a regression test for bug1.",
+          "thinkingSignature": "EpwDCmMIDxgCKkADpEJjCAht+Y+MIqssXIPxSJVYrmlVDsfacruqj2XDQCCOc4YQTtfI3/GelDuHAns4GnVjyUvMfyik02pLetsPMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDMor19HkjwtqoALBpRoMXSnc1C3N+H7EES8KIjD6K2qTJYOHRSx0X2Hl89PMRuv/lHiNy39w4W7wYXn4gw3N1ZUHGd9Gmu0cet0WhO0q5gEq0aEppDxMPJGtuv11rT2SoMGzQ4Pbc4GU46ufMwcsUnpU4XqfoDv5oSiVkxjXomIZTIyyRLHHZzVBpx6m5wsNLEOSDeZmmcmQy/Od+IzeDsVNIgLxGjQ+URNmFa0HMvJDY8GqSnxiPJZWuAm6k/q4/UTyp638+CaZBNo6SDJUCVUMh8lim+kVZzFaRbPFmlziVvElWzlr2yLIHHFCepJagalcT0FRE00inDgR6PufSrVlwbIJzqlR2l6hAojVNHye0yeqn0/HqdzbDj8oanIjN6C24Gnd/r3stgjzNjTVJMGvkx1XgBgB"
+        },
+        {
+          "type": "text",
+          "text": "Let me examine the existing integration test the plan touches to confirm the proposed regression test is consistent."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01Gb9JQRuHk9HdfiR832Bfe2",
+          "name": "read",
+          "arguments": {
+            "path": "cli/tests/cli.rs",
+            "offset": 420,
+            "limit": 70
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 195,
+        "cacheRead": 33647,
+        "cacheWrite": 2069,
+        "totalTokens": 35913,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.004875,
+          "cacheRead": 0.016823499999999998,
+          "cacheWrite": 0.01293125,
+          "total": 0.03463975
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 62
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783190573407,
+      "responseId": "msg_01PkwGWyrVAvfmECtkKFkE8R"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01Gb9JQRuHk9HdfiR832Bfe2",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "/// GROVE-S02-T04 (AC-6): when `.grove/explore.json` names an unreachable provider,\n/// `grove serve` falls back to the standard 7-tool structural surface and emits a\n/// diagnostic note to stderr. No real provider is required — port 1 fails immediately.\n#[test]\nfn explore_mode_unhealthy_provider_falls_back_to_standard_surface() {\n    use std::io::Write;\n    use std::process::Stdio;\n\n    let dir = std::env::temp_dir().join(format!(\n        \"grove_cli_test_{}_explore_fallback\",\n        std::process::id()\n    ));\n    std::fs::create_dir_all(dir.join(\".grove\")).unwrap();\n\n    // Port 1 is IANA reserved — guaranteed connection-refused (fast fail).\n    let config = serde_json::json!({\n        \"provider\": \"ollama\",\n        \"base_url\": \"http://127.0.0.1:1/v1\",\n        \"model\": \"nomodel\",\n        \"steering\": \"standard\",\n        \"allowed_tools\": []\n    });\n    std::fs::write(\n        dir.join(\".grove\").join(\"explore.json\"),\n        serde_json::to_string_pretty(&config).unwrap(),\n    )\n    .unwrap();\n\n    let mut child = std::process::Command::new(env!(\"CARGO_BIN_EXE_grove\"))\n        .arg(\"serve\")\n        .arg(dir.to_str().unwrap())\n        .stdin(Stdio::piped())\n        .stdout(Stdio::piped())\n        .stderr(Stdio::piped())\n        .env(\"GROVE_REGISTRY\", DEV_REGISTRY)\n        .spawn()\n        .expect(\"spawning grove serve\");\n\n    let mut stdin = child.stdin.take().unwrap();\n    // initialize (id=1)\n    let init_req = serde_json::json!({\n        \"jsonrpc\": \"2.0\",\n        \"id\": 1,\n        \"method\": \"initialize\",\n        \"params\": { \"protocolVersion\": \"2025-06-18\" }\n    });\n    writeln!(stdin, \"{init_req}\").unwrap();\n    // tools/list (id=2)\n    let list_req = serde_json::json!({\n        \"jsonrpc\": \"2.0\",\n        \"id\": 2,\n        \"method\": \"tools/list\",\n        \"params\": {}\n    });\n    writeln!(stdin, \"{list_req}\").unwrap();\n    drop(stdin); // close stdin → server exits at EOF\n\n    let output = child.wait_with_output().expect(\"grove serve to finish\");\n\n    // Parse stdout lines and find the tools/list response (id=2).\n    let stdout_str = String::from_utf8_lossy(&output.stdout);\n    let tools_response = stdout_str\n        .lines()\n        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())\n        .find(|v| v[\"id\"] == serde_json::json!(2))\n        .expect(\"tools/list response (id=2) must be present\");\n\n    let tools = tools_response[\"result\"][\"tools\"]\n        .as_array()\n        .expect(\"result.tools is an array\");\n\n[464 more lines in file. Use offset=490 to continue.]"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783190578305
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I'm noticing a critical issue with this test: it only writes explore.json without a config.json, so when the new behavior calls `determine_surface` which triggers `active_mode(root, None)` and loads the config, it will migrate from the legacy explore format. I need to check what mode the migration function actually sets to understand if this test will still work as expected.",
+          "thinkingSignature": "EuUICmMIDxgCKkBUT0YIS9+Tq+FpTp/PNpnDskh6SBgIXJ5F66v705GDZxY+q38rX1so1nCnWcC4je1sc+d161iWWi77e5UQ+FPWMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDFzbviXRUw+j6g3gjxoMHessEyQENQeGHYELIjBH0SajEztI6AbIncmxN3Qq2MMnf7UZVjBO4AkcRNWVTq1AIZrrSlikM3jcPUeq+6QqrwdCgsvDwFsnfDuWUDut+si11pZBCiGMqnJZOiTHR6orZL58LcvP1QAYHiSKwvFLGbqLDJ+03OgB5r4yjGdpRjTqtx0Q2LcsY4bpJIKcjvII7L7COwChlzusF3+OqZUFyy6/r5MOURH28dUz1VGgwNzLaw9rCAnxlEbabRcF8jExwe4Y14Twfp0rIZTSYUwe5XEJafF9AOrD/6voWG2F/FEJtRb+J0jv6oZ8gldhbTizspHCpnCa2iwNtqYUtgIAeHV3ggH+vo6mB9zq08gnzatPPy+BzTtYPN+t8ZnRh+rcuT9NLqjcu1TP+cnLQMHhWz3y6qIbkofaVV1IwJHt9pmEkTNfIjz/aMX/5RGUvVE6RMvH4uqda9tETGmqrkpLUOzPeQQg1xsTGbzlpTAJUcWjwRhPWG2Qe1YYOXjehnJOx9hyIHrP3Sy+nrpxTia94Lvzin5p/zSAtbHXKvoonEXa56kkpnuREmqzHZDoXOJe2erUA0NCatEOwds1igFFVGdcmzBo7eh1spUt609F7ATYr3V0pbYeG5+9lN6I6XImB6VLySyeW/zXAq3K0su9NVD5YzvVmI68TIliraTKcDTeVjUzMIUcKOLaiKXGjLwifZMydVyg6gnIgxqQ8tCnGDJJXUfs+g+SN5QJkejEEE7BRf5RO//a3j2yy+ZhVISLMbYA53gFzU0hrIO0M1tA2dBchPG1fv3azq2UgzrpFVbeyKuKff/rk451z/rUeR4CO/Y22lzesXlOe280vaoXO1cRjOXKMCKB2cogkmdhSKt1sn9qZBb9zNKXVJFxwXZuiT5vJRi0z01BWC7ZQeEEGRLGk7ezC6/I/QHuDzY3r7ctbIavdhN+50xvE96SJv4Y8GqnOAo2N9JpHDyrTZK1xds0+ZTx1ST3oq56HHPZW5k2y7LrZGFPLBPODFmAG6m1N/jj2HXlfRI6GieIXd1h/w9lJjt3JSL4pE4cRxVC1M+Y10zsbkhn4YNQAZC2FEpdFwioGiWKo9Zxza+ROSrYnkPUzF88P8oCgpKJvFIwoYm05lJS4riS02zeR1dM5Ca48KruV3J0pB0pTrxl8g6ASqMtJ9IdV1/mVHTJILcDnmaxfOIKeTVp4q4Bhl5M82iygBQ7/L1BUUQ/9ui2jw1+Jga6iK44SdMb0XyLl0n8/NG8JmzBYirQyphz+qlZFRYNoFBpa3ggJ2JC0kCOp6ZIBKROy794+7xCsREb6jEPg8nr7UOW/aIoxJ9kQgLp1qTIGAE="
+        },
+        {
+          "type": "text",
+          "text": "The existing unhealthy-fallback test writes only `explore.json` (no config.json). Under the new logic it hits `GroveConfig::load` → legacy migration. I need to confirm the migration produces `McpLlm` mode so the health probe still fires and the test's stderr assertion holds."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01V2p9MBgoPhEzEZx3yDbs3w",
+          "name": "mcp__grove__source",
+          "arguments": {
+            "id": "rust:core/src/config.rs#migrate_from_legacy_explore@157"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01SYj16yAtFJoGGRUEpd1aQz",
+          "name": "read",
+          "arguments": {
+            "path": "cli/tests/cli.rs",
+            "offset": 490,
+            "limit": 30
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 598,
+        "cacheRead": 35716,
+        "cacheWrite": 1258,
+        "totalTokens": 37574,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.014950000000000001,
+          "cacheRead": 0.017858,
+          "cacheWrite": 0.0078625,
+          "total": 0.0406805
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 328
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783190578305,
+      "responseId": "msg_01CVojFqwgWz9kS1FfGpG63r"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01V2p9MBgoPhEzEZx3yDbs3w",
+      "toolName": "mcp__grove__source",
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"id\":\"rust:core/src/config.rs#migrate_from_legacy_explore@157\",\"source\":\"fn migrate_from_legacy_explore(root: &Path) -> Result<GroveConfig> {\\n    let path = ExploreConfig::config_path(root);\\n    let text = fs::read_to_string(&path)\\n        .with_context(|| format!(\\\"reading legacy explore config {}\\\", path.display()))?;\\n    let raw: LegacyExploreRaw = serde_json::from_str(&text)\\n        .with_context(|| format!(\\\"{} is not a valid legacy explore config\\\", path.display()))?;\\n    let steering = Steering::from_name(&raw.mode)?;\\n    let provider = Provider::from_name(&raw.provider)?;\\n    let explore_cfg = ExploreConfig {\\n        provider,\\n        base_url: raw.base_url,\\n        model: raw.model,\\n        steering,\\n        allowed_tools: raw.allowed_tools,\\n        tap: raw.tap,\\n        trace_retain: raw.trace_retain,\\n    };\\n    let config = GroveConfig {\\n        version: 1,\\n        mode: Mode::McpLlm,\\n        explore: Some(explore_cfg),\\n    };\\n    config.validate()?;\\n    config.save(root)?;\\n    eprintln!(\\\"{DEPRECATION_WARNING}\\\");\\n    Ok(config)\\n}\"}"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783190586929
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01SYj16yAtFJoGGRUEpd1aQz",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "    assert_eq!(\n        tools.len(),\n        7,\n        \"unhealthy explore provider must fall back to the 7-tool standard surface, got: {tools:?}\"\n    );\n\n    let stderr_str = String::from_utf8_lossy(&output.stderr);\n    assert!(\n        stderr_str.contains(\"falling back\"),\n        \"stderr must contain 'falling back' diagnostic; got: {stderr_str}\"\n    );\n\n    std::fs::remove_dir_all(&dir).ok();\n}\n\n#[test]\nfn unknown_extension_errors() {\n    let dir = fixture(\"badext\");\n    std::fs::write(dir.join(\"notes.unknownext\"), \"hello\\n\").unwrap();\n    let out = grove(&dir, &[\"outline\", \"notes.unknownext\"]);\n    assert!(!out.status.success(), \"no grammar for unknown extension\");\n    assert!(String::from_utf8_lossy(&out.stderr).contains(\"no registered grammar\"));\n    std::fs::remove_dir_all(&dir).ok();\n}\n\n#[test]\nfn map_returns_definitions_with_references() {\n    let dir = fixture(\"map\");\n\n    // JSON output: structured file maps with references.\n\n[434 more lines in file. Use offset=520 to continue.]"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783190586929
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "The migration flow produces `Mode::McpLlm`, which triggers the explore branch when `determine_surface` finds only explore.json. This reloads the GroveConfig, sets the explore field, but then the health probe fails and falls back with the \"falling back\" message to stderr. The existing test still passes since it checks for both that message and the seven tools.\n\nThere's a subtle side effect though: migration writes config.json to disk and prints a deprecation warning to stderr, which doesn't break the test assertions. GroveConfig gets loaded twice—once in `active_mode` (which migrates and writes the file) and again in `determine_surface` (which reads the now-existing config.json with mode McpLlm). This redundancy is consistent and safe.\n\nFor the bug-1 regression case with config.json mode=mcp and stale explore.json, `active_mode` returns Mcp directly without touching explore.json, so `determine_surface` sees Mcp != McpLlm and returns Standard surface immediately with the seven tools. The plan holds up—it's feasible, preserves precedence, and the tests are reasonable. Importing `Mode` into cli/src/mcp.rs alongside the existing config imports is straightforward, and for non-MCP modes like Skill or Both, returning Standard surface from serve is acceptable behavior even if arguably a design question.\n\nOne edge case worth flagging: if config.json is malformed, `load()` returns an error and `active_mode` falls back to Mcp with a diagnostic, which is reasonable. Also, calling `active_mode` twice means the second call sees config.json already written from the first call's migration side effect—no double-migration, but it's mildly surprising that a read-only resolver like doctor would trigger migration as a side effect. That's consistent with existing load semantics though, so I'll note it as advisory.\n\nI'm confident this plan works. Time to write up the review.",
+          "thinkingSignature": "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"
+        },
+        {
+          "type": "text",
+          "text": "Verification complete. Migration yields `Mode::McpLlm`, so the existing unhealthy-fallback test still routes through `health_probe` and keeps its \"falling back\" stderr assertion. The bug-1 regression path (config.json `mode=mcp` + stale explore.json) resolves to `Mcp` → Standard immediately, exactly as AC-3 requires. Precedence (`--standard` > `--explore` > declared) is preserved. The plan is grounded in the real code.\n\nNo Review Loop Context block was provided → standalone review. Writing the verdict."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01KCVVxtgsdKZRr4NbqzWNPF",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "write",
+            "entity": "task",
+            "entityId": "GROVE-S03-T03",
+            "artifact": "plan-review",
+            "content": "# PLAN_REVIEW — GROVE-S03-T03 (standalone review)\n\n**Verdict:** Approved\n\nThe plan is well-grounded in the actual source. I verified each load-bearing\nclaim against the code rather than the plan's narrative.\n\n## Independent verification\n\n1. **Shared resolver shape (AC-1).** `Mode` (`core/src/config.rs:36`) and\n   `GroveConfig { version, mode, explore: Option<ExploreConfig> }` (:75) confirm\n   `active_mode(root, ModeChoice) -> Mode` is buildable purely from existing\n   config primitives. Precedence `ForceStandard → Mcp`, `ForceExplore → McpLlm`,\n   `None → GroveConfig::load(root).mode` matches today's `determine_surface`\n   semantics (`force_standard` short-circuits first). ✔\n2. **`determine_surface` rewrite (AC-2).** Current body\n   (`cli/src/mcp.rs:44`) reads `ExploreConfig::config_path(root).exists()` then\n   `ExploreConfig::load`. The plan replaces both with `active_mode == McpLlm`\n   and sources the explore section from `grove_cfg.explore` — valid because\n   `GroveConfig.explore` is exactly `Option<ExploreConfig>`. ✔\n3. **Bug-1 regression (AC-3).** `GroveConfig::load` (:210) checks\n   `config.json` existence *before* the legacy `explore.json` branch. So\n   `mode=mcp` + stale `explore.json` → `Mode::Mcp` → `Standard` immediately,\n   never sniffing the stale file. The proposed unit + integration tests target\n   this precisely. ✔\n4. **Health-gated fallback preserved (AC-4).** Verified the existing test\n   `explore_mode_unhealthy_provider_falls_back_to_standard_surface`\n   (`cli/tests/cli.rs:424`) writes ONLY `explore.json`. Under the new path,\n   `active_mode(None) → GroveConfig::load → migrate_from_legacy_explore`, and\n   `migrate_from_legacy_explore` (:157) hard-sets `mode: Mode::McpLlm`.\n   Therefore the McpLlm branch is still taken, `health_probe` still fires\n   against the unreachable provider, and the test's `stderr.contains(\"falling\n   back\")` + 7-tool assertions still hold. The plan's \"update comment only\" for\n   this test is correct — no behavioural test change needed. ✔\n5. **Runtime override precedence (AC-5).** Mapping `(force_standard,\n   force_explore) → ModeChoice` before calling `active_mode` preserves\n   `--standard` winning over `--explore`. ✔\n6. **Re-exports.** `core/src/lib.rs:68` currently\n   `pub use config::{GroveConfig, Mode};` — extending to add `active_mode,\n   ModeChoice` is consistent with the established pattern. ✔\n\n## Advisory notes (non-blocking)\n\n- **Side-effecting resolver.** `active_mode(None)` delegates to\n  `GroveConfig::load`, which *migrates and writes `config.json`* (plus a\n  deprecation warning) when only a legacy `explore.json` is present. So the\n  \"pure config resolver\" described in Approach §1 is not side-effect free in the\n  legacy path, and `doctor` calling `active_mode` will also trigger migration.\n  This is consistent with existing `load()` semantics and harmless, but worth a\n  one-line doc comment on `active_mode` so the next reader isn't surprised.\n- **Double load is benign.** `determine_surface` loads `GroveConfig` a second\n  time after `active_mode` already did. On the legacy path the first load\n  migrates (writes config.json), so the second load reads the freshly written\n  config.json — no double-migration, modes agree. The plan already flags the\n  redundancy as acceptable; confirmed safe.\n- **Non-explore declared modes.** `active_mode` can return `Skill`, `Both`, or\n  `Grammars`; `determine_surface` maps all of these to `Standard` (only\n  `McpLlm` yields explore). Correct for this task's scope — just make sure the\n  `!= McpLlm → Standard` branch is written as an explicit catch-all so a future\n  mode variant doesn't silently misroute.\n\n## Testing assessment\n\nSix unit tests (force variants, declared mcp/mcp-llm, bug-1 stale-file\nregression, no-config fallback) plus the new `bug1_serve_mcp_mode_ignores_stale\n_explore_json` integration test cover the AC matrix and the regression. Adequate\nand meaningful. Ensure the bug-1 integration test asserts exactly 7 tools AND\nabsence of the explore delegating tool to lock the surface identity.\n"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 2943,
+        "cacheRead": 36974,
+        "cacheWrite": 1562,
+        "totalTokens": 41481,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.073575,
+          "cacheRead": 0.018487,
+          "cacheWrite": 0.0097625,
+          "total": 0.1018345
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 962
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783190586929,
+      "responseId": "msg_01QcmKXxBP8TYvfm3wrpsAc2"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01KCVVxtgsdKZRr4NbqzWNPF",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "Wrote 4099 bytes to engineering/sprints/GROVE-S03/GROVE-S03-T03/PLAN_REVIEW.md"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783190624851
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Now the status transition (task mode, Approved → plan-approved) and the summary sidecar."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01Q3izFeofa8MxoyfEPFd1Lq",
+          "name": "bash",
+          "arguments": {
+            "command": "node .forge/tools/store-cli.cjs update-status task GROVE-S03-T03 status plan-approved"
+          }
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01Nx94zShfNtikf6rNmBaZQv",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "write",
+            "entity": "task",
+            "entityId": "GROVE-S03-T03",
+            "artifact": "review-plan-summary",
+            "content": "{\n  \"objective\": \"Assessed the GROVE-S03-T03 plan to replace serve's explore.json file-sniff with a declared config.mode trigger via a shared active_mode resolver.\",\n  \"findings\": [\n    \"AC-1: active_mode(root, ModeChoice)->Mode buildable from existing Mode/GroveConfig primitives; precedence matches today's determine_surface (force_standard first).\",\n    \"AC-2: determine_surface rewrite keys off active_mode==McpLlm and sources explore from grove_cfg.explore (Option<ExploreConfig>) — valid against the struct.\",\n    \"AC-3: GroveConfig::load checks config.json before legacy explore.json, so mode=mcp + stale explore.json resolves to Mcp->Standard immediately. Verified.\",\n    \"AC-4 verified independently: existing unhealthy-fallback test writes only explore.json; migrate_from_legacy_explore hard-sets Mode::McpLlm, so health_probe still fires and the 'falling back' stderr assertion holds — comment-only update is correct.\",\n    \"AC-5: mapping (force_standard, force_explore)->ModeChoice preserves --standard over --explore precedence.\",\n    \"Re-export extension in core/src/lib.rs:68 (pub use config::{GroveConfig, Mode}) is consistent with adding active_mode, ModeChoice.\",\n    \"Advisory: active_mode is not side-effect free on the legacy path (load triggers migration + config.json write); doctor will also migrate. Consistent with load() semantics but worth a doc comment.\",\n    \"Advisory: double GroveConfig load is benign — second load reads freshly migrated config.json, modes agree, no double-migration.\",\n    \"Advisory: active_mode may return Skill/Both/Grammars; ensure the !=McpLlm branch is an explicit catch-all so future variants don't misroute.\",\n    \"Testing: 6 unit tests + bug1 integration test cover the AC matrix; recommend the integration test assert exactly 7 tools AND absence of the explore delegating tool.\"\n  ],\n  \"verdict\": \"approved\",\n  \"written_at\": \"2026-07-05T00:00:00Z\",\n  \"artifact_ref\": \"PLAN_REVIEW.md\"\n}"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 1032,
+        "cacheRead": 38536,
+        "cacheWrite": 2999,
+        "totalTokens": 42569,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.0258,
+          "cacheRead": 0.019268,
+          "cacheWrite": 0.01874375,
+          "total": 0.06382175
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783190624851,
+      "responseId": "msg_01Nmjd8e15BjYCsuEXv7dZWi"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01Q3izFeofa8MxoyfEPFd1Lq",
+      "toolName": "bash",
+      "content": [
+        {
+          "type": "text",
+          "text": "(no output)"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1783190637450
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01Nx94zShfNtikf6rNmBaZQv",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "forge_artifact failed: Command failed: node /home/boni/.nvm/versions/node/v24.3.0/lib/node_modules/@entelligentsia/forgecli/dist/forge-payload/tools/artifact.cjs write task GROVE-S03-T03 review-plan-summary {\n  \"objective\": \"Assessed the GROVE-S03-T03 plan to replace serve's explore.json file-sniff with a declared config.mode trigger via a shared active_mode resolver.\",\n  \"findings\": [\n    \"AC-1: active_mode(root, ModeChoice)->Mode buildable from existing Mode/GroveConfig primitives; precedence matches today's determine_surface (force_standard first).\",\n    \"AC-2: determine_surface rewrite keys off active_mode==McpLlm and sources explore from grove_cfg.explore (Option<ExploreConfig>) — valid against the struct.\",\n    \"AC-3: GroveConfig::load checks config.json before legacy explore.json, so mode=mcp + stale explore.json resolves to Mcp->Standard immediately. Verified.\",\n    \"AC-4 verified independently: existing unhealthy-fallback test writes only explore.json; migrate_from_legacy_explore hard-sets Mode::McpLlm, so health_probe still fires and the 'falling back' stderr assertion holds — comment-only update is correct.\",\n    \"AC-5: mapping (force_standard, force_explore)->ModeChoice preserves --standard over --explore precedence.\",\n    \"Re-export extension in core/src/lib.rs:68 (pub use config::{GroveConfig, Mode}) is consistent with adding active_mode, ModeChoice.\",\n    \"Advisory: active_mode is not side-effect free on the legacy path (load triggers migration + config.json write); doctor will also migrate. Consistent with load() semantics but worth a doc comment.\",\n    \"Advisory: double GroveConfig load is benign — second load reads freshly migrated config.json, modes agree, no double-migration.\",\n    \"Advisory: active_mode may return Skill/Both/Grammars; ensure the !=McpLlm branch is an explicit catch-all so future variants don't misroute.\",\n    \"Testing: 6 unit tests + bug1 integration test cover the AC matrix; recommend the integration test assert exactly 7 tools AND absence of the explore delegating tool.\"\n  ],\n  \"verdict\": \"approved\",\n  \"written_at\": \"2026-07-05T00:00:00Z\",\n  \"artifact_ref\": \"PLAN_REVIEW.md\"\n}\nSummary validation failed for REVIEW-PLAN-SUMMARY.json: Missing required fields: key_changes. Required fields: objective, key_changes, verdict, written_at.\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783190637450
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "I need to adjust the schema to use `key_changes` instead of `findings` since that's what the validator expects, so I'll rewrite this to match the required field name.",
+          "thinkingSignature": "EqsDCmMIDxgCKkCTUO3tOv3mBeWbKbqDs3UOSKQ8N1dLJnXtGR/yLWaL268i5P0wT5NWaOpcxS1Tiih9vbZTk3Ovdl5YZG444xciMg9jbGF1ZGUtb3B1cy00LTg4AEIIdGhpbmtpbmcSDKiqMMceB3RdSrLGvxoMb0FMJ0sJQuGm4irDIjB/Gl6P8ELzdLxl3h6FODm59IA1aLFfDDTxmTpscbf9YmiECNvFrhc/d6HpbdVmaMkq9QF/vm11X4ZDuTQ4hcmj8Q+hLweOS9NsjIbmxlynkYgUuRYdc45xQFsdF0uHp+W3ZxS4Qn1yyo0/aG7zJhWSVIEhU8ocx67El4ZNdBShemqdp1Kz+9rUmPEU2W9P84upE6U08FbXpZC40iFxeXHrOLm47p0TVRJEoN/0Zl1rmW+8AUMUWBvuMpwf/s5oJYQ5kMt3onv6dNydM0rBKuDuLwJdMiwGd1oZVlAFv1HvGfsc6pC9Hyq8ncg4kKbJWhmJsUd13Ab0KRQ1LKmzy/JncYgYTyqKWUeEKWeOL4T0FwxR8ZeS6h5LVgpl6wXGNnDrP898C9lFMBgB"
+        },
+        {
+          "type": "text",
+          "text": "The validator requires `key_changes`. Let me rewrite with the correct field."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_016h4kYan6k9i2CEe37APXdq",
+          "name": "forge_artifact",
+          "arguments": {
+            "command": "write",
+            "entity": "task",
+            "entityId": "GROVE-S03-T03",
+            "artifact": "review-plan-summary",
+            "content": "{\n  \"objective\": \"Assessed the GROVE-S03-T03 plan to replace serve's explore.json file-sniff with a declared config.mode trigger via a shared active_mode resolver.\",\n  \"key_changes\": [\n    \"AC-1: active_mode(root, ModeChoice)->Mode buildable from existing Mode/GroveConfig primitives; precedence matches today's determine_surface (force_standard first).\",\n    \"AC-2: determine_surface rewrite keys off active_mode==McpLlm and sources explore from grove_cfg.explore (Option<ExploreConfig>) — valid against the struct.\",\n    \"AC-3: GroveConfig::load checks config.json before legacy explore.json, so mode=mcp + stale explore.json resolves to Mcp->Standard immediately. Verified.\",\n    \"AC-4 verified independently: existing unhealthy-fallback test writes only explore.json; migrate_from_legacy_explore hard-sets Mode::McpLlm, so health_probe still fires and the 'falling back' stderr assertion holds — comment-only update is correct.\",\n    \"AC-5: mapping (force_standard, force_explore)->ModeChoice preserves --standard over --explore precedence.\",\n    \"Re-export extension in core/src/lib.rs:68 (pub use config::{GroveConfig, Mode}) is consistent with adding active_mode, ModeChoice.\",\n    \"Advisory: active_mode is not side-effect free on the legacy path (load triggers migration + config.json write); doctor will also migrate. Consistent with load() semantics but worth a doc comment.\",\n    \"Advisory: double GroveConfig load is benign — second load reads freshly migrated config.json, modes agree, no double-migration.\",\n    \"Advisory: active_mode may return Skill/Both/Grammars; ensure the !=McpLlm branch is an explicit catch-all so future variants don't misroute.\",\n    \"Testing: 6 unit tests + bug1 integration test cover the AC matrix; recommend the integration test assert exactly 7 tools AND absence of the explore delegating tool.\"\n  ],\n  \"verdict\": \"approved\",\n  \"written_at\": \"2026-07-05T00:00:00Z\",\n  \"artifact_ref\": \"PLAN_REVIEW.md\"\n}"
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 1026,
+        "cacheRead": 41535,
+        "cacheWrite": 2024,
+        "totalTokens": 44587,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.025650000000000003,
+          "cacheRead": 0.020767499999999998,
+          "cacheWrite": 0.01265,
+          "total": 0.0590775
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 77
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783190637450,
+      "responseId": "msg_01LT4MVBUm5NKteQKcmUtWuW"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_016h4kYan6k9i2CEe37APXdq",
+      "toolName": "forge_artifact",
+      "content": [
+        {
+          "type": "text",
+          "text": "Wrote 1954 bytes to engineering/sprints/GROVE-S03/GROVE-S03-T03/REVIEW-PLAN-SUMMARY.json"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783190648156
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_01WaVGFmHwt9fMD9Ju6qz7Lb",
+          "name": "forge_store",
+          "arguments": {
+            "command": "set-summary",
+            "args": [
+              "GROVE-S03-T03",
+              "review_plan"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 90,
+        "cacheRead": 43559,
+        "cacheWrite": 1089,
+        "totalTokens": 44740,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.0022500000000000003,
+          "cacheRead": 0.0217795,
+          "cacheWrite": 0.00680625,
+          "total": 0.03084575
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783190648157,
+      "responseId": "msg_01FVGD95mxpoEzc2rQcxZiGR"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01WaVGFmHwt9fMD9Ju6qz7Lb",
+      "toolName": "forge_store",
+      "content": [
+        {
+          "type": "text",
+          "text": "forge_store failed: Command failed: node /home/boni/.nvm/versions/node/v24.3.0/lib/node_modules/@entelligentsia/forgecli/dist/forge-payload/tools/store-cli.cjs set-summary GROVE-S03-T03 review_plan\nkey_changes[3]: item length 247 exceeds maxLength 200\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783190650236
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Item 3 (AC-4) exceeds 200 chars. Let me shorten it."
+        },
+        {
+          "type": "toolCall",
+          "id": "toolu_01GcaXBrWAmMQWH5CvbmYNe1",
+          "name": "edit",
+          "arguments": {
+            "path": "engineering/sprints/GROVE-S03/GROVE-S03-T03/REVIEW-PLAN-SUMMARY.json",
+            "edits": [
+              {
+                "oldText": "    \"AC-4 verified independently: existing unhealthy-fallback test writes only explore.json; migrate_from_legacy_explore hard-sets Mode::McpLlm, so health_probe still fires and the 'falling back' stderr assertion holds — comment-only update is correct.\",",
+                "newText": "    \"AC-4 verified: unhealthy-fallback test writes only explore.json; migrate_from_legacy_explore hard-sets Mode::McpLlm, so health_probe still fires and the 'falling back' assertion holds — comment-only update is correct.\","
+              }
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 344,
+        "cacheRead": 44648,
+        "cacheWrite": 216,
+        "totalTokens": 45210,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.0086,
+          "cacheRead": 0.022324,
+          "cacheWrite": 0.00135,
+          "total": 0.032284
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783190650237,
+      "responseId": "msg_013Kg8tnk8hdx4sBLzoLaCQz"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_01GcaXBrWAmMQWH5CvbmYNe1",
+      "toolName": "edit",
+      "content": [
+        {
+          "type": "text",
+          "text": "Successfully replaced 1 block(s) in engineering/sprints/GROVE-S03/GROVE-S03-T03/REVIEW-PLAN-SUMMARY.json."
+        }
+      ],
+      "details": {
+        "diff": "    ...\n  3   \"key_changes\": [\n  4     \"AC-1: active_mode(root, ModeChoice)->Mode buildable from existing Mode/GroveConfig primitives; precedence matches today's determine_surface (force_standard first).\",\n  5     \"AC-2: determine_surface rewrite keys off active_mode==McpLlm and sources explore from grove_cfg.explore (Option<ExploreConfig>) — valid against the struct.\",\n  6     \"AC-3: GroveConfig::load checks config.json before legacy explore.json, so mode=mcp + stale explore.json resolves to Mcp->Standard immediately. Verified.\",\n- 7     \"AC-4 verified independently: existing unhealthy-fallback test writes only explore.json; migrate_from_legacy_explore hard-sets Mode::McpLlm, so health_probe still fires and the 'falling back' stderr assertion holds — comment-only update is correct.\",\n+ 7     \"AC-4 verified: unhealthy-fallback test writes only explore.json; migrate_from_legacy_explore hard-sets Mode::McpLlm, so health_probe still fires and the 'falling back' assertion holds — comment-only update is correct.\",\n  8     \"AC-5: mapping (force_standard, force_explore)->ModeChoice preserves --standard over --explore precedence.\",\n  9     \"Re-export extension in core/src/lib.rs:68 (pub use config::{GroveConfig, Mode}) is consistent with adding active_mode, ModeChoice.\",\n 10     \"Advisory: active_mode is not side-effect free on the legacy path (load triggers migration + config.json write); doctor will also migrate. Consistent with load() semantics but worth a doc comment.\",\n 11     \"Advisory: double GroveConfig load is benign — second load reads freshly migrated config.json, modes agree, no double-migration.\",\n    ...",
+        "patch": "--- engineering/sprints/GROVE-S03/GROVE-S03-T03/REVIEW-PLAN-SUMMARY.json\n+++ engineering/sprints/GROVE-S03/GROVE-S03-T03/REVIEW-PLAN-SUMMARY.json\n@@ -3,9 +3,9 @@\n   \"key_changes\": [\n     \"AC-1: active_mode(root, ModeChoice)->Mode buildable from existing Mode/GroveConfig primitives; precedence matches today's determine_surface (force_standard first).\",\n     \"AC-2: determine_surface rewrite keys off active_mode==McpLlm and sources explore from grove_cfg.explore (Option<ExploreConfig>) — valid against the struct.\",\n     \"AC-3: GroveConfig::load checks config.json before legacy explore.json, so mode=mcp + stale explore.json resolves to Mcp->Standard immediately. Verified.\",\n-    \"AC-4 verified independently: existing unhealthy-fallback test writes only explore.json; migrate_from_legacy_explore hard-sets Mode::McpLlm, so health_probe still fires and the 'falling back' stderr assertion holds — comment-only update is correct.\",\n+    \"AC-4 verified: unhealthy-fallback test writes only explore.json; migrate_from_legacy_explore hard-sets Mode::McpLlm, so health_probe still fires and the 'falling back' assertion holds — comment-only update is correct.\",\n     \"AC-5: mapping (force_standard, force_explore)->ModeChoice preserves --standard over --explore precedence.\",\n     \"Re-export extension in core/src/lib.rs:68 (pub use config::{GroveConfig, Mode}) is consistent with adding active_mode, ModeChoice.\",\n     \"Advisory: active_mode is not side-effect free on the legacy path (load triggers migration + config.json write); doctor will also migrate. Consistent with load() semantics but worth a doc comment.\",\n     \"Advisory: double GroveConfig load is benign — second load reads freshly migrated config.json, modes agree, no double-migration.\",\n",
+        "firstChangedLine": 7
+      },
+      "isError": false,
+      "timestamp": 1783190654635
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_0185rutXBVSPd5mZE44duxkh",
+          "name": "forge_store",
+          "arguments": {
+            "command": "set-summary",
+            "args": [
+              "GROVE-S03-T03",
+              "review_plan"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 90,
+        "cacheRead": 44864,
+        "cacheWrite": 419,
+        "totalTokens": 45375,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.0022500000000000003,
+          "cacheRead": 0.022432,
+          "cacheWrite": 0.00261875,
+          "total": 0.02731075
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783190654635,
+      "responseId": "msg_01HiznqCp74ftoME3wd22VT8"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_0185rutXBVSPd5mZE44duxkh",
+      "toolName": "forge_store",
+      "content": [
+        {
+          "type": "text",
+          "text": "forge_store failed: Command failed: node /home/boni/.nvm/versions/node/v24.3.0/lib/node_modules/@entelligentsia/forgecli/dist/forge-payload/tools/store-cli.cjs set-summary GROVE-S03-T03 review_plan\nkey_changes[3]: item length 217 exceeds maxLength 200\n"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783190656662
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_016hQQuY6bnmLn2v1oUNnGzt",
+          "name": "edit",
+          "arguments": {
+            "path": "engineering/sprints/GROVE-S03/GROVE-S03-T03/REVIEW-PLAN-SUMMARY.json",
+            "edits": [
+              {
+                "oldText": "    \"AC-4 verified: unhealthy-fallback test writes only explore.json; migrate_from_legacy_explore hard-sets Mode::McpLlm, so health_probe still fires and the 'falling back' assertion holds — comment-only update is correct.\",",
+                "newText": "    \"AC-4 verified: unhealthy-fallback test writes only explore.json; migrate hard-sets Mode::McpLlm, so health_probe still fires and the 'falling back' assertion holds — comment-only update correct.\","
+              }
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 301,
+        "cacheRead": 45283,
+        "cacheWrite": 216,
+        "totalTokens": 45802,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.0075250000000000004,
+          "cacheRead": 0.0226415,
+          "cacheWrite": 0.00135,
+          "total": 0.0315265
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783190656662,
+      "responseId": "msg_01NQA8qzJZmsHenAhgrPdx5m"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_016hQQuY6bnmLn2v1oUNnGzt",
+      "toolName": "edit",
+      "content": [
+        {
+          "type": "text",
+          "text": "Successfully replaced 1 block(s) in engineering/sprints/GROVE-S03/GROVE-S03-T03/REVIEW-PLAN-SUMMARY.json."
+        }
+      ],
+      "details": {
+        "diff": "    ...\n  3   \"key_changes\": [\n  4     \"AC-1: active_mode(root, ModeChoice)->Mode buildable from existing Mode/GroveConfig primitives; precedence matches today's determine_surface (force_standard first).\",\n  5     \"AC-2: determine_surface rewrite keys off active_mode==McpLlm and sources explore from grove_cfg.explore (Option<ExploreConfig>) — valid against the struct.\",\n  6     \"AC-3: GroveConfig::load checks config.json before legacy explore.json, so mode=mcp + stale explore.json resolves to Mcp->Standard immediately. Verified.\",\n- 7     \"AC-4 verified: unhealthy-fallback test writes only explore.json; migrate_from_legacy_explore hard-sets Mode::McpLlm, so health_probe still fires and the 'falling back' assertion holds — comment-only update is correct.\",\n+ 7     \"AC-4 verified: unhealthy-fallback test writes only explore.json; migrate hard-sets Mode::McpLlm, so health_probe still fires and the 'falling back' assertion holds — comment-only update correct.\",\n  8     \"AC-5: mapping (force_standard, force_explore)->ModeChoice preserves --standard over --explore precedence.\",\n  9     \"Re-export extension in core/src/lib.rs:68 (pub use config::{GroveConfig, Mode}) is consistent with adding active_mode, ModeChoice.\",\n 10     \"Advisory: active_mode is not side-effect free on the legacy path (load triggers migration + config.json write); doctor will also migrate. Consistent with load() semantics but worth a doc comment.\",\n 11     \"Advisory: double GroveConfig load is benign — second load reads freshly migrated config.json, modes agree, no double-migration.\",\n    ...",
+        "patch": "--- engineering/sprints/GROVE-S03/GROVE-S03-T03/REVIEW-PLAN-SUMMARY.json\n+++ engineering/sprints/GROVE-S03/GROVE-S03-T03/REVIEW-PLAN-SUMMARY.json\n@@ -3,9 +3,9 @@\n   \"key_changes\": [\n     \"AC-1: active_mode(root, ModeChoice)->Mode buildable from existing Mode/GroveConfig primitives; precedence matches today's determine_surface (force_standard first).\",\n     \"AC-2: determine_surface rewrite keys off active_mode==McpLlm and sources explore from grove_cfg.explore (Option<ExploreConfig>) — valid against the struct.\",\n     \"AC-3: GroveConfig::load checks config.json before legacy explore.json, so mode=mcp + stale explore.json resolves to Mcp->Standard immediately. Verified.\",\n-    \"AC-4 verified: unhealthy-fallback test writes only explore.json; migrate_from_legacy_explore hard-sets Mode::McpLlm, so health_probe still fires and the 'falling back' assertion holds — comment-only update is correct.\",\n+    \"AC-4 verified: unhealthy-fallback test writes only explore.json; migrate hard-sets Mode::McpLlm, so health_probe still fires and the 'falling back' assertion holds — comment-only update correct.\",\n     \"AC-5: mapping (force_standard, force_explore)->ModeChoice preserves --standard over --explore precedence.\",\n     \"Re-export extension in core/src/lib.rs:68 (pub use config::{GroveConfig, Mode}) is consistent with adding active_mode, ModeChoice.\",\n     \"Advisory: active_mode is not side-effect free on the legacy path (load triggers migration + config.json write); doctor will also migrate. Consistent with load() semantics but worth a doc comment.\",\n     \"Advisory: double GroveConfig load is benign — second load reads freshly migrated config.json, modes agree, no double-migration.\",\n",
+        "firstChangedLine": 7
+      },
+      "isError": false,
+      "timestamp": 1783190663472
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "toolu_019AhxLejtZVjPsDg4FeU2oY",
+          "name": "forge_store",
+          "arguments": {
+            "command": "set-summary",
+            "args": [
+              "GROVE-S03-T03",
+              "review_plan"
+            ]
+          }
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 90,
+        "cacheRead": 45499,
+        "cacheWrite": 372,
+        "totalTokens": 45963,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.0022500000000000003,
+          "cacheRead": 0.0227495,
+          "cacheWrite": 0.002325,
+          "total": 0.0273345
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1783190663473,
+      "responseId": "msg_01EufmC2GDJghEJ8uTEE2has"
+    },
+    {
+      "role": "toolResult",
+      "toolCallId": "toolu_019AhxLejtZVjPsDg4FeU2oY",
+      "toolName": "forge_store",
+      "content": [
+        {
+          "type": "text",
+          "text": "OK"
+        }
+      ],
+      "details": {},
+      "isError": false,
+      "timestamp": 1783190666019
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Review complete.\n\n## Summary\n\n**Task GROVE-S03-T03 — Review Plan: Approved** ✅\n\nI independently verified the plan against the actual source rather than trusting its narrative:\n\n- **AC-1/2**: `active_mode(root, ModeChoice) -> Mode` and the `determine_surface` rewrite are buildable from existing primitives — confirmed `Mode` (`config.rs:36`), `GroveConfig.explore: Option<ExploreConfig>` (:75), and current `determine_surface` (`mcp.rs:44`).\n- **AC-3 (bug-1)**: `GroveConfig::load` (:210) checks `config.json` *before* the legacy `explore.json` branch, so `mode=mcp` + stale explore.json → `Mcp` → Standard immediately. Fix is sound.\n- **AC-4 (critical verification)**: The existing `explore_mode_unhealthy_provider_falls_back_to_standard_surface` test writes *only* `explore.json`. Under the new path this migrates via `migrate_from_legacy_explore` (:157), which **hard-sets `Mode::McpLlm`** — so the health probe still fires and the `\"falling back\"` stderr assertion still holds. The plan's \"comment-only update\" for this test is correct; no behavioural test breakage.\n- Precedence (`--standard` > `--explore` > declared) preserved.\n\nThree non-blocking advisories flagged: `active_mode`'s legacy-path side effect (migration write), the benign double-load, and making the `!= McpLlm → Standard` branch an explicit catch-all for `Skill`/`Both`/`Grammars`.\n\n**Artifacts written:**\n- `PLAN_REVIEW.md` (verdict + independent verification)\n- `REVIEW-PLAN-SUMMARY.json` (verdict: approved)\n\n**Status transition:** `planned → plan-approved`."
+        }
+      ],
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "usage": {
+        "input": 2,
+        "output": 644,
+        "cacheRead": 45871,
+        "cacheWrite": 97,
+        "totalTokens": 46614,
+        "cost": {
+          "input": 0.00001,
+          "output": 0.0161,
+          "cacheRead": 0.022935499999999998,
+          "cacheWrite": 0.00060625,
+          "total": 0.03965175
+        },
+        "cacheWrite1h": 0,
+        "reasoning": 0
+      },
+      "stopReason": "stop",
+      "timestamp": 1783190666020,
+      "responseId": "msg_01FcuBmpF9x7RHFWgFr8sS1a"
+    }
+  ]
+}

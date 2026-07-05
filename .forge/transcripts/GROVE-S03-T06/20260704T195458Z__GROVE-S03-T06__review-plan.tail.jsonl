@@ -1,0 +1,76 @@
+{"line":"[T0:01:24:58] ─── phase 2/8 review-plan begin · GROVE-S03-T06 ───"}
+{"line":"╭ [T1:01:25:06] ✱ I'm starting with the banner, then I'll read through the persona to understand the context."}
+{"line":"│ $ bash node .forge/tools/banners.cjs oracle"}
+{"line":"│ → forge_preflight"}
+{"line":"│ ⌕ read .forge/personas/supervisor.md"}
+{"line":"│ ← forge_preflight ok 1L"}
+{"line":"│ ← bash ok 5L"}
+{"line":"│ ← read ok 67L"}
+{"line":"╰ ⇉ batched 3 tool calls in turn 1"}
+{"line":"╭ [T2:01:25:11] » 🌿 **grove Supervisor** — I review before things move forward. I read the actual code, not the report.\n\nPreflight passed. Now checking task state and loading context."}
+{"line":"│ $ bash node .forge/tools/store-cli.cjs read task GROVE-S03-T06 --fields status"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ ← bash ok 4L"}
+{"line":"│ ← forge_artifact ok 37L ⇌74%"}
+{"line":"│ ← forge_artifact ok 11L ⇌86%"}
+{"line":"╰ ⇉ batched 3 tool calls in turn 2"}
+{"line":"╭ [T3:01:25:21] » Task is `planned` — correct state. Let me read the full plan and task prompt to review properly."}
+{"line":"│ → forge_artifact outline"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 21L"}
+{"line":"│ ← forge_artifact ok 15L"}
+{"line":"│ ← forge_artifact ok 8L"}
+{"line":"╰ ⇉ batched 3 tool calls in turn 3"}
+{"line":"╭ [T4:01:25:24] » Now let me read the key plan sections in full to verify feasibility against the actual code."}
+{"line":"│ → forge_artifact read"}
+{"line":"│ ← forge_artifact ok 81L"}
+{"line":"╭ [T5:01:25:28] » Now let me verify the plan's claims against the actual `registry.rs` code — the key functions it relies on."}
+{"line":"│ → mcp__grove__symbols"}
+{"line":"│ → mcp__grove__symbols"}
+{"line":"│ → mcp__grove__symbols"}
+{"line":"│ ← mcp__grove__symbols ok 1L"}
+{"line":"│ ← mcp__grove__symbols ok 1L"}
+{"line":"│ ← mcp__grove__symbols ok 1L"}
+{"line":"╰ ⇉ batched 3 tool calls in turn 5"}
+{"line":"╭ [T6:01:25:36] ✱ I need to focus on the core functions that drive this system: `registry_root`, `write_lock_for`, `locked_langs`, and how the lock file JSON is structured with the `wasm` field and `grammars` array."}
+{"line":"│ » The plan relies on specific existing functions. Let me read the key ones: `registry_root`, `write_lock_for`, and `locked_langs` to verify the lock JSON structure and path resolution claims."}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"╰ ⇉ batched 4 tool calls in turn 6"}
+{"line":"╭ [T7:01:25:56] ✱ I'm verifying the lock file structure now—checking what `write_lock_for` actually writes and confirming that the `wasm` field contains the SHA256 hash in the expected format.\n\nNow I'm looking at the wasm resolution paths. The plan uses `registry_root().join(&name).join(\"grammar.wasm\")`, but `resolve()` reads from `idx.root.join(lang).join(\"grammar.wasm\")`. I need to verify that `idx.root` is actually computed from `registry_root()` in the `index()` function. There's a potential issue here: `index()` is memoized as a static, so it gets computed once and cached, while `registry_root()` re-evaluates the environment variable each time. In tests where `GROVE_REGISTRY` might be set after `index()` is first called, this could cause a mismatch.\n\nI also need to check the `wasm_sha256` format — whether `verify_lock` computing `sha256(&bytes)` matches what `write_lock_for` stores via `g.wasm_sha256()`. Let me look at both `wasm_sha256` and `index()` to confirm."}
+{"line":"│ » Let me verify two subtle correctness points: (a) whether `wasm_sha256` uses the same `sha256` primitive (so a fresh lock verifies clean), and (b) whether `index().root` — used by `resolve`/`write_lock_for` — matches `registry_root()` used by `verify_lock`."}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ → mcp__grove__source"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"│ ← mcp__grove__source ok 1L"}
+{"line":"╰ ⇉ batched 4 tool calls in turn 7"}
+{"line":"╭ [T8:01:26:51] ✱ I'm confirming the lock file structure with the version and grammars array containing name, version, and wasm SHA256 hash fields. The plan correctly parses these fields, and I've verified that `wasm_sha256` computes the SHA256 hash of the actual wasm bytes, so the validation logic checks out.\n\nNow I'm examining path resolution consistency — both `resolve()` and `verify_lock` should read from the same wasm file location derived from `registry_root()`. The issue is that `registry_root()` is memoized in an OnceLock for the process lifetime, so if a test changes the `GROVE_REGISTRY` environment variable after the index is already initialized, the paths could diverge between what `resolve()` uses (stale root) and what `verify_lock` uses (new env value), potentially causing the lock verification test to fail or pass incorrectly.\n\nHowever, the test plan explicitly recommends keeping tests registry-root-agnostic by not manipulating `GROVE_REGISTRY`, which aligns with the existing convention used in `write_lock_for_pins_versions_and_hashes`. As long as the Match test follows this pattern and uses the ambient dev registry, both paths resolve consistently. For the Missing test, the nonexistent language directory won't exist regardless of registry root, so it works fine. For the Mismatch test, I'll write a real lock and then tamper with the wasm hash field to trigger the mismatch detection.\n\nThe error handling uses the correct Rust idiom matching on `NotFound` to signal a Missing status, and the `Ok(None)` return for absent locks satisfies the requirement for a non-error signal. The plan re-exports only the types (`LockVerifyEntry`, `LockVerifyStatus`) at the crate root while keeping `verify_lock` accessible via `registry::verify_lock`, which is consistent with how other internal functions aren't re-exported. The signature takes the lock file path and returns `Result<Option<Vec<LockVerifyEntry>>>`, wrapping in `Option` to distinguish between an absent lock and an error — this handles the acceptance criteria flexibly even though the original suggestion was slightly different.\n\nThere's a minor TOCTOU race between checking `lock_path.exists()` and reading it, but that's negligible for this use case. One robustness gap: if the lock file is malformed and missing the `wasm` or `name` fields, the plan doesn't specify graceful handling, though since the lock is machine-written this is acceptable. I'd approve the plan with a couple of advisory notes about keeping the test registry root-agnostic to avoid index divergence, and optionally handling malformed entries more defensively.\n\nNow I'll write up the review document and summary."}
+{"line":"│ » I now have all the facts needed. My verification against the actual code:\n\n- **Lock JSON shape** (`write_lock_for`): `{version:1, grammars:[{name, version, wasm:\"sha256:…\"}]}` — the plan's parse of `doc[\"grammars\"]` / `entry[\"wasm\"]` / `name` matches exactly. ✓\n- **Clean-verify guarantee**: `wasm_sha256()` = `sha256(self.wasm.as_slice())`, and `verify_lock` recomputes `sha256(&fs::read(path))` over the same file bytes → identical `sha256:…` string. AC #2 holds. ✓\n- **Path resolution**: `resolve()` reads `index().root.join(lang)/grammar.wasm`; plan's `verify_lock` reads `registry_root().join(name)/grammar.wasm`. `index().root` is itself seeded from `registry_root()` — same path in the steady state. One caveat below. ✓\n- **Missing/Mismatch/None** signals map correctly to NotFound / hash-diff / absent-file. ✓\n\nOne real subtlety worth flagging: `index()` memoizes its `root` via `OnceLock`, while `verify_lock` re-evaluates `registry_root()`. Let me write the verdict."}
+{"line":"│ → forge_artifact write"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╭ [T9:01:27:04] » Now the status transition (task mode, Approved → plan-approved) and the summary sidecar."}
+{"line":"│ $ bash node .forge/tools/store-cli.cjs update-status task GROVE-S03-T06 status plan-approved"}
+{"line":"│ → forge_artifact write"}
+{"line":"│ ← bash ok 1L"}
+{"line":"│ ← forge_artifact ok 20L"}
+{"line":"╰ ⇉ batched 2 tool calls in turn 9"}
+{"line":"╭ [T10:01:27:18] ✱ I need to switch the field name from `findings` to `key_changes` in the summary artifact to match what the validator expects."}
+{"line":"│ » The validator requires `key_changes` (not `findings`). Let me adjust the JSON to satisfy the schema."}
+{"line":"│ → forge_artifact write"}
+{"line":"│ ← forge_artifact ok 1L"}
+{"line":"╭ [T11:01:27:24] ⚙ forge_store set-summary"}
+{"line":"│ ← forge_store ok 1L"}
+{"line":"╭ [T12:01:27:35] ✱ Checking that everything is complete."}
+{"line":"│ » Review complete.\n\n## 🌕 ORACLE — Plan Review Verdict: **Approved** (standalone review)\n\n**Task GROVE-S03-T06** — `grove.lock` wasm sha256 verify primitive (core). Transitioned `planned → plan-approved`.\n\nI verified the plan independently against the actual `core/src/registry.rs` source rather than trusting its self-description:\n\n- **Lock JSON shape** — `write_lock_for@412` writes `{version, grammars:[{name, version, wasm:\"sha256:…\"}]}`; the plan's parse of `doc[\"grammars\"]` / `entry[\"wasm\"]` / `name` is exactly correct.\n- **Clean-verify guarantee (AC#2)** — `wasm_sha256@106` is literally `sha256(self.wasm.as_slice())`, and `verify_lock` recomputes `sha256(&fs::read(path))` over the same file bytes → identical `\"sha256:…\"` string. A freshly written lock verifies all-`Match`.\n- **Path resolution** — `verify_lock`'s `registry_root()/<name>/grammar.wasm` matches `resolve@219`'s `idx.root.join(lang)/grammar.wasm` (index root is itself seeded from `registry_root`).\n- **Status mapping** — NotFound→`Missing`, hash-diff→`Mismatch`, absent lock→`Ok(None)` all sound; the NotFound handling mirrors the existing `read_optional` idiom.\n\nAll five acceptance criteria are addressed; the change is purely additive (no signature or lock-format changes).\n\n**Advisory notes carried into implementation** (non-blocking):\n1. `index()` memoizes its root via `OnceLock` while `verify_lock` re-evaluates `registry_root()` — keep the Match test registry-root-agnostic (no mid-process `GROVE_REGISTRY` mutation) to avoid divergence.\n2. Handle malformed lock entries (missing `wasm`/`name`) deliberately — no silent `unwrap`.\n3. `verify_lock` takes the lock *file* path (like `locked_langs`), not a project root — T07 must pass the resolved `grove.lock` path.\n\n`PLAN_REVIEW.md` and `REVIEW-PLAN-SUMMARY.json` written; `summaries.review_plan` sealed with verdict `approved`."}
