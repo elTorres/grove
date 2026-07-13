@@ -121,3 +121,5 @@ jobs:
           # publish that follows can resolve it.
           cargo publish -p grove-cst --locked
           cargo publish -p grove-cst-cli --locked
+          
+# test
