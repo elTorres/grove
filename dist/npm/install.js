@@ -4,12 +4,12 @@
 // vendor/. The bin shim (bin/grove.js) execs whatever lands there.
 "use strict";
 
-const https = require("https");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
-const { execFileSync } = require("child_process");
+const { execFile } = require("child_process");
+const { URL } = require("url");
 
 const REPO = "Entelligentsia/grove";
 const { version } = require("./package.json");
@@ -29,7 +29,26 @@ function fail(msg) {
 
 function get(url, dest) {
   return new Promise((resolve, reject) => {
-    https
+    const target = new URL(url);
+    const proxy = getProxyUrl(target);
+
+    const tryDownload = (command, args) => {
+      execFile(command, args, { env: process.env, stdio: "inherit" }, (error) => {
+        if (error) {
+          return reject(error);
+        }
+        resolve();
+      });
+    };
+
+    if (proxy) {
+      const proxyUrl = new URL(proxy);
+      const proxyArgs = ["--proxy", proxyUrl.toString(), "-fsSL", "-o", dest, url];
+      return tryDownload("curl", proxyArgs);
+    }
+
+    const client = target.protocol === "https:" ? require("https") : require("http");
+    client
       .get(url, { headers: { "User-Agent": "grove-npm-installer" } }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           res.resume();
@@ -46,6 +65,39 @@ function get(url, dest) {
       })
       .on("error", reject);
   });
+}
+
+function getProxyUrl(targetUrl) {
+  const env = process.env;
+  const noProxy = (env.NO_PROXY || env.no_proxy || "")
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+  const hostname = targetUrl.hostname.toLowerCase();
+  const port = targetUrl.port || (targetUrl.protocol === "https:" ? "443" : "80");
+  const bypass = noProxy.some((entry) => {
+    if (entry === "*") return true;
+    if (entry.includes(":")) {
+      const [entryHost, entryPort] = entry.split(":", 2);
+      return hostname === entryHost && port === entryPort;
+    }
+    return hostname === entry || hostname.endsWith(`.${entry}`);
+  });
+  if (bypass) {
+    return null;
+  }
+
+  const candidates = [];
+  if (targetUrl.protocol === "https:") {
+    candidates.push(env.HTTPS_PROXY || env.https_proxy);
+    candidates.push(env.ALL_PROXY || env.all_proxy);
+    candidates.push(env.HTTP_PROXY || env.http_proxy);
+  } else {
+    candidates.push(env.HTTP_PROXY || env.http_proxy);
+    candidates.push(env.ALL_PROXY || env.all_proxy);
+  }
+
+  return candidates.find(Boolean) || null;
 }
 
 async function getText(url) {

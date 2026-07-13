@@ -35,6 +35,8 @@ use std::time::Duration;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
+use crate::proxy::proxy_from_env;
+
 use super::config::ExploreConfig;
 
 /// Connect-phase timeout — a refused/unroutable server fails fast rather than
@@ -544,14 +546,25 @@ pub struct OpenAiCompatClient {
     agent: ureq::Agent,
 }
 
+fn build_agent_for_url(url: &str, connect_timeout: Duration, request_timeout: Duration) -> ureq::Agent {
+    let mut builder = ureq::AgentBuilder::new()
+        .timeout_connect(connect_timeout)
+        .timeout(request_timeout);
+
+    if let Some(proxy_url) = proxy_from_env(url) {
+        if let Ok(proxy) = ureq::Proxy::new(&proxy_url) {
+            builder = builder.proxy(proxy);
+        }
+    }
+
+    builder.build()
+}
+
 impl OpenAiCompatClient {
     /// Build a client from config. The base URL's trailing slash is trimmed so
     /// `{base_url}/chat/completions` is well-formed for both providers.
     pub fn new(cfg: &ExploreConfig) -> Self {
-        let agent = ureq::AgentBuilder::new()
-            .timeout_connect(CONNECT_TIMEOUT)
-            .timeout(CHAT_TIMEOUT)
-            .build();
+        let agent = build_agent_for_url(&cfg.base_url, CONNECT_TIMEOUT, CHAT_TIMEOUT);
         OpenAiCompatClient {
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
             model: cfg.model.clone(),
@@ -628,10 +641,7 @@ pub fn health_probe(cfg: &ExploreConfig) -> Result<(), HealthError> {
     let base = cfg.base_url.trim_end_matches('/');
     let url = format!("{base}/models");
 
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(CONNECT_TIMEOUT)
-        .timeout(PROBE_TIMEOUT)
-        .build();
+    let agent = build_agent_for_url(&url, CONNECT_TIMEOUT, PROBE_TIMEOUT);
 
     let resp = agent.get(&url).call().map_err(|e| match e {
         ureq::Error::Status(status, r) => HealthError::Unreachable {
@@ -673,10 +683,7 @@ pub fn list_models(cfg: &ExploreConfig) -> Result<Vec<String>, String> {
     let base = cfg.base_url.trim_end_matches('/');
     let url = format!("{base}/models");
 
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(CONNECT_TIMEOUT)
-        .timeout(PROBE_TIMEOUT)
-        .build();
+    let agent = build_agent_for_url(&url, CONNECT_TIMEOUT, PROBE_TIMEOUT);
 
     let resp = agent.get(&url).call().map_err(|e| e.to_string())?;
     let raw = resp.into_string().map_err(|e| e.to_string())?;

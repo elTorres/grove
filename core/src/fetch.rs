@@ -5,13 +5,14 @@
 //! tags.scm, manifest.json}`. Each wasm's sha256 is verified against the catalog
 //! before it lands in the cache. Override the host with `GROVE_REGISTRY_URL`.
 
-use std::io::Read;
+use std::{io::Read, time::Duration};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 
 use crate::registry;
 use crate::registry::sha256;
+use crate::proxy::proxy_from_env;
 
 /// Default host for the catalog + per-language text files (tags.scm, manifest).
 /// raw.githubusercontent serves these reliably (jsDelivr's per-file cold-fetch
@@ -79,8 +80,29 @@ fn host() -> String {
         .to_string()
 }
 
+fn build_agent_for_url(url: &str, connect_secs: u64, read_secs: u64) -> ureq::Agent {
+    let mut builder = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(connect_secs))
+        .timeout_read(Duration::from_secs(read_secs))
+        .timeout_write(Duration::from_secs(read_secs));
+
+    if let Some(proxy_url) = proxy_from_env(url) {
+        if let Ok(proxy) = ureq::Proxy::new(&proxy_url) {
+            builder = builder.proxy(proxy);
+        }
+    }
+
+    builder.build()
+}
+
+fn build_agent() -> ureq::Agent {
+    build_agent_for_url("http://example.test", 30, 300)
+}
+
 pub(crate) fn get_bytes(url: &str) -> Result<Vec<u8>> {
-    let resp = ureq::get(url)
+    let agent = build_agent_for_url(url, 30, 300);
+    let resp = agent
+        .get(url)
         .call()
         .map_err(|e| anyhow!("GET {url}: {e}"))?;
     let mut buf = Vec::new();
@@ -186,7 +208,11 @@ pub fn run(langs: &[String], force: bool) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{host, safe_segment, sha256, Catalog, DEFAULT_HOST};
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Mutex, OnceLock};
+
+    use super::{build_agent, host, safe_segment, sha256, Catalog, DEFAULT_HOST};
 
     #[test]
     fn host_defaults_and_honors_env_override() {
@@ -241,6 +267,39 @@ mod tests {
             "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
         assert_eq!(sha256(b"abc"), crate::registry::sha256(b"abc"));
+    }
+
+    #[test]
+    fn build_agent_honors_http_proxy_environment() {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let proxy_addr = addr.to_string();
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).unwrap();
+            let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+            stream.write_all(response).unwrap();
+            let _ = reader.read_to_end(&mut Vec::new());
+        });
+
+        std::env::set_var("HTTP_PROXY", format!("http://{proxy_addr}"));
+        std::env::remove_var("HTTPS_PROXY");
+        std::env::remove_var("ALL_PROXY");
+        std::env::remove_var("NO_PROXY");
+
+        let agent = build_agent();
+        let response = agent.get("http://example.test/ok").call().unwrap();
+        let body = response.into_string().unwrap();
+        assert_eq!(body, "ok");
+
+        std::env::remove_var("HTTP_PROXY");
+        handle.join().unwrap();
     }
 
     #[test]
