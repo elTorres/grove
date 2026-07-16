@@ -100,13 +100,12 @@ fn build_agent() -> ureq::Agent {
 }
 
 pub(crate) fn get_bytes(url: &str) -> Result<Vec<u8>> {
-    let agent = build_agent_for_url(url, 30, 300);
-    let resp = agent
-        .get(url)
-        .call()
-        .map_err(|e| anyhow!("GET {url}: {e}"))?;
+    let agent: ureq::Agent =
+        ureq::config::Config::builder().proxy(crate::proxy::configured_proxy()).build().new_agent();
+    let resp = agent.get(url).call().map_err(|e| anyhow!("GET {url}: {e}"))?;
     let mut buf = Vec::new();
-    resp.into_reader()
+    resp.into_body()
+        .into_reader()
         .read_to_end(&mut buf)
         .with_context(|| format!("reading {url}"))?;
     Ok(buf)

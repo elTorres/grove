@@ -36,8 +36,13 @@ turns. It's not an LSP; it's the cheap syntactic layer *beneath* one.
 curl -fsSL https://raw.githubusercontent.com/Entelligentsia/grove/main/install.sh | sh
 ```
 
-One line — detects your platform, verifies the sha256. Prefer Homebrew, npm,
-cargo, or building from source? → **[Install](docs/install.md)**.
+```powershell
+irm https://raw.githubusercontent.com/Entelligentsia/grove/main/install.ps1 | iex
+```
+
+One line — detects your platform, verifies the sha256, and honors
+`HTTP(S)_PROXY`/`ALL_PROXY`/`NO_PROXY`. Prefer Homebrew, npm, cargo, or building
+from source? → **[Install](docs/install.md)**.
 
 ### 2&nbsp;·&nbsp;Wire it into your project
 

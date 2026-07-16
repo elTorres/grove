@@ -4,6 +4,83 @@ All notable changes to grove are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and grove adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-07-15
+
+### Added — `grove config` auto-detects local inference engines
+
+The config TUI's provider row is now a **discovery-driven engine picker**. On
+launch it concurrently probes the well-known local inference servers — Ollama
+(11434), llama.cpp (8080), LM Studio (1234), vLLM (8000) — via each one's
+OpenAI-compatible `/models` listing (a short deadline; dead ports return
+instantly). Each is shown live (●, with its model count) or not-detected (○).
+
+- **Running-process detection (Linux):** discovery also scans `/proc` for a
+  `llama-server` / `llama serve` (the unified router) / `ollama` / `vllm` / LM
+  Studio process and probes the port it is *actually* bound to (from `--port`,
+  or `OLLAMA_HOST`), so an engine on a non-default port (e.g.
+  `llama serve --port 8081`) is found where a fixed-port probe would miss it.
+  Internal worker processes are suppressed (a matched process whose parent
+  matches the same engine — e.g. the `llama serve` router's re-spawned worker,
+  or ollama's `runner` subcommand — is not reported, since its port is
+  ephemeral); a shell whose command text merely mentions an engine name (e.g.
+  a `grep vllm` invocation) is never matched.
+- Selecting an engine **auto-fills the endpoint URL and preloads its model list**,
+  so the Model dropdown is instant for a detected engine. A custom endpoint is
+  still entered by editing the URL field directly. Re-opening `grove config`
+  re-aligns the cursor onto whichever row matches the saved endpoint, including
+  a previously-detected non-default port.
+- The `provider` config field (Ollama / LlamaCpp) is now **derived from the chosen
+  endpoint** rather than picked — it is a cosmetic label (grove speaks
+  OpenAI-compat to both and never branches on it at request time), retained for
+  on-disk back-compat and the trace header.
+- New engine-discovery API in `grove-cst`: `discover_engines()` →
+  `Vec<DiscoveredEngine>`, plus the `ENGINE_CANDIDATES` probe table.
+
+### Changed
+
+- `core/src/explore/client.rs` (~1240 lines, four concerns) is split into
+  `wire.rs` (OpenAI chat serde model), `client.rs` (transport trait +
+  `OpenAiCompatClient`), `health.rs` (`/models` probe + listing), and
+  `discovery.rs` (engine auto-detection). Pure internal refactor — the
+  `explore::` public surface is unchanged.
+
+## [0.4.0] - 2026-07-15
+
+### Changed — mcp-llm inner harness rewritten to the `base-q4-v2-hf` reference
+
+The opt-in mcp-llm `explore` mode's inner loop is now the **`base-q4-v2-hf`
+reference combination** (interim winner in the explore-model experiments; 80.6 on
+the 347-case holdout, served on llama.cpp):
+
+- The single flat **v2 system prompt** whose output contract is **bare location
+  lines** (`lang:path#symbol@line`, or `path:line` when a point has no enclosing
+  symbol) — no prose, numbering, or tags.
+- The reference tool vocabulary — base `Glob`/`Grep`/`Read` (Claude schemas) plus
+  the six `mcp__grove__{outline,symbols,source,callers,map,definition}` tools.
+- The `run_eval.py` harness discipline: single phase, ≤ 12 turns, thrash/token/
+  time backstops, nudge + forced-answer (H1/H2), and retry-on-leak.
+
+The `Steering` config field is **retained for back-compat** but no longer selects
+a prompt arm (the merit/plan-first/strict arms are gone). The default CLI and the
+7-tool `grove serve` structural surface are unchanged. Accordingly, the now-inert
+**steering selector was removed from the `grove config` TUI**.
+
+### Fixed
+
+- **Trace files no longer corrupt under concurrent `grove serve` processes.** Two
+  servers starting in the same second under the same MCP client derived an
+  identical `session_id` (`<epoch>-<client-slug>`) and interleaved their writes
+  into one file; the torn header then made `grove tap` drop the whole session
+  (rendering real work as "0 calls"). The `session_id` now carries the pid
+  (`<epoch>-<client-slug>-<pid>`), and the `grove tap` parser recovers a session
+  from its filename when the header line is torn — so its calls still render.
+
+### Documentation
+
+- Overhauled the README with an updated architecture overview, an SVG flow
+  diagram (replacing the ASCII art), a symbol-id syntax diagram, and a header
+  favicon.
+
 ## [0.3.1] - 2026-07-05
 
 ### Added — Multi-harness `grove init` (Cursor, Codex, Gemini, Windsurf, VS Code)

@@ -29,25 +29,43 @@ cli/src/init.rs        `grove init [--as …] [--agents …]` — file-writing h
 core/src/harness.rs    harness adapters — HarnessId {claude-code,cursor,codex,gemini,windsurf,
                        vscode}: per-agent MCP config path/format/scope + detection; the shared
                        source of truth for init (writer) and doctor (verifier)
-cli/src/config_tui/    full-screen ratatui TUI (`grove config` verb) — incl. model-list dropdown
+cli/src/config_tui/    full-screen ratatui TUI (`grove config` verb) — engine
+                       auto-discovery picker + model-list dropdown
 cli/src/trace_tui/     full-screen ratatui trace browser (`grove tap` verb): session→call→turn
 cli/src/tap.rs         `grove tap` — enable session tracing + launch the trace browser (debug)
 skills/grove/          SKILL.md — cross-harness skill, routes to MCP-or-CLI (npx skills add)
 
 core/src/explore/      inner explorer engine (mcp-llm mode — opt-in, stable as of 0.3.0)
   mod.rs               re-exports; public surface is run_explore[_reporting]()
-  config.rs            ExploreConfig — .grove/explore.json serde + atomic save (tap, trace_retain)
-  client.rs            ChatClient trait + OpenAiCompatClient + health_probe() + list_models() + Usage
-  agent.rs             bounded loop (≤ 6 turns, forced-final-answer, no byte budget); plan-first state machine + progress + trace
+  config.rs            ExploreConfig — .grove/explore.json serde + atomic save (tap, trace_retain);
+                       defaults to the llama.cpp reference rig (provider=llamacpp, qwen3.5-4b)
+  wire.rs              OpenAI chat wire model (Message/ToolCall/ChatRequest/ChatResponse/Usage) +
+                       tool-call arg normalization; with_explore_sampling() = temp/max_tokens/enable_thinking
+  client.rs            ChatClient transport trait + OpenAiCompatClient + ClientError (thin: transport only)
+  health.rs            health_probe() + list_models() + fetch_models_at() — the {base_url}/models layer
+  discovery.rs         discover_engines() — local engine auto-detect (default ports + /proc process scan)
+  agent.rs             the base-q4-v2-hf reference loop (run_eval.py::run_question): single-phase,
+                       ≤ 12 turns, thrash/token/time backstops, nudge + forced-answer (H1/H2),
+                       retry-on-leak, think ON + progress + trace
   trace.rs             TraceWriter (per-session JSONL under .grove/traces/) + request/response pretty-printers
-  toolset.rs           the 4 inner tools (Grove/Read/Glob/Grep) + submit_plan — schemas + dispatch
-  steering.rs          per-arm system prompts (standard=merit / balanced=plan-first / strict=grove-first)
-  grounding.rs         <final_answer> citation parse + filesystem validation
-  prompts/             system/tool/steering prompt assets, embedded verbatim (include_str!)
+  toolset.rs           the reference toolset — base Glob/Grep/Read (Claude schemas) + six
+                       mcp__grove__{outline,symbols,source,callers,map,definition}; grove obs are
+                       in-process `--json`; is_empty_obs() for thrash accounting
+  steering.rs          the single flat v2 system prompt (bare-location-line contract) +
+                       nudge/forced/leak-retry messages (no merit/plan-first/strict arms)
+  grounding.rs         neutralize_xml + strip-leak-lines + optional <final_answer> unwrap +
+                       FS-validation of location-line paths (drops hallucinated paths)
+  prompts/             explore_v2.system.md — the v2 system prompt, embedded verbatim (include_str!)
 ```
 
-**mcp-llm mode is opt-in** (stable as of 0.3.0) — a direct port of the delegation
-study's bench agent. The default CLI + 7-tool `grove serve` remain the primary surface.
+**mcp-llm mode is opt-in** (stable as of 0.3.0). The inner harness is the
+**`base-q4-v2-hf` reference combination** (interim winner in
+`grove-explore-model/experiments/registry.jsonl`, 80.6 on the 347-case holdout,
+served on **llama.cpp**): the flat v2 prompt whose output contract is **bare
+location lines** (`lang:path#symbol@line`), the reference tool vocabulary, and the
+`run_eval.py` harness discipline (H1/H2/H3/H5 + retry-on-leak). The `Steering`
+config field is retained for back-compat but no longer selects a prompt arm. The
+default CLI + 7-tool `grove serve` remain the primary surface.
 
 Data flow: `main`/`mcp` → `ops` → `engine` (+ `registry` for grammar resolution).
 For mcp-llm mode: `mcp.rs` → `core::explore::run_explore` → inner loop → answer.
@@ -118,7 +136,7 @@ grove serve                         # MCP server over stdio
 # setup / registry
 grove init [path] [--as mcp|skill|both|mcp-llm] [--agents auto|all|<csv>] [--dry-run]  # provision grammars + chosen harness glue
                    # --agents selects which coding agents to wire (claude-code,cursor,codex,gemini,windsurf,vscode)
-grove config [path]                 # open the explore config TUI (requires TTY); Tap toggle + model dropdown
+grove config [path]                 # open the explore config TUI (requires TTY); engine discovery + Tap toggle + model dropdown
 grove serve [path] [--explore] [--standard]  # MCP server; mode flags override config
 grove tap [path] [--no-enable]      # enable session tracing (.grove/traces/) + browse it in a TUI
 grove fetch [langs...] [--force]    # install grammars into the OS cache

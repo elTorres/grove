@@ -38,6 +38,12 @@ Homebrew formula all verify against it.
 
 - **`install.sh`** (`curl | sh`) — platform detection, checksum-verified, installs
   to `$GROVE_INSTALL_DIR` (default `~/.local/bin`). `GROVE_VERSION` pins a tag.
+  Honors `HTTP(S)_PROXY`/`ALL_PROXY`/`NO_PROXY` via `curl`/`wget`.
+- **`install.ps1`** (`irm | iex`) — Windows PowerShell equivalent, checksum-verified,
+  installs to `$env:GROVE_INSTALL_DIR` (default `$env:LOCALAPPDATA\grove\bin`).
+  `$env:GROVE_VERSION` pins a tag. Honors `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/
+  `NO_PROXY` from the environment, or an explicit `-Proxy` when run as a
+  downloaded script (piping into `iex` doesn't accept parameters).
 - **Homebrew** — `dist/homebrew/grove.rb` template, published to the live tap
   [`Entelligentsia/homebrew-grove`](https://github.com/Entelligentsia/homebrew-grove)
   (`brew install Entelligentsia/grove/grove`).

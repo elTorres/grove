@@ -1,6 +1,6 @@
 [package]
 name = "grove-cst"
-version = "0.3.1"
+version = "0.4.1"
 edition = "2021"
 description = "Core AST engine, grammar registry, fetch, and ingest for grove — the structural code-intelligence library behind the grove CLI and MCP server."
 license = "MIT"
@@ -39,4 +39,4 @@ sha2 = "0.10"
 dirs = "5"
 
 # HTTP client for grammar fetch (blocking, rustls)
-ureq = "2"
+ureq = "3"
