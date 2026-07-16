@@ -11,6 +11,9 @@
   "bin": {
     "grove": "bin/grove.js"
   },
+  "dependencies": {
+    "undici": "^8.7.0"
+  },
   "scripts": {
     "postinstall": "node install.js"
   },
