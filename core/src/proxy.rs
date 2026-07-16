@@ -33,16 +33,23 @@ pub(crate) fn configured_proxy() -> Option<ureq::Proxy> {
     proxy
 }
 
+/// Process-wide lock serializing every test (in this module and in
+/// `fetch.rs`) that mutates the proxy env vars — they're process-global, so
+/// two such tests racing under cargo's default parallel test runner can
+/// observe each other's values and fail spuriously.
+#[cfg(test)]
+pub(crate) static PROXY_ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;
-    use std::sync::Mutex;
 
     // Proxy env vars are process-global; serialize the tests that mutate them
-    // so they don't race across threads.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    // so they don't race across threads (including with fetch.rs's own proxy
+    // test — see `PROXY_ENV_TEST_LOCK`).
+    use super::PROXY_ENV_TEST_LOCK as ENV_LOCK;
 
     struct EnvVarGuard {
         vars: Vec<(&'static str, Option<String>)>,

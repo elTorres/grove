@@ -136,20 +136,6 @@ pub struct OpenAiCompatClient {
     agent: ureq::Agent,
 }
 
-fn build_agent_for_url(url: &str, connect_timeout: Duration, request_timeout: Duration) -> ureq::Agent {
-    let mut builder = ureq::AgentBuilder::new()
-        .timeout_connect(connect_timeout)
-        .timeout(request_timeout);
-
-    if let Some(proxy_url) = proxy_from_env(url) {
-        if let Ok(proxy) = ureq::Proxy::new(&proxy_url) {
-            builder = builder.proxy(proxy);
-        }
-    }
-
-    builder.build()
-}
-
 impl OpenAiCompatClient {
     /// Build a client from config. The base URL's trailing slash is trimmed so
     /// `{base_url}/chat/completions` is well-formed for both providers.
