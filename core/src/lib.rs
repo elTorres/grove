@@ -48,6 +48,7 @@ pub mod harness;
 pub mod ingest;
 pub mod init;
 pub mod ops;
+mod proxy;
 pub mod registry;
 pub mod render;
 
