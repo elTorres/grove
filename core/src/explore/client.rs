@@ -140,10 +140,9 @@ impl OpenAiCompatClient {
     /// Build a client from config. The base URL's trailing slash is trimmed so
     /// `{base_url}/chat/completions` is well-formed for both providers.
     pub fn new(cfg: &ExploreConfig) -> Self {
-        let agent: ureq::Agent = ureq::config::Config::builder()
+        let agent: ureq::Agent = crate::proxy::default_config()
             .timeout_connect(Some(CONNECT_TIMEOUT))
             .timeout_global(Some(CHAT_TIMEOUT))
-            .proxy(crate::proxy::configured_proxy())
             // Disabled so a 4xx/5xx status is returned as `Ok(response)` with
             // its body intact, rather than `Err(Error::StatusCode)` (which
             // drops the body) — `chat()` below classifies it manually.

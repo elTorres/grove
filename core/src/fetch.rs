@@ -80,10 +80,9 @@ fn host() -> String {
 }
 
 fn build_agent() -> ureq::Agent {
-    ureq::config::Config::builder()
+    crate::proxy::default_config()
         .timeout_connect(Some(Duration::from_secs(30)))
         .timeout_global(Some(Duration::from_secs(300)))
-        .proxy(crate::proxy::configured_proxy())
         .build()
         .new_agent()
 }

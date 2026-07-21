@@ -33,6 +33,29 @@ pub(crate) fn configured_proxy() -> Option<ureq::Proxy> {
     proxy
 }
 
+/// A `ureq::Config` builder pre-wired with [`configured_proxy`].
+///
+/// The single place every grove ureq agent starts from, so a new call site
+/// can't forget to thread the proxy through — it just layers its own
+/// timeouts/options on top and calls `.build().new_agent()`. Callers that must
+/// never be proxied (e.g. local inference-engine discovery) should not use
+/// this — build from `ureq::config::Config::builder()` directly and pass
+/// `.proxy(None)` or omit it.
+pub(crate) fn default_config() -> ureq::config::ConfigBuilder<ureq::typestate::AgentScope> {
+    ureq::config::Config::builder().proxy(configured_proxy())
+}
+
+#[cfg(test)]
+mod default_config_tests {
+    use super::default_config;
+
+    #[test]
+    fn builds_an_agent() {
+        // Smoke test: the builder chain type-checks and produces an agent.
+        let _agent = default_config().build().new_agent();
+    }
+}
+
 /// Process-wide lock serializing every test (in this module and in
 /// `fetch.rs`) that mutates the proxy env vars — they're process-global, so
 /// two such tests racing under cargo's default parallel test runner can

@@ -84,10 +84,9 @@ pub fn health_probe(cfg: &ExploreConfig) -> Result<(), HealthError> {
     let base = cfg.base_url.trim_end_matches('/');
     let url = format!("{base}/models");
 
-    let agent: ureq::Agent = ureq::config::Config::builder()
+    let agent: ureq::Agent = crate::proxy::default_config()
         .timeout_connect(Some(CONNECT_TIMEOUT))
         .timeout_global(Some(PROBE_TIMEOUT))
-        .proxy(crate::proxy::configured_proxy())
         // Disabled so a non-2xx status comes back as `Ok(response)` with its
         // body intact (for the diagnostic message below) instead of
         // `Err(Error::StatusCode)`, which drops the body.
@@ -155,9 +154,12 @@ pub(crate) fn fetch_models_at(
     let base = base_url.trim_end_matches('/');
     let url = format!("{base}/models");
 
-    let agent: ureq::Agent = ureq::config::Config::builder()
+    let agent: ureq::Agent = crate::proxy::default_config()
         .timeout_connect(Some(connect))
         .timeout_global(Some(overall))
+        // Overrides `default_config`'s proxy — discovery passes `None` here
+        // because it only ever probes fixed `localhost` ports, which must
+        // never be routed through a corporate proxy.
         .proxy(proxy)
         .build()
         .new_agent();
