@@ -54,39 +54,6 @@ async function download(url, dest) {
   });
 }
 
-function getProxyUrl(targetUrl) {
-  const env = process.env;
-  const noProxy = (env.NO_PROXY || env.no_proxy || "")
-    .split(",")
-    .map((entry) => entry.trim().toLowerCase())
-    .filter(Boolean);
-  const hostname = targetUrl.hostname.toLowerCase();
-  const port = targetUrl.port || (targetUrl.protocol === "https:" ? "443" : "80");
-  const bypass = noProxy.some((entry) => {
-    if (entry === "*") return true;
-    if (entry.includes(":")) {
-      const [entryHost, entryPort] = entry.split(":", 2);
-      return hostname === entryHost && port === entryPort;
-    }
-    return hostname === entry || hostname.endsWith(`.${entry}`);
-  });
-  if (bypass) {
-    return null;
-  }
-
-  const candidates = [];
-  if (targetUrl.protocol === "https:") {
-    candidates.push(env.HTTPS_PROXY || env.https_proxy);
-    candidates.push(env.ALL_PROXY || env.all_proxy);
-    candidates.push(env.HTTP_PROXY || env.http_proxy);
-  } else {
-    candidates.push(env.HTTP_PROXY || env.http_proxy);
-    candidates.push(env.ALL_PROXY || env.all_proxy);
-  }
-
-  return candidates.find(Boolean) || null;
-}
-
 async function getText(url) {
   const res = await fetch(url, {
     dispatcher,
